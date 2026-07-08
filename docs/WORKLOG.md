@@ -1,5 +1,41 @@
 # Worklog
 
+## 2026-07-08 - OpenAPI drift gate
+
+Slice selected:
+
+- Closed the `CI-005` gap by adding an executable drift check for the committed
+  OpenAPI artifact.
+
+Implementation:
+
+- Refactored `scripts/ci/export_openapi.py` so schema construction and
+  deterministic rendering can be reused by checks and tests.
+- Added `scripts/ci/check_openapi.py`, which regenerates OpenAPI in memory,
+  compares it against `docs/api/openapi.yaml`, and fails with a unified diff if
+  the committed artifact is stale.
+- Added focused tests in `apps/api/tests/test_openapi_ci.py` proving generated
+  artifacts pass and stale artifacts fail.
+- Added `openapi-check` to `Makefile`.
+- Wired `python scripts/ci/check_openapi.py` into the backend CI job after API
+  tests.
+- Updated `docs/api/README.md` and `docs/TRACEABILITY_MATRIX.md` for the new
+  gate.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\check_openapi.py`: OpenAPI artifact is up
+  to date.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_openapi_ci.py -q`: 2
+  passed.
+- `.venv\Scripts\python -m ruff check scripts\ci\export_openapi.py scripts\ci\check_openapi.py apps\api\tests\test_openapi_ci.py`:
+  all checks passed.
+
+Remaining risks:
+
+- The gate detects generated artifact drift. It does not yet classify semantic
+  API compatibility or breaking changes between released contract versions.
+
 ## 2026-07-08 - Fable persistent branch alignment refresh
 
 Slice selected:
