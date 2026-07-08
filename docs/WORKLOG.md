@@ -5032,3 +5032,57 @@ Remaining risks:
 - The gate is intentionally structural. It does not semantically audit every
   historical worklog entry or prove that each recorded command outcome is
   sufficient for acceptance.
+
+## 2026-07-08 - FND-001/FND-002/FND-005 foundation docs gate
+
+Slice selected:
+
+- Closed the remaining small foundation-doc presence gaps for root agent
+  instructions, the master product plan, and required ADRs.
+- Kept this below the large-task threshold: the change validates durable
+  project documentation structure and CI wiring only.
+
+Implementation:
+
+- Added `scripts/ci/check_foundation_docs.py` to validate:
+  - required `AGENTS.md` working-loop, non-negotiable, architecture, and
+    command markers;
+  - required `docs/PLAN_MASTER.md` product goal, surfaces, stack, contracts,
+    verification pipeline, milestone, and public-contract markers;
+  - required ADR topics for architecture, data plane/control plane,
+    verification pipeline, security model, sandbox model, and policy engine;
+  - minimal ADR status/context/decision/consequences sections;
+  - Makefile and CI workflow wiring.
+- Added `apps/api/tests/test_foundation_docs.py` with positive validation of
+  current repository docs and focused negative tests for missing AGENTS
+  markers, missing public contract markers, missing ADR topics, malformed ADRs,
+  and missing supporting-file wiring.
+- Added `foundation-docs-check` to the Makefile and wired
+  `python scripts/ci/check_foundation_docs.py` into the backend CI job.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `FND-001`, `FND-002`,
+  `FND-005`, and new `CI-019`.
+
+Validation:
+
+- Initial `.venv\Scripts\python scripts\ci\check_foundation_docs.py` proved
+  the docs content passed and failed only because Makefile/CI wiring was not
+  present yet.
+- `.venv\Scripts\python scripts\ci\check_foundation_docs.py`: validated 7 ADR
+  files.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_foundation_docs.py -q`:
+  6 passed.
+- `.venv\Scripts\python -m ruff check scripts\ci\check_foundation_docs.py apps\api\tests\test_foundation_docs.py`:
+  all checks passed.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_foundation_docs.py apps\api\tests\test_traceability_matrix.py apps\api\tests\test_worklog.py -q`:
+  18 passed.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  149 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 85 entries.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 306 passed, 1 FastAPI
+  TestClient deprecation warning.
+
+Remaining risks:
+
+- The gate checks durable documentation structure and required markers. It does
+  not make the master plan or ADR decisions accepted product evidence by
+  itself.
