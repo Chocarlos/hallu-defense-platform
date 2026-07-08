@@ -40,6 +40,12 @@ Validation:
   source files.
 - `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
 - `git diff --check`: no whitespace errors; Windows CRLF warnings only.
+- `npm run typecheck`: all TypeScript workspaces passed, including Next route
+  type generation.
+- `npm run test`: SDK 7 tests passed, agent-adapters 5 tests passed, MCP
+  server 6 tests passed, and console eval-report 6 tests passed.
+- `npm run build`: contracts, SDK, agent-adapters, MCP server, and console
+  production build passed; Next prerendered `/` and `/_not-found`.
 
 Remaining risks:
 
