@@ -81,7 +81,9 @@ The repository has a real baseline commit and verified local state:
 
 - `8dec1b3 chore: establish repository baseline`.
 - `4c18751 chore: add fable delegation workflow`.
-- `master` and `fable5/delegation` currently point to `4c18751`.
+- `4da8223 chore: add fable project context package`.
+- `master` and `fable5/delegation` must be kept aligned before delegating
+  implementation work to Fable.
 - Fable delegation works through `.claude/workflows/fable-delegate.js`.
 
 Major completed areas recorded in `docs/WORKLOG.md` and
