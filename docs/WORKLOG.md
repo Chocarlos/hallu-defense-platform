@@ -4853,3 +4853,56 @@ Remaining risks:
 - The dashboard is still a static/offline view over the latest local report
   files. Historical trend storage, multi-run comparison, and live metrics API
   ingestion remain future work.
+
+## 2026-07-08 - FND-003 traceability matrix CI gate
+
+Slice selected:
+
+- Closed the lightweight FND-003 maintenance gap by replacing the planned
+  future/manual traceability matrix linter with an executable CI gate.
+- Kept the slice local to docs/CI validation while the larger RAG, NLI,
+  console, runtime, and contract-drift scopes remain reserved for Fable or a
+  larger multi-agent implementation pass.
+
+Coordination:
+
+- Inspected Fable workflow `wf_6e5f935f-e44` transcripts for all five assigned
+  large scopes.
+- Each Fable agent failed before implementation with a Claude session
+  `rate_limit` message and produced no changed files or integration report, so
+  no Fable diff was audited or merged.
+
+Implementation:
+
+- Added `scripts/ci/check_traceability_matrix.py` to validate:
+  - markdown table header and separator shape,
+  - requirement row column count,
+  - status vocabulary and accepted-status rule preamble,
+  - unique `PREFIX-000` requirement IDs,
+  - non-empty row fields,
+  - stricter deterministic-evidence requirements for `accepted` rows,
+  - Makefile and CI workflow wiring for the gate.
+- Added `apps/api/tests/test_traceability_matrix.py` with positive parsing,
+  committed-matrix validation, and negative checks for duplicate IDs, unknown
+  statuses, weak accepted evidence, and missing supporting-file wiring.
+- Added `traceability-check` to the Makefile and wired
+  `python scripts/ci/check_traceability_matrix.py` into the backend CI job.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `FND-003` and new `CI-017`.
+
+Validation:
+
+- Initial `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`
+  failed before wiring because Makefile/CI did not expose the new gate.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  147 requirement rows.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_traceability_matrix.py -q`:
+  6 passed.
+- `.venv\Scripts\python -m ruff check scripts\ci\check_traceability_matrix.py apps\api\tests\test_traceability_matrix.py`:
+  all checks passed.
+
+Remaining risks:
+
+- The gate checks matrix structure, status hygiene, unique IDs, accepted-row
+  evidence discipline, and CI wiring. It does not prove that every future
+  product requirement has been semantically captured; engineering review is
+  still required for new requirement discovery.
