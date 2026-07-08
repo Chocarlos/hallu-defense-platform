@@ -5138,3 +5138,98 @@ Remaining risks:
 - This is a static infrastructure gate. It does not prove Docker/Compose
   runtime behavior, installed local `make`, or remote GitHub Actions execution.
 - `FND-008`, `TS-004`, and `TS-005` remain outside this lightweight slice.
+
+## 2026-07-08 - FND-008 local runtime compose gate
+
+Slice selected:
+
+- Closed the remaining lightweight foundation runtime gap by validating the
+  local Docker Compose topology and smoke-testing the stack after the user
+  authorized installing Docker.
+- Kept this below the product-feature threshold: no replay endpoint, approval
+  e2e workflow, RAG live query behavior, or Fable-reserved feature scope was
+  implemented.
+
+Implementation:
+
+- Installed Docker Desktop through `winget` after confirming Docker was absent
+  and the official package was available.
+- Added `scripts/ci/check_local_runtime_config.py` to validate:
+  - required Compose services and named volumes;
+  - pinned image/build Dockerfile wiring;
+  - host port mappings, service dependencies, local-only env wiring, and
+    required volume mounts;
+  - Prometheus API scrape target;
+  - OpenTelemetry OTLP receivers and trace pipeline;
+  - Grafana datasource/dashboard provisioning;
+  - Makefile and CI workflow wiring.
+- Added `apps/api/tests/test_local_runtime_config.py` with focused negative
+  tests for missing services, latest image tags, missing API dependencies,
+  missing OpenSearch initial password, broken Prometheus targets, broken OTel
+  pipeline, broken Grafana provisioning, and missing Makefile/CI wiring.
+- Added `local-runtime-config` to `Makefile` and wired
+  `python scripts/ci/check_local_runtime_config.py` into backend CI.
+- Fixed `docker-compose.yml` runtime issues found by live Compose:
+  - replaced the non-existent MinIO tag with the verified pinned tag
+    `minio/minio:RELEASE.2025-09-07T16-13-09Z`;
+  - added the local-only OpenSearch initial admin password required by the
+    OpenSearch 2.15 container.
+- Updated traceability for `FND-008` and new `CI-021`.
+
+Validation:
+
+- `winget show --id Docker.DockerDesktop -e`: found Docker Desktop 4.81.0.
+- `winget install --id Docker.DockerDesktop -e --accept-package-agreements --accept-source-agreements --disable-interactivity`:
+  successfully installed Docker Desktop.
+- `docker version`: Docker client/server 29.6.1 became available after
+  starting Docker Desktop.
+- `docker manifest inspect minio/minio:RELEASE.2025-09-07T16-13-09Z`:
+  verified the pinned MinIO tag exists.
+- `.venv\Scripts\python scripts\ci\check_local_runtime_config.py`: validated
+  9 services and 3 volumes.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_local_runtime_config.py -q`:
+  9 passed.
+- `.venv\Scripts\python -m ruff check scripts\ci\check_local_runtime_config.py apps\api\tests\test_local_runtime_config.py`:
+  all checks passed.
+- `docker compose config --quiet`: passed.
+- First `docker compose up -d --build` found host port `8000` was already
+  occupied by process `Manager`, so runtime smoke used a temporary Compose
+  override with API on `18000` and console on `13000`.
+- `docker compose up -d --build` with the temporary override built API and
+  console images and started all 9 services.
+- Live smoke results:
+  - `GET http://127.0.0.1:18000/health`: 200.
+  - `GET http://127.0.0.1:18000/metrics`: 200.
+  - `GET http://127.0.0.1:13000`: 200.
+  - `GET http://127.0.0.1:9090/-/ready`: 200.
+  - `GET http://127.0.0.1:3001/api/health`: 200.
+  - `GET http://127.0.0.1:9000/minio/health/live`: 200.
+  - `GET http://127.0.0.1:9200`: 200.
+  - `docker compose exec -T postgres pg_isready -U hallu -d hallu_defense`:
+    accepting connections.
+  - `docker compose exec -T redis redis-cli ping`: PONG.
+- `docker compose down --remove-orphans`: removed runtime containers and
+  network after validation.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_local_runtime_config.py apps\api\tests\test_worklog.py apps\api\tests\test_traceability_matrix.py -q`:
+  21 passed.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 322 passed, 1 FastAPI
+  TestClient deprecation warning.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  all checks passed.
+- `.venv\Scripts\python -m mypy apps\api\src`: success, no issues in 37
+  source files.
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
+- `.venv\Scripts\python scripts\ci\check_foundation_infra.py`: validated 29
+  paths, 16 Makefile targets, and 3 workflow files.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  151 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 87 entries.
+- Final `docker compose config --quiet`: passed.
+
+Remaining risks:
+
+- The default host port `8000` is occupied on this machine, so the live smoke
+  used a temporary port override; the committed Compose file still validates
+  with the standard `8000:8000` mapping.
+- CI now validates Compose statically but does not start the full local stack.
+- Kubernetes, Helm, and Terraform deployment paths remain outside this slice.

@@ -60,6 +60,8 @@ jobs:
         run: python scripts/ci/python_dependency_audit.py
       - name: Check Grafana dashboards
         run: python scripts/ci/check_grafana_dashboards.py
+      - name: Check local runtime config
+        run: python scripts/ci/check_local_runtime_config.py
 
   typescript:
     runs-on: ubuntu-latest

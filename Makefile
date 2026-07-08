@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run python-audit container-scan-config security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run python-audit container-scan-config security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -59,6 +59,9 @@ evals-scenarios:
 
 dashboard-lint:
 	$(PY) scripts/ci/check_grafana_dashboards.py
+
+local-runtime-config:
+	$(PY) scripts/ci/check_local_runtime_config.py
 
 encryption-config:
 	$(PY) scripts/ci/check_encryption_config.py
