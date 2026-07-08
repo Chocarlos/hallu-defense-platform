@@ -19,6 +19,8 @@ jobs:
           python -m pip install -e "apps/api[dev]"
       - name: Test API
         run: pytest apps/api/tests
+      - name: Check OpenAPI drift
+        run: python scripts/ci/check_openapi.py
       - name: Install OPA
         uses: open-policy-agent/setup-opa@v2.4.0
         with:

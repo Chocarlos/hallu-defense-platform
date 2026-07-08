@@ -6,5 +6,10 @@
 make openapi
 ```
 
-Do not edit generated OpenAPI by hand.
+CI checks the committed artifact with:
 
+```powershell
+make openapi-check
+```
+
+Do not edit generated OpenAPI by hand.
