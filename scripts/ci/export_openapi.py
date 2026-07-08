@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - fallback for minimal environments
-    yaml = None
+import yaml
 
 from hallu_defense.main import app
 
@@ -23,9 +19,7 @@ def build_openapi_schema() -> dict[str, object]:
 
 
 def render_openapi(schema: Mapping[str, object]) -> str:
-    if yaml is not None:
-        return yaml.safe_dump(dict(schema), sort_keys=False, allow_unicode=False)
-    return json.dumps(schema, indent=2) + "\n"
+    return yaml.safe_dump(dict(schema), sort_keys=False, allow_unicode=False)
 
 
 def write_openapi(output_path: Path = OUTPUT) -> None:
