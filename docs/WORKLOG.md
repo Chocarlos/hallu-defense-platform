@@ -1,5 +1,53 @@
 # Worklog
 
+## 2026-07-08 - Fable project context package
+
+Slice selected:
+
+- Added the durable context package Fable must read before any implementation
+  delegation.
+
+Implementation:
+
+- Added `docs/development/fable-project-brief.md` with the product mission,
+  architecture, prior Codex work, current state, operating rules, end-state
+  definition, and near-term direction.
+- Added `docs/development/fable-prior-session-report.md` preserving the
+  user-supplied previous-session report, including RAG structural chunking,
+  eval history/console work, validation evidence, and the earlier Fable/Git
+  blocker.
+- Updated `.claude/workflows/fable-delegate.js` so write mode requires
+  `goal` and `acceptance`, injects the project brief plus prior-session report,
+  and returns `projectBriefRead`, `priorSessionReportRead`, and
+  `acceptanceMet`.
+- Updated `.claude/agents/fable-platform-engineer.md` and
+  `docs/development/fable-delegation.md` so the context docs are part of the
+  required orientation.
+- Committed the context package as
+  `4da8223 chore: add fable project context package` and fast-forwarded the
+  persistent `fable5/delegation` worktree to that commit.
+
+Validation:
+
+- `node --check .claude\workflows\fable-delegate.js`: passed.
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
+- `git diff --check`: no whitespace errors; Windows CRLF warnings only.
+- Claude Code workflow probe `wf_e4e6e96f-aa3` returned `success=true`,
+  `projectBriefRead=true`, `priorSessionReportRead=true`,
+  `acceptanceMet=true`, `HEAD=4da8223`, and `changedFiles=[]`.
+- `git -C .claude\worktrees\fable5-delegation log --oneline -1`: confirmed
+  the persistent Fable worktree was at `4da8223` before this worklog update.
+
+Remaining risks:
+
+- Direct `mcp__claude_code.Agent` still has no registered local agent types in
+  this session.
+- Fable workflow worktrees do not include `.venv` or `node_modules`; first
+  write-mode tasks must either bootstrap dependencies in the worktree or return
+  a diff for Codex to validate from the main workspace.
+- No Fable-generated product diff has been integrated yet; the first write-mode
+  task should be small and additive.
+
 ## 2026-07-08 - Claude Fable delegation path repaired
 
 Slice selected:
