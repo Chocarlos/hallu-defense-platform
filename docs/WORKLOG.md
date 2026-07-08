@@ -1,5 +1,63 @@
 # Worklog
 
+## 2026-07-08 - Claude Fable delegation path repaired
+
+Slice selected:
+
+- Focused only on making Claude Fable 5 usable as a delegated teammate for
+  future project work.
+
+Diagnosis:
+
+- The repository had no valid `HEAD`, so git worktree isolation could not work.
+- `.claude-fable-work/` was not ignored and could have been accidentally added
+  to the product repository.
+- Direct `mcp__claude_code.Agent` launch with
+  `subagent_type=fable-platform-engineer` still fails in this session because
+  the Claude Code MCP reports no registered local agent types.
+- The Claude Code `Workflow` path can launch real `claude-fable-5` subagents.
+
+Implementation:
+
+- Updated `.gitignore` so `.claude-fable-work/`, `.claude/worktrees/`, and
+  `.claude/settings.local.json` are excluded from product commits.
+- Created the initial repository baseline commit:
+  `8dec1b3 chore: establish repository baseline`.
+- Created persistent Fable branch/worktree:
+  `fable5/delegation` at `.claude/worktrees/fable5-delegation`.
+- Added reusable workflow `.claude/workflows/fable-delegate.js`, which delegates
+  one scoped task to Fable with `model: "fable"` and git worktree isolation.
+- Added `docs/development/fable-delegation.md` with the operating procedure,
+  isolation rules, evidence, and integration protocol.
+- Updated `docs/TRACEABILITY_MATRIX.md` with `FND-012`.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found
+  before creating the baseline commit.
+- `git diff --check`: passed before the baseline commit.
+- `git rev-parse --verify HEAD`: resolved
+  `8dec1b3b4c63ba65fad7a9664da68e88bbbc644a` after the commit.
+- Inline Claude Code workflow probe `wf_55d0feb2-b18`: returned
+  `model=claude-fable-5`, `headResolves=true`, `shortHead=8dec1b3`,
+  `agentsMdVisible=true`, and clean isolated worktree.
+- `git worktree add -b fable5/delegation .claude\worktrees\fable5-delegation HEAD`:
+  created the persistent delegation worktree.
+- `git -C .claude\worktrees\fable5-delegation status --short --branch`:
+  reported `## fable5/delegation`.
+- `node --check .claude\workflows\fable-delegate.js`: passed.
+- Saved workflow probe `wf_6874c64f-008`: returned `success=true`,
+  `mode=read`, `HEAD=8dec1b3`, `AGENTS.md` and required docs visible, clean
+  isolated worktree, and no changed files.
+
+Remaining risks:
+
+- Direct `mcp__claude_code.Agent` remains unavailable for named local agents in
+  this MCP session; use `mcp__claude_code.Workflow` and the saved
+  `.claude/workflows/fable-delegate.js` route for Fable delegation.
+- Future Fable write-mode output must still be inspected, validated, and
+  integrated by Codex before product claims are made.
+
 ## 2026-07-08 - RAG OpenSearch tenant-scoped document IDs
 
 Slice selected:
