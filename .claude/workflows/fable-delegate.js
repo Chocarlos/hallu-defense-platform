@@ -13,14 +13,44 @@ if (!task) {
 }
 
 const mode = args?.mode === 'write' ? 'write' : 'read'
+const goal = typeof args?.goal === 'string' ? args.goal.trim() : ''
+const additionalContext = typeof args?.context === 'string' ? args.context.trim() : ''
+const acceptance = typeof args?.acceptance === 'string' ? args.acceptance.trim() : ''
 const validation =
   typeof args?.validation === 'string' && args.validation.trim()
     ? args.validation.trim()
     : 'Run the smallest deterministic validation that proves the delegated result.'
 
+if (mode === 'write' && !goal) {
+  throw new Error('Pass args.goal before delegating write-mode implementation.')
+}
+
+if (mode === 'write' && !acceptance) {
+  throw new Error('Pass args.acceptance before delegating write-mode implementation.')
+}
+
 phase('Delegate')
 
 const prompt = `You are Claude Fable 5 working as a scoped teammate on this enterprise anti-hallucination repository.
+
+Before any task work, orient yourself with:
+- AGENTS.md
+- docs/PLAN_MASTER.md
+- docs/TRACEABILITY_MATRIX.md
+- docs/WORKLOG.md
+- docs/development/fable-project-brief.md
+- docs/development/fable-prior-session-report.md
+
+The project brief contains the mission, product goal, history of Codex work,
+current known state, operating rules, end-state definition, and near-term
+direction. Treat it as canonical orientation, but inspect the current repository
+state because direct evidence wins if the brief is stale.
+
+Overall goal:
+${goal || 'Orient on the repository and advance only the explicitly delegated scope.'}
+
+Additional context from Codex:
+${additionalContext || 'No extra context supplied beyond the canonical project brief.'}
 
 Task:
 ${task}
@@ -36,10 +66,15 @@ Repository rules:
 - If mode is "read", do not edit files.
 - If mode is "write", implement only the delegated slice, add or update focused tests, and update docs only when required by repository rules.
 
+Acceptance criteria:
+${acceptance || 'Read-only or exploratory delegation: return findings, evidence, risks, and recommended next slice without editing files.'}
+
 Expected validation:
 ${validation}
 
-Return a concise integration report. Include changed files, validation commands and outcomes, residual risks, and any notes Codex needs before integrating your work.`
+Return a concise integration report. Include changed files, validation commands
+and outcomes, residual risks, whether the project brief was read, and any notes
+Codex needs before integrating your work.`
 
 const result = await agent(prompt, {
   label: 'fable-delegate',
@@ -76,6 +111,9 @@ const result = await agent(prompt, {
         items: { type: 'string' },
       },
       integrationNotes: { type: 'string' },
+      projectBriefRead: { type: 'boolean' },
+      priorSessionReportRead: { type: 'boolean' },
+      acceptanceMet: { type: 'boolean' },
     },
     required: [
       'success',
@@ -86,6 +124,9 @@ const result = await agent(prompt, {
       'validation',
       'risks',
       'integrationNotes',
+      'projectBriefRead',
+      'priorSessionReportRead',
+      'acceptanceMet',
     ],
   },
 })

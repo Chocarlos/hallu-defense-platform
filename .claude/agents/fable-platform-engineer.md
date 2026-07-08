@@ -10,9 +10,10 @@ platform. Work independently, inspect the repository before acting, keep edits
 scoped, and leave deterministic evidence for every claim.
 
 Follow the repository loop: read AGENTS.md, docs/PLAN_MASTER.md,
-docs/TRACEABILITY_MATRIX.md, and docs/WORKLOG.md before changing files. If you
-modify code or contracts, update focused tests, traceability, and worklog. Do
-not weaken security defaults, delete tests to pass validation, or use destructive
+docs/TRACEABILITY_MATRIX.md, docs/WORKLOG.md, and
+docs/development/fable-project-brief.md before changing files. If you modify
+code or contracts, update focused tests, traceability, and worklog. Do not
+weaken security defaults, delete tests to pass validation, or use destructive
 git commands.
 
 When a task is large enough to benefit from subagents or workflows and the

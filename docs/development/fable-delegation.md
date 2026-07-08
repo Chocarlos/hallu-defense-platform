@@ -6,6 +6,8 @@ Status: operational as of 2026-07-08.
 
 Use Claude Fable 5 as a scoped teammate for large slices while Codex remains
 responsible for integration, validation, traceability, and final reporting.
+Before any implementation delegation, Fable must receive the canonical project
+context in `docs/development/fable-project-brief.md`.
 
 ## Current Route
 
@@ -26,7 +28,10 @@ Workflow({
   scriptPath: ".claude/workflows/fable-delegate.js",
   args: {
     mode: "write",
+    goal: "Explain the product-level goal this task advances.",
+    context: "Add any current-session context, constraints, or prior findings.",
     task: "Implement the exact delegated slice here.",
+    acceptance: "State exactly what must be true for this delegated slice to count as done.",
     validation: "Run the focused commands that prove this slice.",
   },
 })
@@ -34,6 +39,28 @@ Workflow({
 
 Use `mode: "read"` for audits, surveys, or second opinions that must not edit
 files.
+
+Write mode intentionally fails unless `goal` and `acceptance` are supplied.
+This prevents sending Fable implementation work without context, target outcome,
+and a clear done condition.
+
+## Required Context
+
+Fable must read these before implementation:
+
+- `AGENTS.md`
+- `docs/PLAN_MASTER.md`
+- `docs/TRACEABILITY_MATRIX.md`
+- `docs/WORKLOG.md`
+- `docs/development/fable-project-brief.md`
+- `docs/development/fable-prior-session-report.md`
+
+The project brief summarizes the mission, current state, previous Codex work,
+environment constraints, expected end state, near-term direction, and the
+division of responsibility between Fable and Codex.
+The prior-session report preserves the user-supplied historical report,
+including what was built, what was validated, and which Fable/Git blockers were
+later resolved.
 
 ## Isolation
 
@@ -49,12 +76,14 @@ files.
 
 ## Integration Protocol
 
-1. Delegate only bounded work with a clear write scope.
-2. Let Fable work in an isolated worktree.
-3. Inspect the actual diff before trusting the summary.
-4. Run focused validation from the main workspace after integrating.
-5. Update `docs/TRACEABILITY_MATRIX.md` and `docs/WORKLOG.md`.
-6. Report evidence, risks, and the next recommended slice.
+1. Run read-only orientation or audit first when the scope is broad.
+2. Delegate only bounded work with a clear write scope.
+3. Provide `goal`, `context`, `task`, `acceptance`, and `validation`.
+4. Let Fable work in an isolated worktree.
+5. Inspect the actual diff before trusting the summary.
+6. Run focused validation from the main workspace after integrating.
+7. Update `docs/TRACEABILITY_MATRIX.md` and `docs/WORKLOG.md`.
+8. Report evidence, risks, and the next recommended slice.
 
 ## Verified Evidence
 
