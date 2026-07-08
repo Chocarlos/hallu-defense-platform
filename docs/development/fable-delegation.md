@@ -66,9 +66,12 @@ later resolved.
 
 - Main repository branch: `master`.
 - Baseline commit that fixed missing `HEAD`: `8dec1b3`.
+- Pre-refresh verified delegation context commit: `4ac9df5`.
 - Persistent Fable branch: `fable5/delegation`.
 - Persistent Fable worktree:
   `.claude/worktrees/fable5-delegation`.
+- Keep `master` and `fable5/delegation` aligned before launching write-mode
+  implementation work.
 - Temporary workflow worktrees are created under `.claude/worktrees/` and are
   ignored by Git.
 - Legacy auxiliary copies `.codex-fable-work/` and `.claude-fable-work/` are
@@ -88,8 +91,14 @@ later resolved.
 ## Verified Evidence
 
 - `git rev-parse --verify HEAD` resolves to
-  `8dec1b3b4c63ba65fad7a9664da68e88bbbc644a`.
+  `4ac9df52d37c5999c6aaae7c567c124e51b9a026`.
+- `git rev-parse --verify fable5/delegation` resolves to the same commit.
 - Fable workflow probe returned `model: "claude-fable-5"`,
   `headResolves: true`, `shortHead: "8dec1b3"`, and
   `agentsMdVisible: true`.
-- Dedicated worktree `fable5/delegation` exists at commit `8dec1b3`.
+- Saved context-package workflow probe `wf_e4e6e96f-aa3` returned
+  `success=true`, `projectBriefRead=true`, `priorSessionReportRead=true`,
+  `acceptanceMet=true`, and no changed files.
+- Dedicated worktree `fable5/delegation` existed at commit `4ac9df5` before
+  the coordination refresh and must be fast-forwarded with `master` before
+  follow-up write-mode delegations.
