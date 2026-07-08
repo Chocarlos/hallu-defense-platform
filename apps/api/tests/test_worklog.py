@@ -64,7 +64,7 @@ def test_worklog_validator_accepts_committed_document() -> None:
     entries = validate_worklog(WORKLOG_PATH.read_text(encoding="utf-8"))
 
     assert len(entries) >= 80
-    assert entries[-1].title == "FND-001/FND-002/FND-005 foundation docs gate"
+    assert entries[-1].title == "FND-006/FND-007/FND-009 foundation infra gate"
 
 
 def test_worklog_validator_rejects_malformed_heading() -> None:

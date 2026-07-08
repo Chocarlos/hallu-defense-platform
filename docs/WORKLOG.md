@@ -5086,3 +5086,55 @@ Remaining risks:
 - The gate checks durable documentation structure and required markers. It does
   not make the master plan or ADR decisions accepted product evidence by
   itself.
+
+## 2026-07-08 - FND-006/FND-007/FND-009 foundation infra gate
+
+Slice selected:
+
+- Closed the remaining small foundation infrastructure gaps for monorepo
+  skeleton, standard task runner, and initial CI wiring.
+- Kept the slice below the large-task threshold: no product API, RAG, replay,
+  approval workflow, live deployment, or Fable-reserved implementation changed.
+
+Implementation:
+
+- Added `scripts/ci/check_foundation_infra.py` to validate:
+  - required app/package/infra/eval/script paths;
+  - root Node workspace and script wiring;
+  - API Python project metadata and dev dependencies;
+  - standard Makefile targets, `.PHONY` coverage, virtualenv Python selection,
+    and expected command markers;
+  - `ci.yml`, `security.yml`, and `evals.yml` presence plus backend and
+    TypeScript CI markers.
+- Added `apps/api/tests/test_foundation_infra.py` with current-repo validation
+  and focused negative tests for missing paths, workspaces, Makefile targets,
+  Makefile command bodies, CI steps, and workflow files.
+- Added `foundation-infra-check` to `Makefile`.
+- Wired `python scripts/ci/check_foundation_infra.py` into backend CI.
+- Updated traceability for `FND-006`, `FND-007`, `FND-009`, and new `CI-020`.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\check_foundation_infra.py`: validated 29
+  paths, 16 Makefile targets, and 3 workflow files.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_foundation_infra.py -q`:
+  7 passed.
+- `.venv\Scripts\python -m ruff check scripts\ci\check_foundation_infra.py apps\api\tests\test_foundation_infra.py`:
+  all checks passed.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_foundation_infra.py apps\api\tests\test_foundation_docs.py apps\api\tests\test_traceability_matrix.py apps\api\tests\test_worklog.py -q`:
+  25 passed.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 313 passed, 1 FastAPI
+  TestClient deprecation warning.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  all checks passed.
+- `.venv\Scripts\python scripts\ci\check_foundation_docs.py`: validated 7 ADR
+  files.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  150 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 86 entries.
+
+Remaining risks:
+
+- This is a static infrastructure gate. It does not prove Docker/Compose
+  runtime behavior, installed local `make`, or remote GitHub Actions execution.
+- `FND-008`, `TS-004`, and `TS-005` remain outside this lightweight slice.
