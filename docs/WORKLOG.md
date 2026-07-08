@@ -4945,3 +4945,44 @@ Remaining risks:
 - These tests lock current deterministic behavior. They do not add richer
   linguistic extraction, broader taxonomy calibration, or prose-preserving
   response repair.
+
+## 2026-07-08 - SEC-006 secret scan tests
+
+Slice selected:
+
+- Closed the small SEC-006 coverage gap by making the pattern-based secret
+  scanner directly testable and adding focused tests.
+- This remained a lightweight CI/security hardening slice; it did not touch
+  provider credentials, Vault runtime integration, or deployment secrets.
+
+Implementation:
+
+- Refactored `scripts/ci/secret_scan.py` so the tree scan returns a
+  `SecretScanResult` from `scan_tree()` while preserving the existing CLI
+  behavior in `main()`.
+- Added `.claude` to the local generated/tooling skip list so local Fable
+  worktrees and transcripts do not create duplicate or irrelevant local scan
+  surface. CI behavior for committed files remains unchanged because `.claude`
+  is not part of the checked-out source tree.
+- Added `apps/api/tests/test_secret_scan.py` covering synthetic secret
+  assignment detection, private-key marker detection, generated/local tooling
+  skips, lockfile/binary skips, and cleanliness of the current repository.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `SEC-006`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_secret_scan.py -q`:
+  5 passed.
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
+- `.venv\Scripts\python -m ruff check scripts\ci\secret_scan.py apps\api\tests\test_secret_scan.py`:
+  all checks passed.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 294 passed, 1 FastAPI
+  TestClient deprecation warning.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  147 requirement rows.
+
+Remaining risks:
+
+- The scanner remains deterministic and pattern-based. It is a CI guardrail,
+  not a replacement for Vault-backed runtime secret management or manual
+  review of novel secret formats.
