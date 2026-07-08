@@ -1,0 +1,9 @@
+{
+  "trace_id": "tr_error_0001",
+  "error": "validation_error",
+  "message": "Request payload failed validation.",
+  "details": {
+    "field": "message_text"
+  }
+}
+

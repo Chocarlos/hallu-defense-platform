@@ -1,0 +1,8 @@
+{
+  "scenario_count": 1,
+  "passed_count": 1,
+  "pass_rate": 1.2,
+  "category_pass_rate": {
+    "code_agents": 1.0
+  }
+}

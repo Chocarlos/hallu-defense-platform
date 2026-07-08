@@ -1,0 +1,35 @@
+{
+  "schema_version": "auth-policy.v1",
+  "production": {
+    "auth_required": true,
+    "claims_mode": "oidc_jwt",
+    "roles_source": "verified_principal",
+    "allow_unsigned_claim_headers": false,
+    "tenant_source": "verified_jwt_claim",
+    "jwt_signature_source": "jwks",
+    "jwks_source": ["path", "url", "discovery"],
+    "jwt_algorithms": ["RS256"],
+    "oidc_issuer_required": true,
+    "oidc_audience_required": true,
+    "oidc_jwks_required": true,
+    "jwks_refresh_on_unknown_kid": true,
+    "jwks_remote_cache_required": true
+  },
+  "trusted_gateway": {
+    "claims_mode": "signed_headers",
+    "tenant_header_must_be_signed": true,
+    "signing_key_reference": "auth/trusted-header-signing-key"
+  },
+  "local_development": {
+    "auth_required_default": false,
+    "claims_mode_default": "unsigned_headers",
+    "allowed": true
+  },
+  "runtime_controls": {
+    "endpoint_role_matrix_required": true,
+    "admin_superrole_allowed": true,
+    "approval_decisions_always_require_reviewer": true,
+    "signed_claims_require_timestamp": true,
+    "signed_claims_replay_window_seconds_max": 300
+  }
+}

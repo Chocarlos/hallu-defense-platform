@@ -1,0 +1,173 @@
+{
+  "$schema": "https://hallu-defense.local/schemas/encryption-policy.v1.json",
+  "schema_version": "encryption-policy.v1",
+  "defaults": {
+    "in_transit": {
+      "required": true,
+      "minimum_tls_version": "1.3",
+      "external_plaintext_allowed": false,
+      "mutual_tls_required_for_service_mesh": true
+    },
+    "at_rest": {
+      "required": true,
+      "algorithm": "AES-256-GCM",
+      "key_management": "vault-compatible-kms",
+      "plaintext_persistent_volumes_allowed": false
+    }
+  },
+  "components": {
+    "api": {
+      "profile": "active",
+      "data_classes": ["requests", "audit_events", "verification_runs"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "tls_terminated_at_ingress"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256-GCM",
+        "key_management": "vault-compatible-kms",
+        "scope": "logs_runtime_artifacts_and_future_persistent_ledger"
+      },
+      "local_dev_exemptions": ["localhost_http_only"]
+    },
+    "console": {
+      "profile": "active",
+      "data_classes": ["browser_sessions", "approval_workflow_metadata"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "tls_terminated_at_ingress"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256-GCM",
+        "key_management": "vault-compatible-kms",
+        "scope": "build_cache_and_future_user_preferences"
+      },
+      "local_dev_exemptions": ["localhost_http_only"]
+    },
+    "postgres": {
+      "profile": "active",
+      "data_classes": ["tenant_data", "audit_ledger", "verification_runs"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "database_tls"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "database_volume_and_backups"
+      },
+      "local_dev_exemptions": ["container_private_network_plaintext", "local_unencrypted_volume_allowed"]
+    },
+    "redis": {
+      "profile": "active",
+      "data_classes": ["queues", "short_lived_cache"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "service_tls"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "encrypted_volume_required_if_persistence_is_enabled"
+      },
+      "local_dev_exemptions": ["container_private_network_plaintext"]
+    },
+    "minio": {
+      "profile": "active",
+      "data_classes": ["artifacts", "eval_reports", "future_evidence_blobs"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "s3_tls"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "SSE-KMS-AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "object_storage_buckets"
+      },
+      "local_dev_exemptions": ["localhost_http_only", "local_unencrypted_volume_allowed"]
+    },
+    "prometheus": {
+      "profile": "active",
+      "data_classes": ["metrics"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "tls_terminated_at_ingress"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "time_series_volume"
+      },
+      "local_dev_exemptions": ["localhost_http_only", "local_unencrypted_volume_allowed"]
+    },
+    "grafana": {
+      "profile": "active",
+      "data_classes": ["dashboards", "operator_sessions"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "tls_terminated_at_ingress"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "dashboard_state_and_future_database"
+      },
+      "local_dev_exemptions": ["localhost_http_only"]
+    },
+    "otel-collector": {
+      "profile": "active",
+      "data_classes": ["traces"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "otlp_tls"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "buffered_trace_storage_if_enabled"
+      },
+      "local_dev_exemptions": ["container_private_network_plaintext"]
+    },
+    "opensearch": {
+      "profile": "active",
+      "data_classes": ["document_index", "retrieval_metadata"],
+      "in_transit": {
+        "required": true,
+        "minimum_tls_version": "1.3",
+        "external_plaintext_allowed": false,
+        "mode": "cluster_tls"
+      },
+      "at_rest": {
+        "required": true,
+        "algorithm": "AES-256",
+        "key_management": "vault-compatible-kms",
+        "scope": "index_volumes_and_snapshots"
+      },
+      "local_dev_exemptions": ["container_private_network_plaintext", "local_unencrypted_volume_allowed"]
+    }
+  }
+}

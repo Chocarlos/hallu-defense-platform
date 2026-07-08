@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-smoke-report.schema.json",
+  "title": "EvalSmokeReport",
+  "type": "object",
+  "required": ["metrics", "scenarios"],
+  "properties": {
+    "metrics": { "$ref": "eval-smoke-metrics.schema.json" },
+    "scenarios": {
+      "type": "array",
+      "items": { "$ref": "eval-smoke-scenario-result.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

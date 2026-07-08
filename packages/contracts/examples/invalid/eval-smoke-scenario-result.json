@@ -1,0 +1,17 @@
+{
+  "id": "",
+  "latency_ms": -1,
+  "expected_final_decision": "allow",
+  "final_decision": "maybe",
+  "trace_present": true,
+  "claim_ledger_present": true,
+  "verdict_ledger_present": true,
+  "expected_claims": ["Full-time employees receive 15 days of paid vacation per year"],
+  "actual_claims": ["full-time employees receive 15 days of paid vacation per year"],
+  "expected_unsupported_claims": [],
+  "unsupported_hits": 0,
+  "supported_verdicts": 1,
+  "supported_verdicts_with_evidence": 1,
+  "verdict_count": 1,
+  "cost_usd": 0.0
+}

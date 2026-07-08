@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/audit-export-request.schema.json",
+  "title": "AuditExportRequest",
+  "type": "object",
+  "properties": {
+    "tenant_id": { "type": ["string", "null"] },
+    "trace_id": { "type": ["string", "null"], "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "include_events": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

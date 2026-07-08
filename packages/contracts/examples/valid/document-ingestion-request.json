@@ -1,0 +1,11 @@
+{
+  "documents": [
+    {
+      "source_ref": "hr-manual-v7",
+      "content": "Full-time employees receive 15 days of paid vacation per year.",
+      "authority": "internal",
+      "metadata": { "department": "hr" }
+    }
+  ],
+  "corpus_id": "hr"
+}

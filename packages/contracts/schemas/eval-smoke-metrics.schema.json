@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-smoke-metrics.schema.json",
+  "title": "EvalSmokeMetrics",
+  "type": "object",
+  "required": [
+    "scenario_count",
+    "final_decision_accuracy",
+    "trace_coverage",
+    "claim_ledger_coverage",
+    "verdict_ledger_coverage",
+    "claim_precision",
+    "claim_recall",
+    "unsupported_claim_recall",
+    "groundedness",
+    "faithfulness",
+    "false_positive_blocking",
+    "critical_pass_through",
+    "p95_latency_ms",
+    "cost_per_run_usd"
+  ],
+  "properties": {
+    "scenario_count": { "type": "integer", "minimum": 0 },
+    "final_decision_accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+    "trace_coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+    "claim_ledger_coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+    "verdict_ledger_coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+    "claim_precision": { "type": "number", "minimum": 0, "maximum": 1 },
+    "claim_recall": { "type": "number", "minimum": 0, "maximum": 1 },
+    "unsupported_claim_recall": { "type": "number", "minimum": 0, "maximum": 1 },
+    "groundedness": { "type": "number", "minimum": 0, "maximum": 1 },
+    "faithfulness": { "type": "number", "minimum": 0, "maximum": 1 },
+    "false_positive_blocking": { "type": "number", "minimum": 0, "maximum": 1 },
+    "critical_pass_through": { "type": "number", "minimum": 0, "maximum": 1 },
+    "p95_latency_ms": { "type": "number", "minimum": 0 },
+    "cost_per_run_usd": { "type": "number", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,12 @@
+{
+  "evidence_id": "ev_bad",
+  "kind": "document_chunk",
+  "content": "",
+  "structured_content": {},
+  "authority": "internal",
+  "freshness": {
+    "retrieved_at": "not-a-date",
+    "staleness_class": "fresh"
+  }
+}
+

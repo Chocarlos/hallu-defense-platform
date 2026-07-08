@@ -1,0 +1,120 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    environment:
+      HALLU_DEFENSE_ENV: local
+      HALLU_DEFENSE_AUTH_REQUIRED: "false"
+      HALLU_DEFENSE_ALLOWED_WORKSPACE: /workspace
+      HALLU_DEFENSE_OTEL_ENABLED: "true"
+      HALLU_DEFENSE_OTEL_SERVICE_NAME: hallu-defense-api
+      HALLU_DEFENSE_OTEL_EXPORTER: otlp
+      HALLU_DEFENSE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+      HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
+      HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200
+      HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/workspace:ro
+    depends_on:
+      - otel-collector
+      - postgres
+      - redis
+      - opensearch
+
+  console:
+    build:
+      context: .
+      dockerfile: infra/docker/console.Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: hallu
+      POSTGRES_PASSWORD: hallu
+      POSTGRES_DB: hallu_defense
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/rag/pgvector:/docker-entrypoint-initdb.d:ro
+
+  opensearch:
+    image: opensearchproject/opensearch:2.15.0
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:RELEASE.2026-06-13T11-33-47Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  postgres-data:
+  minio-data:
+  opensearch-data:

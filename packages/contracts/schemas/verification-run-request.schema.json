@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-run-request.schema.json",
+  "title": "VerificationRunRequest",
+  "type": "object",
+  "required": ["message_text"],
+  "properties": {
+    "tenant_id": { "type": ["string", "null"] },
+    "message_text": { "type": "string", "minLength": 1 },
+    "documents": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/document-input.schema.json" }
+    },
+    "tool_outputs": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/evidence.schema.json" }
+    },
+    "execution_artifacts": { "type": "object", "additionalProperties": true },
+    "task_type": { "type": "string", "minLength": 1 },
+    "message_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

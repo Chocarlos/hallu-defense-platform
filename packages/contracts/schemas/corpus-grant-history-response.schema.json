@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/corpus-grant-history-response.schema.json",
+  "title": "CorpusGrantHistoryResponse",
+  "type": "object",
+  "required": ["grants", "next_cursor"],
+  "properties": {
+    "grants": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/corpus-grant.schema.json" }
+    },
+    "next_cursor": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "additionalProperties": false
+}

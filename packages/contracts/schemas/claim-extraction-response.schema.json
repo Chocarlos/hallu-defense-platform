@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/claim-extraction-response.schema.json",
+  "title": "ClaimExtractionResponse",
+  "type": "object",
+  "required": ["claims"],
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/claim.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

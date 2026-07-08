@@ -1,0 +1,28 @@
+{
+  "name": "hallu-defense-platform",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/contracts",
+    "packages/sdk",
+    "packages/agent-adapters",
+    "packages/mcp-server",
+    "apps/console"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:console": "npm --workspace @hallu-defense/console run dev",
+    "mcp": "npm --workspace @hallu-defense/mcp-server run dev"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

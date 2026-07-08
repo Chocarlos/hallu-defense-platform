@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/evidence-retrieval-request.schema.json",
+  "title": "EvidenceRetrievalRequest",
+  "type": "object",
+  "required": ["claims"],
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/claim.schema.json" }
+    },
+    "documents": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/document-input.schema.json" }
+    },
+    "context_refs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "metadata_filter": { "type": "object", "additionalProperties": true },
+    "max_evidence_per_claim": { "type": "integer", "minimum": 1, "maximum": 10 }
+  },
+  "additionalProperties": false
+}

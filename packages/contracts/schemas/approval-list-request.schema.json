@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/approval-list-request.schema.json",
+  "title": "ApprovalListRequest",
+  "type": "object",
+  "properties": {
+    "status": { "type": ["string", "null"], "enum": ["pending", "approved", "rejected", null] },
+    "trace_id": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "additionalProperties": false
+}

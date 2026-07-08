@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/evidence-retrieval-response.schema.json",
+  "title": "EvidenceRetrievalResponse",
+  "type": "object",
+  "required": ["evidence", "claim_evidence_map"],
+  "properties": {
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/evidence.schema.json" }
+    },
+    "claim_evidence_map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": false
+}

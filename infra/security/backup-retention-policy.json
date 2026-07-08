@@ -1,0 +1,240 @@
+{
+  "$schema": "https://hallu-defense.local/schemas/backup-retention-policy.v1.json",
+  "schema_version": "backup-retention-policy.v1",
+  "defaults": {
+    "backup_encryption_required": true,
+    "restore_drill_required": true,
+    "maximum_restore_drill_interval_days": 90,
+    "tenant_scoped_deletion_required": true,
+    "deletion_audit_event_required": true
+  },
+  "retention_classes": {
+    "audit_ledger": {
+      "minimum_days": 365,
+      "description": "Append-only security and compliance audit events."
+    },
+    "verification_runs": {
+      "minimum_days": 180,
+      "description": "Verification decisions, validator traces, and verdict summaries."
+    },
+    "approval_records": {
+      "minimum_days": 365,
+      "description": "Human approval queue records and high-risk action decisions."
+    },
+    "evidence_indexes": {
+      "minimum_days": 90,
+      "description": "Search indexes and retrieval metadata derived from tenant evidence."
+    },
+    "artifacts": {
+      "minimum_days": 30,
+      "description": "Sandbox artifacts, generated reports, and captured command evidence."
+    },
+    "eval_reports": {
+      "minimum_days": 365,
+      "description": "Offline evaluation reports and quality trend artifacts."
+    },
+    "observability": {
+      "minimum_days": 30,
+      "description": "Metrics, traces, dashboard state, and operational telemetry."
+    },
+    "short_lived_cache": {
+      "minimum_days": 1,
+      "description": "Ephemeral queue or cache data that must not be treated as durable truth."
+    }
+  },
+  "components": {
+    "postgres": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["audit_ledger", "verification_runs", "approval_records"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 60,
+        "rto_minutes": 240,
+        "encrypted": true,
+        "target": "encrypted-object-storage",
+        "restore_drill_interval_days": 30
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "audit_ledger": { "days": 365 },
+          "verification_runs": { "days": 180 },
+          "approval_records": { "days": 365 }
+        }
+      }
+    },
+    "minio": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["artifacts", "eval_reports", "evidence_indexes"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 120,
+        "rto_minutes": 480,
+        "encrypted": true,
+        "target": "cross-bucket-encrypted-replica",
+        "restore_drill_interval_days": 60
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "artifacts": { "days": 30 },
+          "eval_reports": { "days": 365 },
+          "evidence_indexes": { "days": 90 }
+        }
+      }
+    },
+    "opensearch": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["evidence_indexes"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 240,
+        "rto_minutes": 480,
+        "encrypted": true,
+        "target": "encrypted-snapshot-repository",
+        "restore_drill_interval_days": 90
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "evidence_indexes": { "days": 90 }
+        }
+      }
+    },
+    "redis": {
+      "profile": "active",
+      "persistent": false,
+      "data_classes": ["short_lived_cache"],
+      "backup": {
+        "enabled": false,
+        "frequency": "not_applicable",
+        "rpo_minutes": 0,
+        "rto_minutes": 30,
+        "encrypted": true,
+        "target": "not_applicable",
+        "restore_drill_interval_days": 0
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "short_lived_cache": { "days": 1 }
+        }
+      }
+    },
+    "prometheus": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["observability"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 240,
+        "rto_minutes": 240,
+        "encrypted": true,
+        "target": "encrypted-time-series-snapshot",
+        "restore_drill_interval_days": 90
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "observability": { "days": 30 }
+        }
+      }
+    },
+    "grafana": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["observability"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 240,
+        "rto_minutes": 240,
+        "encrypted": true,
+        "target": "encrypted-dashboard-state-snapshot",
+        "restore_drill_interval_days": 90
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "observability": { "days": 30 }
+        }
+      }
+    },
+    "otel-collector": {
+      "profile": "active",
+      "persistent": false,
+      "data_classes": ["observability"],
+      "backup": {
+        "enabled": false,
+        "frequency": "not_applicable",
+        "rpo_minutes": 0,
+        "rto_minutes": 60,
+        "encrypted": true,
+        "target": "not_applicable",
+        "restore_drill_interval_days": 0
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "observability": { "days": 30 }
+        }
+      }
+    },
+    "eval-reports": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["eval_reports"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 1440,
+        "rto_minutes": 480,
+        "encrypted": true,
+        "target": "encrypted-object-storage",
+        "restore_drill_interval_days": 90
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "eval_reports": { "days": 365 }
+        }
+      }
+    },
+    "sandbox-artifacts": {
+      "profile": "active",
+      "persistent": true,
+      "data_classes": ["artifacts"],
+      "backup": {
+        "enabled": true,
+        "frequency": "daily",
+        "rpo_minutes": 1440,
+        "rto_minutes": 480,
+        "encrypted": true,
+        "target": "encrypted-object-storage",
+        "restore_drill_interval_days": 90
+      },
+      "retention": {
+        "tenant_scoped_deletion": true,
+        "audit_event_required": true,
+        "classes": {
+          "artifacts": { "days": 30 }
+        }
+      }
+    }
+  }
+}

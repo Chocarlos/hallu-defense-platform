@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: ["master", "main"]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+      - name: Test API
+        run: pytest apps/api/tests
+      - name: Install OPA
+        uses: open-policy-agent/setup-opa@v2.4.0
+        with:
+          version: 0.70.0
+          static: "true"
+      - name: Test policies
+        run: python scripts/ci/run_policy_tests.py
+      - name: Check encryption config
+        run: python scripts/ci/check_encryption_config.py
+      - name: Check auth config
+        run: python scripts/ci/check_auth_config.py
+      - name: OIDC provider smoke
+        run: python scripts/ci/oidc_provider_smoke.py
+      - name: Check secrets config
+        run: python scripts/ci/check_secrets_config.py
+      - name: Check audit ledger config
+        run: python scripts/ci/check_audit_ledger_config.py
+      - name: Check approval queue config
+        run: python scripts/ci/check_approval_queue_config.py
+      - name: Check corpus grants config
+        run: python scripts/ci/check_corpus_grants_config.py
+      - name: Check backup and retention config
+        run: python scripts/ci/check_backup_retention_config.py
+      - name: Check RAG persistence config
+        run: python scripts/ci/check_rag_persistence_config.py
+      - name: Dry-run OpenSearch template bootstrap
+        run: python scripts/dev/bootstrap_opensearch_template.py --dry-run
+      - name: Audit Python dependencies
+        run: python scripts/ci/python_dependency_audit.py
+      - name: Check Grafana dashboards
+        run: python scripts/ci/check_grafana_dashboards.py
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install API for live contract tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build

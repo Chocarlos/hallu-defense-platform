@@ -1,0 +1,3640 @@
+openapi: 3.1.0
+info:
+  title: Hallu Defense Platform
+  description: Claim-centric and action-centric hallucination defense API.
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: Health
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Health Health Get
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unprocessable Entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /metrics:
+    get:
+      summary: Metrics
+      operationId: metrics_metrics_get
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Prometheus metrics exposition.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /claims/extract:
+    post:
+      summary: Extract Claims
+      operationId: extract_claims_claims_extract_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimExtractionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimExtractionResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /claims/classify:
+    post:
+      summary: Classify Claims
+      operationId: classify_claims_claims_classify_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimClassificationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimClassificationResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /evidence/retrieve:
+    post:
+      summary: Retrieve Evidence
+      operationId: retrieve_evidence_evidence_retrieve_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvidenceRetrievalRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceRetrievalResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /documents/ingest:
+    post:
+      summary: Ingest Documents
+      operationId: ingest_documents_documents_ingest_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentIngestionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentIngestionResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /rag/corpus-grants/upsert:
+    post:
+      summary: Upsert Corpus Grant
+      operationId: upsert_corpus_grant_rag_corpus_grants_upsert_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorpusGrantUpsertRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusGrantResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /rag/corpus-grants/disable:
+    post:
+      summary: Disable Corpus Grant
+      operationId: disable_corpus_grant_rag_corpus_grants_disable_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorpusGrantDisableRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusGrantResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /rag/corpus-grants/list:
+    post:
+      summary: List Corpus Grants
+      operationId: list_corpus_grants_rag_corpus_grants_list_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorpusGrantListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusGrantListResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /rag/corpus-grants/history:
+    post:
+      summary: Corpus Grant History
+      operationId: corpus_grant_history_rag_corpus_grants_history_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorpusGrantHistoryRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusGrantHistoryResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /rag/corpus-grants/history/diff:
+    post:
+      summary: Corpus Grant History Diff
+      operationId: corpus_grant_history_diff_rag_corpus_grants_history_diff_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorpusGrantHistoryDiffRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorpusGrantHistoryDiffResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /claims/verify:
+    post:
+      summary: Verify Claims
+      operationId: verify_claims_claims_verify_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimVerificationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimVerificationResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /response/repair:
+    post:
+      summary: Repair Response
+      operationId: repair_response_response_repair_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResponseRepairRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResponseRepairResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /tools/validate-input:
+    post:
+      summary: Validate Tool Input
+      operationId: validate_tool_input_tools_validate_input_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolCallEnvelope'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolValidationResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /tools/validate-output:
+    post:
+      summary: Validate Tool Output
+      operationId: validate_tool_output_tools_validate_output_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolCallEnvelope'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolValidationResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /policy/evaluate:
+    post:
+      summary: Evaluate Policy
+      operationId: evaluate_policy_policy_evaluate_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyEvaluationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluationResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /approvals/list:
+    post:
+      summary: List Approvals
+      operationId: list_approvals_approvals_list_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalListResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /approvals/decide:
+    post:
+      summary: Decide Approval
+      operationId: decide_approval_approvals_decide_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalDecisionResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /repo/checks/run:
+    post:
+      summary: Run Repo Checks
+      operationId: run_repo_checks_repo_checks_run_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepoChecksRunRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxRun'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /audit/export:
+    post:
+      summary: Export Audit
+      operationId: export_audit_audit_export_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditExportRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditExportResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /verification/run:
+    post:
+      summary: Run Verification
+      operationId: run_verification_verification_run_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationRunRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRun'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+components:
+  schemas:
+    ApprovalDecision:
+      type: string
+      enum:
+      - approve
+      - reject
+      title: ApprovalDecision
+    ApprovalDecisionRequest:
+      properties:
+        approval_id:
+          type: string
+          minLength: 1
+          title: Approval Id
+        decision:
+          $ref: '#/components/schemas/ApprovalDecision'
+        decided_by:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Decided By
+        reason:
+          type: string
+          title: Reason
+          default: ''
+      additionalProperties: false
+      type: object
+      required:
+      - approval_id
+      - decision
+      title: ApprovalDecisionRequest
+    ApprovalDecisionResponse:
+      properties:
+        approval:
+          $ref: '#/components/schemas/ApprovalRecord'
+        execution_grant:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalExecutionGrant'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - approval
+      title: ApprovalDecisionResponse
+    ApprovalExecutionGrant:
+      properties:
+        approval_id:
+          type: string
+          minLength: 1
+          title: Approval Id
+        tenant_id:
+          type: string
+          minLength: 1
+          title: Tenant Id
+        tool_name:
+          type: string
+          minLength: 1
+          title: Tool Name
+        execution_token:
+          type: string
+          minLength: 16
+          title: Execution Token
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      additionalProperties: false
+      type: object
+      required:
+      - approval_id
+      - tenant_id
+      - tool_name
+      - execution_token
+      - expires_at
+      title: ApprovalExecutionGrant
+    ApprovalListRequest:
+      properties:
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/ApprovalStatus'
+          - type: 'null'
+          default: pending
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+      additionalProperties: false
+      type: object
+      title: ApprovalListRequest
+    ApprovalListResponse:
+      properties:
+        approvals:
+          items:
+            $ref: '#/components/schemas/ApprovalRecord'
+          type: array
+          title: Approvals
+      additionalProperties: false
+      type: object
+      required:
+      - approvals
+      title: ApprovalListResponse
+    ApprovalRecord:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        tenant_id:
+          type: string
+          title: Tenant Id
+        trace_id:
+          type: string
+          title: Trace Id
+        tool_call:
+          $ref: '#/components/schemas/ToolCallEnvelope'
+        status:
+          $ref: '#/components/schemas/ApprovalStatus'
+        risk_level:
+          $ref: '#/components/schemas/RiskLevel'
+        reason:
+          type: string
+          title: Reason
+        requested_by:
+          type: string
+          title: Requested By
+          default: system
+        decided_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decided By
+        decision_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decision Reason
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+      additionalProperties: false
+      type: object
+      required:
+      - approval_id
+      - tenant_id
+      - trace_id
+      - tool_call
+      - status
+      - risk_level
+      - reason
+      title: ApprovalRecord
+    ApprovalStatus:
+      type: string
+      enum:
+      - pending
+      - approved
+      - rejected
+      title: ApprovalStatus
+    AuditEvent:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        trace_id:
+          type: string
+          title: Trace Id
+        tenant_id:
+          type: string
+          title: Tenant Id
+        event_type:
+          type: string
+          title: Event Type
+        method:
+          type: string
+          title: Method
+        path:
+          type: string
+          title: Path
+        status_code:
+          type: integer
+          maximum: 599.0
+          minimum: 100.0
+          title: Status Code
+        outcome:
+          type: string
+          title: Outcome
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - event_id
+      - trace_id
+      - tenant_id
+      - event_type
+      - method
+      - path
+      - status_code
+      - outcome
+      title: AuditEvent
+    AuditExportRequest:
+      properties:
+        tenant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Id
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        include_events:
+          type: boolean
+          title: Include Events
+          default: true
+      additionalProperties: false
+      type: object
+      title: AuditExportRequest
+    AuditExportResponse:
+      properties:
+        trace_id:
+          type: string
+          title: Trace Id
+        runs:
+          items:
+            $ref: '#/components/schemas/VerificationRun'
+          type: array
+          title: Runs
+        events:
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+          type: array
+          title: Events
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - runs
+      title: AuditExportResponse
+    Authority:
+      type: string
+      enum:
+      - official
+      - internal
+      - trusted_third_party
+      - unknown
+      title: Authority
+    Claim:
+      properties:
+        claim_id:
+          type: string
+          title: Claim Id
+        text:
+          type: string
+          minLength: 1
+          title: Text
+        canonical_form:
+          type: string
+          title: Canonical Form
+          default: ''
+        type:
+          $ref: '#/components/schemas/ClaimType'
+          default: world_fact
+        risk_level:
+          $ref: '#/components/schemas/RiskLevel'
+          default: medium
+        requires_evidence:
+          type: boolean
+          title: Requires Evidence
+          default: true
+        source_span:
+          anyOf:
+          - $ref: '#/components/schemas/SourceSpan'
+          - type: 'null'
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      additionalProperties: false
+      type: object
+      required:
+      - claim_id
+      - text
+      title: Claim
+    ClaimClassificationRequest:
+      properties:
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        task_type:
+          type: string
+          title: Task Type
+          default: chat
+      additionalProperties: false
+      type: object
+      required:
+      - claims
+      title: ClaimClassificationRequest
+    ClaimClassificationResponse:
+      properties:
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+      type: object
+      required:
+      - claims
+      title: ClaimClassificationResponse
+    ClaimExtractionRequest:
+      properties:
+        message_text:
+          type: string
+          minLength: 1
+          title: Message Text
+        conversation_slice:
+          items:
+            type: string
+          type: array
+          title: Conversation Slice
+        tool_outputs:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Tool Outputs
+        execution_artifacts:
+          additionalProperties: true
+          type: object
+          title: Execution Artifacts
+        task_type:
+          type: string
+          title: Task Type
+          default: chat
+        message_id:
+          type: string
+          title: Message Id
+          default: draft
+      additionalProperties: false
+      type: object
+      required:
+      - message_text
+      title: ClaimExtractionRequest
+    ClaimExtractionResponse:
+      properties:
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+      type: object
+      required:
+      - claims
+      title: ClaimExtractionResponse
+    ClaimType:
+      type: string
+      enum:
+      - world_fact
+      - doc_grounded
+      - tool_observation
+      - repo_state
+      - test_result
+      - computed_value
+      - policy_claim
+      - proposed_action
+      - creative_statement
+      - opinion
+      title: ClaimType
+    ClaimVerdict:
+      properties:
+        claim_id:
+          type: string
+          title: Claim Id
+        status:
+          $ref: '#/components/schemas/VerdictStatus'
+        confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Confidence
+        evidence_ids:
+          items:
+            type: string
+          type: array
+          title: Evidence Ids
+        action:
+          $ref: '#/components/schemas/VerdictAction'
+        reason:
+          type: string
+          title: Reason
+        validator_trace:
+          additionalProperties: true
+          type: object
+          title: Validator Trace
+      additionalProperties: false
+      type: object
+      required:
+      - claim_id
+      - status
+      - confidence
+      - action
+      - reason
+      title: ClaimVerdict
+    ClaimVerificationRequest:
+      properties:
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+      additionalProperties: false
+      type: object
+      required:
+      - claims
+      title: ClaimVerificationRequest
+    ClaimVerificationResponse:
+      properties:
+        verdicts:
+          items:
+            $ref: '#/components/schemas/ClaimVerdict'
+          type: array
+          title: Verdicts
+      type: object
+      required:
+      - verdicts
+      title: ClaimVerificationResponse
+    CorpusGrant:
+      properties:
+        tenant_id:
+          type: string
+          minLength: 1
+          title: Tenant Id
+        corpus_id:
+          type: string
+          minLength: 1
+          title: Corpus Id
+        reader_roles:
+          items:
+            type: string
+          type: array
+          title: Reader Roles
+        writer_roles:
+          items:
+            type: string
+          type: array
+          title: Writer Roles
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+          default: 1
+        created_by:
+          type: string
+          minLength: 1
+          title: Created By
+        updated_by:
+          type: string
+          minLength: 1
+          title: Updated By
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        disabled_by:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Disabled By
+        disabled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Disabled At
+      additionalProperties: false
+      type: object
+      required:
+      - tenant_id
+      - corpus_id
+      - created_by
+      - updated_by
+      title: CorpusGrant
+    CorpusGrantDisableRequest:
+      properties:
+        corpus_id:
+          type: string
+          minLength: 1
+          title: Corpus Id
+        expected_version:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Version
+      additionalProperties: false
+      type: object
+      required:
+      - corpus_id
+      title: CorpusGrantDisableRequest
+    CorpusGrantHistoryDiff:
+      properties:
+        tenant_id:
+          type: string
+          minLength: 1
+          title: Tenant Id
+        corpus_id:
+          type: string
+          minLength: 1
+          title: Corpus Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        previous_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Previous Version
+        action:
+          type: string
+          enum:
+          - create
+          - update
+          - disable
+          - reenable
+          title: Action
+        changed_fields:
+          items:
+            type: string
+            enum:
+            - reader_roles
+            - writer_roles
+            - disabled_state
+          type: array
+          title: Changed Fields
+        reader_roles_added:
+          items:
+            type: string
+          type: array
+          title: Reader Roles Added
+        reader_roles_removed:
+          items:
+            type: string
+          type: array
+          title: Reader Roles Removed
+        writer_roles_added:
+          items:
+            type: string
+          type: array
+          title: Writer Roles Added
+        writer_roles_removed:
+          items:
+            type: string
+          type: array
+          title: Writer Roles Removed
+        updated_by:
+          type: string
+          minLength: 1
+          title: Updated By
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      additionalProperties: false
+      type: object
+      required:
+      - tenant_id
+      - corpus_id
+      - version
+      - action
+      - updated_by
+      - updated_at
+      title: CorpusGrantHistoryDiff
+    CorpusGrantHistoryDiffRequest:
+      properties:
+        corpus_id:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Corpus Id
+        actor_id:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Actor Id
+        updated_at_from:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At From
+        updated_at_to:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At To
+        limit:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Limit
+          default: 100
+        cursor:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Cursor
+      additionalProperties: false
+      type: object
+      title: CorpusGrantHistoryDiffRequest
+    CorpusGrantHistoryDiffResponse:
+      properties:
+        diffs:
+          items:
+            $ref: '#/components/schemas/CorpusGrantHistoryDiff'
+          type: array
+          title: Diffs
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      additionalProperties: false
+      type: object
+      required:
+      - diffs
+      title: CorpusGrantHistoryDiffResponse
+    CorpusGrantHistoryRequest:
+      properties:
+        corpus_id:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Corpus Id
+        actor_id:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Actor Id
+        updated_at_from:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At From
+        updated_at_to:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At To
+        limit:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Limit
+          default: 100
+        cursor:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Cursor
+      additionalProperties: false
+      type: object
+      title: CorpusGrantHistoryRequest
+    CorpusGrantHistoryResponse:
+      properties:
+        grants:
+          items:
+            $ref: '#/components/schemas/CorpusGrant'
+          type: array
+          title: Grants
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      additionalProperties: false
+      type: object
+      required:
+      - grants
+      title: CorpusGrantHistoryResponse
+    CorpusGrantListRequest:
+      properties:
+        corpus_id:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Corpus Id
+        include_disabled:
+          type: boolean
+          title: Include Disabled
+          default: false
+        limit:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Limit
+          default: 100
+        cursor:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Cursor
+      additionalProperties: false
+      type: object
+      title: CorpusGrantListRequest
+    CorpusGrantListResponse:
+      properties:
+        grants:
+          items:
+            $ref: '#/components/schemas/CorpusGrant'
+          type: array
+          title: Grants
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      additionalProperties: false
+      type: object
+      required:
+      - grants
+      title: CorpusGrantListResponse
+    CorpusGrantResponse:
+      properties:
+        grant:
+          $ref: '#/components/schemas/CorpusGrant'
+      additionalProperties: false
+      type: object
+      required:
+      - grant
+      title: CorpusGrantResponse
+    CorpusGrantUpsertRequest:
+      properties:
+        corpus_id:
+          type: string
+          minLength: 1
+          title: Corpus Id
+        reader_roles:
+          items:
+            type: string
+          type: array
+          title: Reader Roles
+        writer_roles:
+          items:
+            type: string
+          type: array
+          title: Writer Roles
+        expected_version:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Version
+      additionalProperties: false
+      type: object
+      required:
+      - corpus_id
+      title: CorpusGrantUpsertRequest
+    DocumentIngestionRequest:
+      properties:
+        documents:
+          items:
+            $ref: '#/components/schemas/DocumentInput'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Documents
+        corpus_id:
+          type: string
+          minLength: 1
+          title: Corpus Id
+          default: default
+      additionalProperties: false
+      type: object
+      required:
+      - documents
+      title: DocumentIngestionRequest
+    DocumentIngestionResponse:
+      properties:
+        trace_id:
+          type: string
+          title: Trace Id
+        tenant_id:
+          type: string
+          title: Tenant Id
+        corpus_id:
+          type: string
+          title: Corpus Id
+        backend:
+          type: string
+          title: Backend
+        document_count:
+          type: integer
+          minimum: 0.0
+          title: Document Count
+        indexed_count:
+          type: integer
+          minimum: 0.0
+          title: Indexed Count
+        evidence_ids:
+          items:
+            type: string
+          type: array
+          title: Evidence Ids
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - tenant_id
+      - corpus_id
+      - backend
+      - document_count
+      - indexed_count
+      title: DocumentIngestionResponse
+    DocumentInput:
+      properties:
+        source_ref:
+          type: string
+          title: Source Ref
+        content:
+          type: string
+          minLength: 1
+          title: Content
+        authority:
+          $ref: '#/components/schemas/Authority'
+          default: internal
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      additionalProperties: false
+      type: object
+      required:
+      - source_ref
+      - content
+      title: DocumentInput
+    ErrorResponse:
+      properties:
+        trace_id:
+          type: string
+          title: Trace Id
+        error:
+          type: string
+          title: Error
+        message:
+          type: string
+          title: Message
+        details:
+          additionalProperties: true
+          type: object
+          title: Details
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - error
+      - message
+      title: ErrorResponse
+    Evidence:
+      properties:
+        evidence_id:
+          type: string
+          title: Evidence Id
+        kind:
+          $ref: '#/components/schemas/EvidenceKind'
+        source_ref:
+          type: string
+          title: Source Ref
+          default: ''
+        content:
+          type: string
+          minLength: 1
+          title: Content
+        structured_content:
+          additionalProperties: true
+          type: object
+          title: Structured Content
+        authority:
+          $ref: '#/components/schemas/Authority'
+          default: unknown
+        freshness:
+          $ref: '#/components/schemas/Freshness'
+      additionalProperties: false
+      type: object
+      required:
+      - evidence_id
+      - kind
+      - content
+      title: Evidence
+    EvidenceKind:
+      type: string
+      enum:
+      - document_chunk
+      - web_source
+      - tool_output
+      - repo_file
+      - command_output
+      - policy_rule
+      - calculation
+      title: EvidenceKind
+    EvidenceRetrievalRequest:
+      properties:
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        documents:
+          items:
+            $ref: '#/components/schemas/DocumentInput'
+          type: array
+          title: Documents
+        context_refs:
+          items:
+            type: string
+          type: array
+          title: Context Refs
+        metadata_filter:
+          additionalProperties: true
+          type: object
+          title: Metadata Filter
+        max_evidence_per_claim:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Max Evidence Per Claim
+          default: 3
+      additionalProperties: false
+      type: object
+      required:
+      - claims
+      title: EvidenceRetrievalRequest
+    EvidenceRetrievalResponse:
+      properties:
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+        claim_evidence_map:
+          additionalProperties:
+            items:
+              type: string
+            type: array
+          type: object
+          title: Claim Evidence Map
+      type: object
+      required:
+      - evidence
+      - claim_evidence_map
+      title: EvidenceRetrievalResponse
+    FinalDecision:
+      type: string
+      enum:
+      - allow
+      - repaired
+      - abstained
+      - blocked
+      - require_human_review
+      title: FinalDecision
+    Freshness:
+      properties:
+        retrieved_at:
+          type: string
+          format: date-time
+          title: Retrieved At
+        published_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Published At
+        staleness_class:
+          $ref: '#/components/schemas/StalenessClass'
+          default: unknown
+      additionalProperties: false
+      type: object
+      title: Freshness
+    PolicyEvaluationRequest:
+      properties:
+        subject:
+          type: string
+          title: Subject
+          default: anonymous
+        action:
+          type: string
+          title: Action
+        resource:
+          type: string
+          title: Resource
+          default: ''
+        risk_level:
+          $ref: '#/components/schemas/RiskLevel'
+          default: medium
+        attributes:
+          additionalProperties: true
+          type: object
+          title: Attributes
+      additionalProperties: false
+      type: object
+      required:
+      - action
+      title: PolicyEvaluationRequest
+    PolicyEvaluationResponse:
+      properties:
+        trace_id:
+          type: string
+          title: Trace Id
+        allowed:
+          type: boolean
+          title: Allowed
+        action:
+          $ref: '#/components/schemas/VerdictAction'
+        policy_version:
+          type: string
+          title: Policy Version
+        matched_rules:
+          items:
+            type: string
+          type: array
+          title: Matched Rules
+        explanation:
+          type: string
+          title: Explanation
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - allowed
+      - action
+      - policy_version
+      - matched_rules
+      - explanation
+      title: PolicyEvaluationResponse
+    RepoChecksRunRequest:
+      properties:
+        repo_ref:
+          type: string
+          title: Repo Ref
+          default: .
+        commands:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          minItems: 1
+          title: Commands
+        network_policy:
+          type: string
+          enum:
+          - deny
+          - allowlisted
+          title: Network Policy
+          default: deny
+      additionalProperties: false
+      type: object
+      required:
+      - commands
+      title: RepoChecksRunRequest
+    ResponseRepairRequest:
+      properties:
+        original_text:
+          type: string
+          title: Original Text
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        verdicts:
+          items:
+            $ref: '#/components/schemas/ClaimVerdict'
+          type: array
+          title: Verdicts
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+      additionalProperties: false
+      type: object
+      required:
+      - original_text
+      - claims
+      - verdicts
+      title: ResponseRepairRequest
+    ResponseRepairResponse:
+      properties:
+        final_text:
+          type: string
+          title: Final Text
+        final_decision:
+          $ref: '#/components/schemas/FinalDecision'
+        blocked_claim_ids:
+          items:
+            type: string
+          type: array
+          title: Blocked Claim Ids
+        repaired_claim_ids:
+          items:
+            type: string
+          type: array
+          title: Repaired Claim Ids
+      type: object
+      required:
+      - final_text
+      - final_decision
+      title: ResponseRepairResponse
+    RiskLevel:
+      type: string
+      enum:
+      - low
+      - medium
+      - high
+      - critical
+      title: RiskLevel
+    SandboxRun:
+      properties:
+        repo_ref:
+          type: string
+          title: Repo Ref
+        commands:
+          items:
+            type: string
+          type: array
+          title: Commands
+        exit_codes:
+          items:
+            type: integer
+          type: array
+          title: Exit Codes
+        stdout:
+          items:
+            type: string
+          type: array
+          title: Stdout
+        stderr:
+          items:
+            type: string
+          type: array
+          title: Stderr
+        artifacts:
+          items:
+            type: string
+          type: array
+          title: Artifacts
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+        network_policy:
+          type: string
+          enum:
+          - deny
+          - allowlisted
+          title: Network Policy
+          default: deny
+        verdict:
+          $ref: '#/components/schemas/VerdictStatus'
+      additionalProperties: false
+      type: object
+      required:
+      - repo_ref
+      - commands
+      - exit_codes
+      - stdout
+      - stderr
+      - verdict
+      title: SandboxRun
+    SourceSpan:
+      properties:
+        message_id:
+          type: string
+          title: Message Id
+        start_char:
+          type: integer
+          minimum: 0.0
+          title: Start Char
+        end_char:
+          type: integer
+          minimum: 0.0
+          title: End Char
+      additionalProperties: false
+      type: object
+      required:
+      - message_id
+      - start_char
+      - end_char
+      title: SourceSpan
+    StalenessClass:
+      type: string
+      enum:
+      - fresh
+      - acceptable
+      - stale
+      - unknown
+      title: StalenessClass
+    ToolCallEnvelope:
+      properties:
+        tool_name:
+          type: string
+          minLength: 1
+          title: Tool Name
+        input:
+          additionalProperties: true
+          type: object
+          title: Input
+        schema:
+          additionalProperties: true
+          type: object
+          title: Schema
+        risk_level:
+          $ref: '#/components/schemas/RiskLevel'
+          default: medium
+        approval_required:
+          type: boolean
+          title: Approval Required
+          default: false
+        caller_context:
+          additionalProperties: true
+          type: object
+          title: Caller Context
+        approval_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Id
+        approval_execution_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Execution Token
+      additionalProperties: false
+      type: object
+      required:
+      - tool_name
+      title: ToolCallEnvelope
+    ToolValidationResponse:
+      properties:
+        allowed:
+          type: boolean
+          title: Allowed
+        action:
+          $ref: '#/components/schemas/VerdictAction'
+        reason:
+          type: string
+          title: Reason
+        approval_required:
+          type: boolean
+          title: Approval Required
+          default: false
+        approval_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Id
+        sanitized_output:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Sanitized Output
+      type: object
+      required:
+      - allowed
+      - action
+      - reason
+      title: ToolValidationResponse
+    VerdictAction:
+      type: string
+      enum:
+      - allow
+      - allow_with_citation
+      - rewrite
+      - abstain
+      - ask_clarification
+      - block
+      - require_human_review
+      title: VerdictAction
+    VerdictStatus:
+      type: string
+      enum:
+      - SUPPORTED
+      - PARTIALLY_SUPPORTED
+      - CONTRADICTED
+      - NOT_FOUND
+      - AMBIGUOUS
+      - STALE_SOURCE
+      - UNVERIFIABLE
+      - OUT_OF_SCOPE
+      title: VerdictStatus
+    VerificationRun:
+      properties:
+        trace_id:
+          type: string
+          title: Trace Id
+        tenant_id:
+          type: string
+          title: Tenant Id
+        input:
+          additionalProperties: true
+          type: object
+          title: Input
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+        verdicts:
+          items:
+            $ref: '#/components/schemas/ClaimVerdict'
+          type: array
+          title: Verdicts
+        final_decision:
+          $ref: '#/components/schemas/FinalDecision'
+        final_text:
+          type: string
+          title: Final Text
+        policy_version:
+          type: string
+          title: Policy Version
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - tenant_id
+      - input
+      - claims
+      - evidence
+      - verdicts
+      - final_decision
+      - final_text
+      - policy_version
+      title: VerificationRun
+    VerificationRunRequest:
+      properties:
+        tenant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Id
+        message_text:
+          type: string
+          minLength: 1
+          title: Message Text
+        documents:
+          items:
+            $ref: '#/components/schemas/DocumentInput'
+          type: array
+          title: Documents
+        tool_outputs:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Tool Outputs
+        execution_artifacts:
+          additionalProperties: true
+          type: object
+          title: Execution Artifacts
+        task_type:
+          type: string
+          title: Task Type
+          default: chat
+        message_id:
+          type: string
+          title: Message Id
+          default: draft
+      additionalProperties: false
+      type: object
+      required:
+      - message_text
+      title: VerificationRunRequest

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/claim.schema.json",
+  "title": "Claim",
+  "type": "object",
+  "required": [
+    "claim_id",
+    "text",
+    "canonical_form",
+    "type",
+    "risk_level",
+    "requires_evidence",
+    "source_span",
+    "metadata"
+  ],
+  "properties": {
+    "claim_id": { "type": "string" },
+    "text": { "type": "string", "minLength": 1 },
+    "canonical_form": { "type": "string" },
+    "type": {
+      "type": "string",
+      "enum": [
+        "world_fact",
+        "doc_grounded",
+        "tool_observation",
+        "repo_state",
+        "test_result",
+        "computed_value",
+        "policy_claim",
+        "proposed_action",
+        "creative_statement",
+        "opinion"
+      ]
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "requires_evidence": { "type": "boolean" },
+    "source_span": {
+      "type": ["object", "null"],
+      "required": ["message_id", "start_char", "end_char"],
+      "properties": {
+        "message_id": { "type": "string" },
+        "start_char": { "type": "integer", "minimum": 0 },
+        "end_char": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "metadata": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/claim-verification-response.schema.json",
+  "title": "ClaimVerificationResponse",
+  "type": "object",
+  "required": ["verdicts"],
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/verdict.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

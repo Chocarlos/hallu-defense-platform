@@ -1,0 +1,57 @@
+{
+  "trace_id": "tr_contract_0001",
+  "tenant_id": "tenant-a",
+  "input": {
+    "message_text": "Full-time employees receive 15 days of paid vacation per year.",
+    "task_type": "document_qa"
+  },
+  "claims": [
+    {
+      "claim_id": "clm_0001",
+      "text": "Full-time employees receive 15 days of paid vacation per year.",
+      "canonical_form": "full-time employees receive 15 days of paid vacation per year",
+      "type": "doc_grounded",
+      "risk_level": "medium",
+      "requires_evidence": true,
+      "source_span": {
+        "message_id": "draft",
+        "start_char": 0,
+        "end_char": 61
+      },
+      "metadata": {}
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "ev_0001",
+      "kind": "document_chunk",
+      "source_ref": "hr-manual-v7",
+      "content": "Full-time employees receive 15 days of paid vacation per year.",
+      "structured_content": {},
+      "authority": "internal",
+      "freshness": {
+        "retrieved_at": "2026-07-07T00:00:00Z",
+        "published_at": null,
+        "staleness_class": "fresh"
+      }
+    }
+  ],
+  "verdicts": [
+    {
+      "claim_id": "clm_0001",
+      "status": "SUPPORTED",
+      "confidence": 0.95,
+      "evidence_ids": ["ev_0001"],
+      "action": "allow_with_citation",
+      "reason": "Evidence supports the claim.",
+      "validator_trace": {
+        "overlap": 0.92
+      }
+    }
+  ],
+  "final_decision": "allow",
+  "final_text": "Full-time employees receive 15 days of paid vacation per year.",
+  "policy_version": "2026-07-07",
+  "created_at": "2026-07-07T00:00:00Z"
+}
+

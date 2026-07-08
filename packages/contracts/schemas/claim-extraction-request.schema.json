@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/claim-extraction-request.schema.json",
+  "title": "ClaimExtractionRequest",
+  "type": "object",
+  "required": ["message_text"],
+  "properties": {
+    "message_text": { "type": "string", "minLength": 1 },
+    "conversation_slice": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tool_outputs": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/evidence.schema.json" }
+    },
+    "execution_artifacts": { "type": "object", "additionalProperties": true },
+    "task_type": { "type": "string", "minLength": 1 },
+    "message_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

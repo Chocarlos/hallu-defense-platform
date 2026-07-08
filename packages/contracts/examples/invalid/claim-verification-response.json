@@ -1,0 +1,13 @@
+{
+  "verdicts": [
+    {
+      "claim_id": "clm_contract",
+      "status": "SUPPORTED",
+      "confidence": 1.5,
+      "evidence_ids": ["ev_contract"],
+      "action": "allow_with_citation",
+      "reason": "Evidence supports the claim.",
+      "validator_trace": {}
+    }
+  ]
+}

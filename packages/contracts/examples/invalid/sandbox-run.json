@@ -1,0 +1,11 @@
+{
+  "repo_ref": ".",
+  "commands": [],
+  "exit_codes": [0],
+  "stdout": [],
+  "stderr": [],
+  "artifacts": [],
+  "network_policy": "open",
+  "verdict": "SUPPORTED"
+}
+

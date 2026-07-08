@@ -1,0 +1,7 @@
+{
+  "allowed": true,
+  "action": "allow",
+  "policy_version": "policy-dev-v1",
+  "matched_rules": ["default_allow_low_medium_risk"],
+  "explanation": "No blocking enterprise policy matched."
+}

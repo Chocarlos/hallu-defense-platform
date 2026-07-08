@@ -1,0 +1,16 @@
+{
+  "tool_name": "read_document",
+  "input": {
+    "document_id": "hr-manual-v7"
+  },
+  "schema": {
+    "type": "object",
+    "required": ["document_id"]
+  },
+  "risk_level": "low",
+  "approval_required": false,
+  "caller_context": {
+    "tenant_id": "tenant-a"
+  }
+}
+

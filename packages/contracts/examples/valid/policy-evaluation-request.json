@@ -1,0 +1,9 @@
+{
+  "subject": "agent:contract-test",
+  "action": "read",
+  "resource": "hr-manual-v7",
+  "risk_level": "low",
+  "attributes": {
+    "source_authority": "internal"
+  }
+}

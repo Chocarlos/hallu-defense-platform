@@ -1,0 +1,8 @@
+{
+  "corpus_id": "hr",
+  "actor_id": "security-reviewer",
+  "updated_at_from": "2026-07-08T00:00:00Z",
+  "updated_at_to": "2026-07-08T01:00:00Z",
+  "limit": 50,
+  "cursor": "50"
+}

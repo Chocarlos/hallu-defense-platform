@@ -1,0 +1,5 @@
+{
+  "tenant_id": "tenant-a",
+  "trace_id": "tr_contract_audit",
+  "include_events": true
+}

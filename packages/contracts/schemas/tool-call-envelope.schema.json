@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/tool-call-envelope.schema.json",
+  "title": "ToolCallEnvelope",
+  "type": "object",
+  "required": [
+    "tool_name",
+    "input",
+    "schema",
+    "risk_level",
+    "approval_required",
+    "caller_context"
+  ],
+  "properties": {
+    "tool_name": { "type": "string", "minLength": 1 },
+    "input": { "type": "object", "additionalProperties": true },
+    "schema": { "type": "object", "additionalProperties": true },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "approval_required": { "type": "boolean" },
+    "caller_context": { "type": "object", "additionalProperties": true },
+    "approval_id": { "type": ["string", "null"], "minLength": 1 },
+    "approval_execution_token": { "type": ["string", "null"], "minLength": 16 }
+  },
+  "additionalProperties": false
+}

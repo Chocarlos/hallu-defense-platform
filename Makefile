@@ -1,0 +1,99 @@
+ifeq ($(OS),Windows_NT)
+VENV_PY := .venv/Scripts/python
+else
+VENV_PY := .venv/bin/python
+endif
+
+PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
+
+.PHONY: lint typecheck test build contracts openapi policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run python-audit container-scan-config security-check
+
+lint:
+	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
+
+typecheck:
+	$(PY) -m mypy apps/api/src
+	npm run typecheck
+
+test:
+	$(PY) -m pytest apps/api/tests
+	npm run test
+
+build:
+	npm run build
+
+contracts:
+	$(PY) scripts/ci/check_json_schemas.py
+	$(PY) -m pytest apps/api/tests/test_contracts.py
+	npm run typecheck --workspaces --if-present
+
+openapi:
+	$(PY) scripts/ci/export_openapi.py
+
+policy-test:
+	$(PY) scripts/ci/run_policy_tests.py
+
+sandbox-test:
+	$(PY) -m pytest apps/api/tests -k sandbox
+
+evals-smoke:
+	$(PY) evals/runners/smoke.py
+
+evals-scenarios:
+	$(PY) evals/runners/scenarios.py
+
+dashboard-lint:
+	$(PY) scripts/ci/check_grafana_dashboards.py
+
+encryption-config:
+	$(PY) scripts/ci/check_encryption_config.py
+
+auth-config:
+	$(PY) scripts/ci/check_auth_config.py
+
+oidc-provider-smoke:
+	$(PY) scripts/ci/oidc_provider_smoke.py
+
+secrets-config:
+	$(PY) scripts/ci/check_secrets_config.py
+
+audit-ledger-config:
+	$(PY) scripts/ci/check_audit_ledger_config.py
+
+approval-queue-config:
+	$(PY) scripts/ci/check_approval_queue_config.py
+
+corpus-grants-config:
+	$(PY) scripts/ci/check_corpus_grants_config.py
+
+backup-retention-config:
+	$(PY) scripts/ci/check_backup_retention_config.py
+
+rag-persistence-config:
+	$(PY) scripts/ci/check_rag_persistence_config.py
+	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
+
+rag-opensearch-template-dry-run:
+	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
+
+python-audit:
+	$(PY) scripts/ci/python_dependency_audit.py
+
+container-scan-config:
+	$(PY) scripts/ci/check_container_scan_config.py
+
+security-check:
+	$(PY) scripts/ci/secret_scan.py
+	$(PY) scripts/ci/check_encryption_config.py
+	$(PY) scripts/ci/check_auth_config.py
+	$(PY) scripts/ci/oidc_provider_smoke.py
+	$(PY) scripts/ci/check_secrets_config.py
+	$(PY) scripts/ci/check_audit_ledger_config.py
+	$(PY) scripts/ci/check_approval_queue_config.py
+	$(PY) scripts/ci/check_corpus_grants_config.py
+	$(PY) scripts/ci/check_backup_retention_config.py
+	$(PY) scripts/ci/check_rag_persistence_config.py
+	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
+	$(PY) scripts/ci/python_dependency_audit.py
+	$(PY) scripts/ci/check_container_scan_config.py
+	npm audit --omit dev

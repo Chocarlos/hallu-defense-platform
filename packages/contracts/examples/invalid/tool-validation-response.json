@@ -1,0 +1,6 @@
+{
+  "allowed": false,
+  "action": "require_approval",
+  "reason": "",
+  "approval_required": true
+}

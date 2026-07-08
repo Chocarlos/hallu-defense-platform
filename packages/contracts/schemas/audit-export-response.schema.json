@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/audit-export-response.schema.json",
+  "title": "AuditExportResponse",
+  "type": "object",
+  "required": ["trace_id", "runs", "events"],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "runs": {
+      "type": "array",
+      "items": { "$ref": "verification-run.schema.json" }
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "audit-event.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}
+

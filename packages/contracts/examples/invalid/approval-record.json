@@ -1,0 +1,22 @@
+{
+  "approval_id": "apr_contract",
+  "tenant_id": "tenant-a",
+  "trace_id": "tr_contract",
+  "tool_call": {
+    "tool_name": "delete_repository",
+    "input": {
+      "repo": "core"
+    },
+    "schema": {
+      "type": "object"
+    },
+    "risk_level": "high",
+    "approval_required": false,
+    "caller_context": {}
+  },
+  "status": "approved",
+  "risk_level": "severe",
+  "reason": "",
+  "requested_by": "agent-7",
+  "created_at": "not-a-date"
+}

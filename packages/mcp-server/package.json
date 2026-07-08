@@ -1,0 +1,23 @@
+{
+  "name": "@hallu-defense/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "bin": {
+    "hallu-defense-mcp": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm --workspace @hallu-defense/sdk run build && vitest run",
+    "dev": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@hallu-defense/contracts": "0.1.0",
+    "@hallu-defense/sdk": "0.1.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  }
+}

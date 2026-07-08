@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/repo-checks-run-request.schema.json",
+  "title": "RepoChecksRunRequest",
+  "type": "object",
+  "required": ["commands"],
+  "properties": {
+    "repo_ref": { "type": "string", "minLength": 1 },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "network_policy": {
+      "type": "string",
+      "enum": ["deny", "allowlisted"]
+    }
+  },
+  "additionalProperties": false
+}

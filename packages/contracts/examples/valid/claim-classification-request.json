@@ -1,0 +1,15 @@
+{
+  "claims": [
+    {
+      "claim_id": "clm_contract",
+      "text": "Full-time employees receive 15 days of paid vacation per year.",
+      "canonical_form": "full-time employees receive 15 days of paid vacation per year",
+      "type": "doc_grounded",
+      "risk_level": "medium",
+      "requires_evidence": true,
+      "source_span": null,
+      "metadata": {}
+    }
+  ],
+  "task_type": "document_qa"
+}

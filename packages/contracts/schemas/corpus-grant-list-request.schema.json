@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/corpus-grant-list-request.schema.json",
+  "title": "CorpusGrantListRequest",
+  "type": "object",
+  "properties": {
+    "corpus_id": { "type": ["string", "null"], "minLength": 1 },
+    "include_disabled": { "type": "boolean" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
+    "cursor": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "additionalProperties": false
+}

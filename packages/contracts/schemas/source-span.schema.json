@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/source-span.schema.json",
+  "title": "SourceSpan",
+  "type": "object",
+  "required": ["message_id", "start_char", "end_char"],
+  "properties": {
+    "message_id": { "type": "string", "minLength": 1 },
+    "start_char": { "type": "integer", "minimum": 0 },
+    "end_char": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

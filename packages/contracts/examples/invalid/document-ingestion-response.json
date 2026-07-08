@@ -1,0 +1,10 @@
+{
+  "trace_id": "tr_contract",
+  "tenant_id": "tenant-a",
+  "corpus_id": "hr",
+  "backend": "opensearch",
+  "document_count": -1,
+  "indexed_count": 1,
+  "evidence_ids": ["ev_001_001"],
+  "warnings": []
+}

@@ -1,0 +1,8 @@
+{
+  "allowed": false,
+  "action": "require_human_review",
+  "reason": "Tool call is high-risk and requires approval.",
+  "approval_required": true,
+  "approval_id": "apr_contract",
+  "sanitized_output": null
+}

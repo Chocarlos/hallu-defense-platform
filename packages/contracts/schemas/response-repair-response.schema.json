@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/response-repair-response.schema.json",
+  "title": "ResponseRepairResponse",
+  "type": "object",
+  "required": [
+    "final_text",
+    "final_decision",
+    "blocked_claim_ids",
+    "repaired_claim_ids"
+  ],
+  "properties": {
+    "final_text": { "type": "string" },
+    "final_decision": {
+      "type": "string",
+      "enum": ["allow", "repaired", "abstained", "blocked", "require_human_review"]
+    },
+    "blocked_claim_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "repaired_claim_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

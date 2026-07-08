@@ -1,0 +1,12 @@
+{
+  "claim_id": "clm_0001",
+  "status": "SUPPORTED",
+  "confidence": 0.95,
+  "evidence_ids": ["ev_0001"],
+  "action": "allow_with_citation",
+  "reason": "Evidence supports the claim.",
+  "validator_trace": {
+    "overlap": 0.92
+  }
+}
+

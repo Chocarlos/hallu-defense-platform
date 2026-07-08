@@ -1,0 +1,16 @@
+{
+  "id": "code_fix_claim_supported_by_targeted_command",
+  "kind": "verification_run",
+  "category": "code_agents",
+  "latency_ms": 3.5,
+  "expected": {
+    "final_decision": "allow",
+    "verdict_statuses": ["SUPPORTED"]
+  },
+  "observed": {
+    "final_decision": "allow",
+    "verdict_statuses": ["SUPPORTED"]
+  },
+  "passed": true,
+  "failures": []
+}

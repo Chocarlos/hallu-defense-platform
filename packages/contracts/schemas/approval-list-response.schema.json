@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/approval-list-response.schema.json",
+  "title": "ApprovalListResponse",
+  "type": "object",
+  "required": ["approvals"],
+  "properties": {
+    "approvals": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/approval-record.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}
