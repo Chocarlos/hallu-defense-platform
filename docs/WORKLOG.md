@@ -46,6 +46,38 @@ Validation:
   server 6 tests passed, and console eval-report 6 tests passed.
 - `npm run build`: contracts, SDK, agent-adapters, MCP server, and console
   production build passed; Next prerendered `/` and `/_not-found`.
+- Follow-up audit found two concrete risks and both were fixed:
+  - `pyyaml` is now an explicit API dev dependency instead of relying on the
+    `uvicorn[standard]` transitive dependency.
+  - `.github/workflows/ci.yml` now runs `python -m pytest apps/api/tests`,
+    matching the invocation that keeps the repo root importable for
+    `scripts.ci` checks.
+- Added OpenAPI wiring tests for the committed artifact, Makefile target, CI
+  step, and API artifact README.
+- `.venv\Scripts\pytest apps\api\tests\test_openapi_ci.py -q`: 6 passed.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_openapi_ci.py -q`: 6
+  passed.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 274 passed, 1 FastAPI
+  TestClient deprecation warning.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  all checks passed after the follow-up hardening.
+- `.venv\Scripts\python -m mypy apps\api\src`: passed with no issues in 37
+  source files.
+- `.venv\Scripts\python scripts\ci\python_dependency_audit.py`: no known
+  vulnerabilities found; local editable package was skipped as not present on
+  PyPI.
+- `.venv\Scripts\python scripts\ci\check_json_schemas.py`: validated 55 JSON
+  schema files, 55 valid examples, 55 invalid examples, and 55 TypeScript
+  interfaces.
+- `.venv\Scripts\python evals\runners\smoke.py`: passed for 2 scenarios and
+  refreshed `evals/reports/smoke-metrics.json`; p95 latency 78.815 ms.
+- `.venv\Scripts\python evals\runners\scenarios.py`: passed for 21 scenarios,
+  refreshed `evals/reports/scenario-metrics.json`, and appended
+  `scenario-20260708-214919` to `evals/reports/scenario-history.json`;
+  pass_rate 1.0 and p95 latency 5.251 ms.
+- `.venv\Scripts\python scripts\ci\run_policy_tests.py`: 29 selected
+  Python policy/config tests passed; local `opa` binary was unavailable, so
+  static Rego checks ran and passed for 2 files.
 
 Remaining risks:
 

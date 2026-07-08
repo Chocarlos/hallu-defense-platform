@@ -25,6 +25,32 @@
         "verification_decision_accuracy": 1.0
       },
       "run_id": "scenario-20260708-205008"
+    },
+    {
+      "created_at": "2026-07-08T21:49:19Z",
+      "metrics": {
+        "blocked_high_risk_rate": 1.0,
+        "category_pass_rate": {
+          "code_agents": 1.0,
+          "documents": 1.0,
+          "sandbox": 1.0,
+          "security": 1.0,
+          "tools": 1.0
+        },
+        "data_poisoning_block_rate": 1.0,
+        "p95_latency_ms": 5.251,
+        "pass_rate": 1.0,
+        "passed_count": 21,
+        "prompt_injection_block_rate": 1.0,
+        "repo_false_claim_block_rate": 1.0,
+        "repo_semantic_claim_decision_accuracy": 1.0,
+        "sandbox_block_rate": 1.0,
+        "scenario_count": 21,
+        "secret_redaction_rate": 1.0,
+        "tool_contradiction_guard_rate": 1.0,
+        "verification_decision_accuracy": 1.0
+      },
+      "run_id": "scenario-20260708-214919"
     }
   ]
 }
