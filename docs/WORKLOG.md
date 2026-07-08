@@ -4986,3 +4986,49 @@ Remaining risks:
 - The scanner remains deterministic and pattern-based. It is a CI guardrail,
   not a replacement for Vault-backed runtime secret management or manual
   review of novel secret formats.
+
+## 2026-07-08 - FND-004 worklog CI gate
+
+Slice selected:
+
+- Closed the lightweight FND-004 maintenance gap by adding an executable
+  worklog format/evidence gate.
+- Kept the validator conservative because older worklog entries predate the
+  current section format; the gate enforces dated headings for all entries and
+  structured evidence hygiene for the latest entry.
+
+Implementation:
+
+- Added `scripts/ci/check_worklog.py` with parsing and validation for:
+  - dated `## YYYY-MM-DD - title` entry headings,
+  - non-empty entry bodies,
+  - latest-entry `Slice selected`, `Implementation`, `Validation`, and
+    `Remaining risks` sections,
+  - command/result evidence markers in the latest validation section,
+  - Makefile and CI workflow wiring.
+- Added `apps/api/tests/test_worklog.py` with positive parsing, committed
+  worklog validation, and negative checks for malformed headings, missing
+  sections, missing validation evidence, and missing supporting-file wiring.
+- Added `worklog-check` to the Makefile and wired
+  `python scripts/ci/check_worklog.py` into the backend CI job.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `FND-004` and new `CI-018`.
+
+Validation:
+
+- Initial `.venv\Scripts\python scripts\ci\check_worklog.py` validated the
+  worklog parser and failed only because Makefile/CI wiring was not added yet.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 84 entries.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_worklog.py -q`: 6
+  passed.
+- `.venv\Scripts\python -m ruff check scripts\ci\check_worklog.py apps\api\tests\test_worklog.py`:
+  all checks passed.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  148 requirement rows.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 300 passed, 1 FastAPI
+  TestClient deprecation warning.
+
+Remaining risks:
+
+- The gate is intentionally structural. It does not semantically audit every
+  historical worklog entry or prove that each recorded command outcome is
+  sufficient for acceptance.
