@@ -5233,3 +5233,46 @@ Remaining risks:
   with the standard `8000:8000` mapping.
 - CI now validates Compose statically but does not start the full local stack.
 - Kubernetes, Helm, and Terraform deployment paths remain outside this slice.
+
+## 2026-07-08 - Docker evidence traceability refresh
+
+Slice selected:
+
+- Refreshed stale current traceability rows after Docker Desktop installation
+  and live Compose smoke evidence made the old "Docker unavailable" risk notes
+  inaccurate.
+- Kept the work limited to docs/test governance and did not start `TS-004` or
+  `TS-005`, which remain larger approval/workflow UI slices.
+
+Implementation:
+
+- Updated `docs/TRACEABILITY_MATRIX.md` for `FND-010`, `PY-014`, `SEC-011`,
+  `OBS-001`, `OBS-003`, `CI-008`, and `CI-010`.
+- Replaced contradicted "Docker unavailable" risk language with precise
+  remaining risks: Trivy runtime scan evidence, live OIDC smoke, live collector
+  span-content assertion, browser-level Grafana dashboard rendering, runtime
+  backup jobs, and live RAG query behavior.
+- Left historical worklog entries unchanged because those records were true at
+  the time they were written.
+- Updated the worklog regression test to reflect the new latest entry.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  151 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 88 entries.
+- Initial `.venv\Scripts\python -m pytest apps\api\tests\test_worklog.py apps\api\tests\test_traceability_matrix.py -q`
+  run failed because the new entry was inserted at the top while the parser
+  treats the bottom entry as latest; the entry was moved to the bottom.
+- Repeat `.venv\Scripts\python -m pytest apps\api\tests\test_worklog.py apps\api\tests\test_traceability_matrix.py -q`:
+  12 passed.
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
+- `git diff --check`: no whitespace errors; Windows CRLF warnings only.
+
+Remaining risks:
+
+- `TS-004` and `TS-005` are still the only non-tested traceability rows and
+  require explicit authorization before implementation.
+- This refresh does not add local Trivy scanning, live OIDC provider smoke,
+  live collector span-content assertions, browser-level Grafana dashboard
+  rendering, runtime backup jobs, or live RAG query behavior.
