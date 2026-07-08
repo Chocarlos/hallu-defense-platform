@@ -30,6 +30,16 @@ Validation:
   passed.
 - `.venv\Scripts\python -m ruff check scripts\ci\export_openapi.py scripts\ci\check_openapi.py apps\api\tests\test_openapi_ci.py`:
   all checks passed.
+- `.venv\Scripts\python scripts\ci\export_openapi.py` followed by
+  `git diff --exit-code -- docs\api\openapi.yaml`: no generated artifact diff.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 270 passed, 1
+  FastAPI TestClient deprecation warning.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  all checks passed.
+- `.venv\Scripts\python -m mypy apps\api\src`: passed with no issues in 37
+  source files.
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
+- `git diff --check`: no whitespace errors; Windows CRLF warnings only.
 
 Remaining risks:
 
