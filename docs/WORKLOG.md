@@ -45,6 +45,38 @@ Remaining risks:
 - No Fable batch diff is integrated until Codex inspects actual changed files
   and runs validation from `master`.
 
+## 2026-07-08 - Fable delegation config tests
+
+Slice selected:
+
+- Kept Codex on a light, non-conflicting task while Fable handled the large
+  batch: static regression tests for the Fable delegation workflow and docs.
+
+Implementation:
+
+- Added `apps/api/tests/test_fable_delegation_config.py`.
+- Tests prove:
+  - write-mode delegation requires `goal` and `acceptance`;
+  - the workflow injects `AGENTS.md`, master plan, traceability matrix,
+    worklog, project brief, and prior-session report;
+  - the workflow uses `model: 'fable'`, worktree isolation, and max effort;
+  - the runbook documents the persistent branch/worktree, direct auto-mode
+    route failure, and batch backlog.
+- Updated traceability for `FND-012`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_fable_delegation_config.py -q`:
+  4 passed.
+- `.venv\Scripts\python -m ruff check apps\api\tests\test_fable_delegation_config.py`:
+  all checks passed.
+- `node --check .claude\workflows\fable-delegate.js`: passed.
+
+Remaining risks:
+
+- These are static guardrail tests. They do not prove that workflow worktrees
+  can bypass this session's approval gates.
+
 ## 2026-07-08 - OpenAPI drift gate
 
 Slice selected:
