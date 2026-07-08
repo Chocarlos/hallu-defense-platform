@@ -4906,3 +4906,42 @@ Remaining risks:
   evidence discipline, and CI wiring. It does not prove that every future
   product requirement has been semantically captured; engineering review is
   still required for new requirement discovery.
+
+## 2026-07-08 - PY-002/PY-003/PY-007 dedicated service tests
+
+Slice selected:
+
+- Closed small Python service coverage gaps for the already implemented claim
+  extraction, claim classification, and response repair engines.
+- Kept this deliberately below the large Fable-task threshold: no RAG/NLI,
+  console workflow, runtime deployment, or contract-generation behavior was
+  changed.
+
+Implementation:
+
+- Added `apps/api/tests/test_claim_services.py` with direct service-level tests
+  for:
+  - long-message atomic claim splitting, greeting filtering, stable claim IDs,
+    and source-span preservation;
+  - classifier precedence for test-result, repo-state, tool-observation,
+    policy, proposed-action, opinion, and document-grounded claims;
+  - repair behavior for block precedence, human-review decisions, and
+    abstaining when no claims remain supported.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `PY-002`, `PY-003`, and `PY-007`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_claim_services.py -q`:
+  5 passed.
+- `.venv\Scripts\python -m ruff check apps\api\tests\test_claim_services.py`:
+  all checks passed.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  147 requirement rows.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 289 passed, 1 FastAPI
+  TestClient deprecation warning.
+
+Remaining risks:
+
+- These tests lock current deterministic behavior. They do not add richer
+  linguistic extraction, broader taxonomy calibration, or prose-preserving
+  response repair.
