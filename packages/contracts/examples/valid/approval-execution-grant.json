@@ -1,0 +1,7 @@
+{
+  "approval_id": "apr_contract",
+  "tenant_id": "tenant-a",
+  "tool_name": "delete_repository",
+  "execution_token": "fixture-execution-grant-token",
+  "expires_at": "2026-07-08T00:16:00Z"
+}

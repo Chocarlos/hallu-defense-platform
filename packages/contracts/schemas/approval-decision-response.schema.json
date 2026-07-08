@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/approval-decision-response.schema.json",
+  "title": "ApprovalDecisionResponse",
+  "type": "object",
+  "required": ["approval", "execution_grant"],
+  "properties": {
+    "approval": { "$ref": "https://hallu-defense.local/schemas/approval-record.schema.json" },
+    "execution_grant": {
+      "oneOf": [
+        { "$ref": "https://hallu-defense.local/schemas/approval-execution-grant.schema.json" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

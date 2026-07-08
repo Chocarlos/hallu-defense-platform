@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/approval-execution-grant.schema.json",
+  "title": "ApprovalExecutionGrant",
+  "type": "object",
+  "required": ["approval_id", "tenant_id", "tool_name", "execution_token", "expires_at"],
+  "properties": {
+    "approval_id": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "tool_name": { "type": "string", "minLength": 1 },
+    "execution_token": { "type": "string", "minLength": 16 },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

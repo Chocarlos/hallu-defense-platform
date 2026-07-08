@@ -1,0 +1,51 @@
+[project]
+name = "hallu-defense-api"
+version = "0.1.0"
+description = "Claim-centric and action-centric hallucination defense API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "opentelemetry-api>=1.27.0,<2.0.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.27.0,<2.0.0",
+  "opentelemetry-sdk>=1.27.0,<2.0.0",
+  "pydantic>=2.8.0,<3.0.0",
+  "psycopg[binary]>=3.2.0,<4.0.0",
+  "uvicorn[standard]>=0.30.0,<1.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27.0,<1.0.0",
+  "jsonschema>=4.23.0,<5.0.0",
+  "mypy>=1.11.0,<2.0.0",
+  "pip-audit>=2.7.0,<3.0.0",
+  "pytest>=9.0.3,<10.0.0",
+  "ruff>=0.5.0,<1.0.0"
+]
+
+[build-system]
+requires = ["setuptools>=70.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hallu_defense = ["py.typed"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+plugins = []
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

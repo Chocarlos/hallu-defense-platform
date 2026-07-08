@@ -1,0 +1,38 @@
+{
+  "approval": {
+    "approval_id": "apr_contract",
+    "tenant_id": "tenant-a",
+    "trace_id": "tr_contract",
+    "tool_call": {
+      "tool_name": "delete_repository",
+      "input": {
+        "repo": "core",
+        "api_key": "[REDACTED]"
+      },
+      "schema": {
+        "type": "object",
+        "required": ["repo"]
+      },
+      "risk_level": "high",
+      "approval_required": false,
+      "caller_context": {
+        "subject": "agent-7"
+      }
+    },
+    "status": "approved",
+    "risk_level": "high",
+    "reason": "Tool call is high-risk and requires approval.",
+    "requested_by": "agent-7",
+    "decided_by": "reviewer",
+    "decision_reason": "Approved for maintenance window.",
+    "created_at": "2026-07-08T00:00:00Z",
+    "decided_at": "2026-07-08T00:01:00Z"
+  },
+  "execution_grant": {
+    "approval_id": "apr_contract",
+    "tenant_id": "tenant-a",
+    "tool_name": "delete_repository",
+    "execution_token": "fixture-execution-grant-token",
+    "expires_at": "2026-07-08T00:16:00Z"
+  }
+}

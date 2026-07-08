@@ -1,0 +1,13 @@
+{
+  "trace_id": "bad-trace-id",
+  "tenant_id": "tenant-a",
+  "input": {},
+  "claims": [],
+  "evidence": [],
+  "verdicts": [],
+  "final_decision": "maybe",
+  "final_text": "",
+  "policy_version": "2026-07-07",
+  "created_at": "not-a-date"
+}
+

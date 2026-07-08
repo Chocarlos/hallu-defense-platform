@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/audit-event.schema.json",
+  "title": "AuditEvent",
+  "type": "object",
+  "required": [
+    "event_id",
+    "trace_id",
+    "tenant_id",
+    "event_type",
+    "method",
+    "path",
+    "status_code",
+    "outcome",
+    "metadata",
+    "created_at"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^evt_[A-Za-z0-9_-]+$" },
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "event_type": { "type": "string", "minLength": 1 },
+    "method": {
+      "type": "string",
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+    },
+    "path": { "type": "string", "minLength": 1 },
+    "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "outcome": { "type": "string", "enum": ["success", "error"] },
+    "metadata": { "type": "object", "additionalProperties": true },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
+

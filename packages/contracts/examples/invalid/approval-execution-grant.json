@@ -1,0 +1,7 @@
+{
+  "approval_id": "apr_contract",
+  "tenant_id": "tenant-a",
+  "tool_name": "delete_repository",
+  "execution_token": "short",
+  "expires_at": "not-a-date"
+}

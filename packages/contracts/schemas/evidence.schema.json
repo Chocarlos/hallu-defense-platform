@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/evidence.schema.json",
+  "title": "Evidence",
+  "type": "object",
+  "required": [
+    "evidence_id",
+    "kind",
+    "source_ref",
+    "content",
+    "structured_content",
+    "authority",
+    "freshness"
+  ],
+  "properties": {
+    "evidence_id": { "type": "string" },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "document_chunk",
+        "web_source",
+        "tool_output",
+        "repo_file",
+        "command_output",
+        "policy_rule",
+        "calculation"
+      ]
+    },
+    "source_ref": { "type": "string" },
+    "content": { "type": "string", "minLength": 1 },
+    "structured_content": { "type": "object", "additionalProperties": true },
+    "authority": {
+      "type": "string",
+      "enum": ["official", "internal", "trusted_third_party", "unknown"]
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["retrieved_at", "staleness_class"],
+      "properties": {
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "published_at": { "type": ["string", "null"], "format": "date-time" },
+        "staleness_class": {
+          "type": "string",
+          "enum": ["fresh", "acceptable", "stale", "unknown"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

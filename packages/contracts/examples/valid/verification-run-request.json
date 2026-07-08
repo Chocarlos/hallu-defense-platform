@@ -1,0 +1,16 @@
+{
+  "tenant_id": "tenant-a",
+  "message_text": "Full-time employees receive 15 days of paid vacation per year.",
+  "documents": [
+    {
+      "source_ref": "hr-manual-v7",
+      "content": "Full-time employees receive 15 days of paid vacation per year.",
+      "authority": "internal",
+      "metadata": {}
+    }
+  ],
+  "tool_outputs": [],
+  "execution_artifacts": {},
+  "task_type": "document_qa",
+  "message_id": "msg_contract"
+}

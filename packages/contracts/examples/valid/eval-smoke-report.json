@@ -1,0 +1,37 @@
+{
+  "metrics": {
+    "scenario_count": 2,
+    "final_decision_accuracy": 1.0,
+    "trace_coverage": 1.0,
+    "claim_ledger_coverage": 1.0,
+    "verdict_ledger_coverage": 1.0,
+    "claim_precision": 1.0,
+    "claim_recall": 1.0,
+    "unsupported_claim_recall": 1.0,
+    "groundedness": 1.0,
+    "faithfulness": 0.5,
+    "false_positive_blocking": 0.0,
+    "critical_pass_through": 0.0,
+    "p95_latency_ms": 56.84,
+    "cost_per_run_usd": 0.0
+  },
+  "scenarios": [
+    {
+      "id": "doc_supported",
+      "latency_ms": 56.84,
+      "expected_final_decision": "allow",
+      "final_decision": "allow",
+      "trace_present": true,
+      "claim_ledger_present": true,
+      "verdict_ledger_present": true,
+      "expected_claims": ["Full-time employees receive 15 days of paid vacation per year"],
+      "actual_claims": ["full-time employees receive 15 days of paid vacation per year"],
+      "expected_unsupported_claims": [],
+      "unsupported_hits": 0,
+      "supported_verdicts": 1,
+      "supported_verdicts_with_evidence": 1,
+      "verdict_count": 1,
+      "cost_usd": 0.0
+    }
+  ]
+}

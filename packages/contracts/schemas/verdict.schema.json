@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verdict.schema.json",
+  "title": "ClaimVerdict",
+  "type": "object",
+  "required": [
+    "claim_id",
+    "status",
+    "confidence",
+    "evidence_ids",
+    "action",
+    "reason",
+    "validator_trace"
+  ],
+  "properties": {
+    "claim_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "SUPPORTED",
+        "PARTIALLY_SUPPORTED",
+        "CONTRADICTED",
+        "NOT_FOUND",
+        "AMBIGUOUS",
+        "STALE_SOURCE",
+        "UNVERIFIABLE",
+        "OUT_OF_SCOPE"
+      ]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evidence_ids": { "type": "array", "items": { "type": "string" } },
+    "action": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "allow_with_citation",
+        "rewrite",
+        "abstain",
+        "ask_clarification",
+        "block",
+        "require_human_review"
+      ]
+    },
+    "reason": { "type": "string" },
+    "validator_trace": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": false
+}

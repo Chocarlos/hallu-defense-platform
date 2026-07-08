@@ -1,0 +1,15 @@
+{
+  "grant": {
+    "tenant_id": "tenant-a",
+    "corpus_id": "hr",
+    "reader_roles": ["hr_reader"],
+    "writer_roles": ["hr_writer"],
+    "version": 1,
+    "created_by": "security-admin",
+    "updated_by": "security-admin",
+    "created_at": "2026-07-08T00:00:00Z",
+    "updated_at": "2026-07-08T00:00:00Z",
+    "disabled_by": null,
+    "disabled_at": null
+  }
+}

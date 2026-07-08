@@ -1,0 +1,16 @@
+{
+  "scenario_count": 2,
+  "final_decision_accuracy": 1.0,
+  "trace_coverage": 1.0,
+  "claim_ledger_coverage": 1.0,
+  "verdict_ledger_coverage": 1.0,
+  "claim_precision": 1.0,
+  "claim_recall": 1.0,
+  "unsupported_claim_recall": 1.0,
+  "groundedness": 1.0,
+  "faithfulness": 0.5,
+  "false_positive_blocking": 0.0,
+  "critical_pass_through": 0.0,
+  "p95_latency_ms": 56.84,
+  "cost_per_run_usd": 0.0
+}

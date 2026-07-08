@@ -1,0 +1,20 @@
+{
+  "evidence": [
+    {
+      "evidence_id": "ev_contract",
+      "kind": "document_chunk",
+      "source_ref": "hr-manual-v7",
+      "content": "Full-time employees receive 15 days of paid vacation per year.",
+      "structured_content": {},
+      "authority": "internal",
+      "freshness": {
+        "retrieved_at": "2026-07-07T00:00:00Z",
+        "published_at": null,
+        "staleness_class": "fresh"
+      }
+    }
+  ],
+  "claim_evidence_map": {
+    "clm_contract": ["ev_contract"]
+  }
+}

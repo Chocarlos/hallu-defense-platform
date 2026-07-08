@@ -1,0 +1,5 @@
+{
+  "tenant_id": "tenant-a",
+  "trace_id": "not-a-trace",
+  "include_events": "yes"
+}

@@ -1,0 +1,50 @@
+{
+  "index_patterns": ["hallu_evidence*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.refresh_interval": "1s",
+      "analysis": {
+        "analyzer": {
+          "hallu_evidence_text": {
+            "type": "standard",
+            "stopwords": "_english_"
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "tenant_id": { "type": "keyword" },
+        "evidence_id": { "type": "keyword" },
+        "source_ref": { "type": "keyword" },
+        "content": {
+          "type": "text",
+          "analyzer": "hallu_evidence_text"
+        },
+        "authority": { "type": "keyword" },
+        "freshness": {
+          "properties": {
+            "retrieved_at": { "type": "date" },
+            "published_at": { "type": "date", "ignore_malformed": true },
+            "staleness_class": { "type": "keyword" }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "dynamic": true
+        },
+        "document_index": { "type": "integer" },
+        "chunk_index": { "type": "integer" }
+      }
+    }
+  },
+  "_meta": {
+    "schema_version": "rag-opensearch-template.v1",
+    "tenant_scoped": true,
+    "required_query_filter": "tenant_id"
+  }
+}

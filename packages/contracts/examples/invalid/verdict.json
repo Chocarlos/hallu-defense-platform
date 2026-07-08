@@ -1,0 +1,10 @@
+{
+  "claim_id": "clm_0001",
+  "status": "SUPPORTED",
+  "confidence": 1.5,
+  "evidence_ids": ["ev_0001"],
+  "action": "allow_with_citation",
+  "reason": "Confidence is outside the permitted range.",
+  "validator_trace": {}
+}
+

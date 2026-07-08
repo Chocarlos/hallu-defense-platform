@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/freshness.schema.json",
+  "title": "Freshness",
+  "type": "object",
+  "required": ["retrieved_at", "staleness_class"],
+  "properties": {
+    "retrieved_at": { "type": "string", "format": "date-time" },
+    "published_at": { "type": ["string", "null"], "format": "date-time" },
+    "staleness_class": {
+      "type": "string",
+      "enum": ["fresh", "acceptable", "stale", "unknown"]
+    }
+  },
+  "additionalProperties": false
+}

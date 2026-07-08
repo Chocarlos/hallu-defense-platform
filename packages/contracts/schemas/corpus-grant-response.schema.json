@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/corpus-grant-response.schema.json",
+  "title": "CorpusGrantResponse",
+  "type": "object",
+  "required": ["grant"],
+  "properties": {
+    "grant": { "$ref": "https://hallu-defense.local/schemas/corpus-grant.schema.json" }
+  },
+  "additionalProperties": false
+}

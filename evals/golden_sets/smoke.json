@@ -1,0 +1,38 @@
+[
+  {
+    "id": "doc_supported",
+    "message_text": "Full-time employees receive 15 days of paid vacation per year.",
+    "task_type": "document_qa",
+    "documents": [
+      {
+        "source_ref": "hr-manual-v7",
+        "content": "Full-time employees receive 15 days of paid vacation per year.",
+        "authority": "internal"
+      }
+    ],
+    "expected_claims": [
+      "Full-time employees receive 15 days of paid vacation per year"
+    ],
+    "expected_unsupported_claims": [],
+    "expected_final_decision": "allow"
+  },
+  {
+    "id": "doc_insufficient",
+    "message_text": "Part-time employees receive 15 days of paid vacation per year.",
+    "task_type": "document_qa",
+    "documents": [
+      {
+        "source_ref": "hr-manual-v7",
+        "content": "Part-time employees accrue PTO pro rata based on scheduled hours.",
+        "authority": "internal"
+      }
+    ],
+    "expected_claims": [
+      "Part-time employees receive 15 days of paid vacation per year"
+    ],
+    "expected_unsupported_claims": [
+      "Part-time employees receive 15 days of paid vacation per year"
+    ],
+    "expected_final_decision": "abstained"
+  }
+]

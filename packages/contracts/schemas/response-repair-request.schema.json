@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/response-repair-request.schema.json",
+  "title": "ResponseRepairRequest",
+  "type": "object",
+  "required": ["original_text", "claims", "verdicts"],
+  "properties": {
+    "original_text": { "type": "string" },
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/claim.schema.json" }
+    },
+    "verdicts": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/verdict.schema.json" }
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/evidence.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

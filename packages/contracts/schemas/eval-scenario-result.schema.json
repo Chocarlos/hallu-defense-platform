@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-scenario-result.schema.json",
+  "title": "EvalScenarioResult",
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "category",
+    "latency_ms",
+    "expected",
+    "observed",
+    "passed",
+    "failures"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "minLength": 1 },
+    "latency_ms": { "type": "number", "minimum": 0 },
+    "expected": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "passed": { "type": "boolean" },
+    "failures": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

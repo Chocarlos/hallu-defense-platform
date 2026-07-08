@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-scenario-metrics.schema.json",
+  "title": "EvalScenarioMetrics",
+  "type": "object",
+  "required": [
+    "scenario_count",
+    "passed_count",
+    "pass_rate",
+    "category_pass_rate",
+    "verification_decision_accuracy",
+    "blocked_high_risk_rate",
+    "secret_redaction_rate",
+    "prompt_injection_block_rate",
+    "data_poisoning_block_rate",
+    "tool_contradiction_guard_rate",
+    "repo_false_claim_block_rate",
+    "repo_semantic_claim_decision_accuracy",
+    "sandbox_block_rate",
+    "p95_latency_ms"
+  ],
+  "properties": {
+    "scenario_count": { "type": "integer", "minimum": 0 },
+    "passed_count": { "type": "integer", "minimum": 0 },
+    "pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "category_pass_rate": {
+      "type": "object",
+      "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+    },
+    "verification_decision_accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+    "blocked_high_risk_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "secret_redaction_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "prompt_injection_block_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "data_poisoning_block_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "tool_contradiction_guard_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "repo_false_claim_block_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "repo_semantic_claim_decision_accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+    "sandbox_block_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "p95_latency_ms": { "type": "number", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/error-response.schema.json",
+  "title": "ErrorResponse",
+  "type": "object",
+  "required": ["trace_id", "error", "message", "details"],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "error": { "type": "string", "minLength": 1 },
+    "message": { "type": "string", "minLength": 1 },
+    "details": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": false
+}
+

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/corpus-grant-history-diff-response.schema.json",
+  "title": "CorpusGrantHistoryDiffResponse",
+  "type": "object",
+  "required": ["diffs", "next_cursor"],
+  "properties": {
+    "diffs": {
+      "type": "array",
+      "items": {
+        "$ref": "https://hallu-defense.local/schemas/corpus-grant-history-diff.schema.json"
+      }
+    },
+    "next_cursor": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "additionalProperties": false
+}

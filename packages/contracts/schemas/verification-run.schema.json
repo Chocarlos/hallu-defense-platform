@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-run.schema.json",
+  "title": "VerificationRun",
+  "type": "object",
+  "required": [
+    "trace_id",
+    "tenant_id",
+    "input",
+    "claims",
+    "evidence",
+    "verdicts",
+    "final_decision",
+    "final_text",
+    "policy_version",
+    "created_at"
+  ],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "input": { "type": "object", "additionalProperties": true },
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "claim.schema.json" }
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "evidence.schema.json" }
+    },
+    "verdicts": {
+      "type": "array",
+      "items": { "$ref": "verdict.schema.json" }
+    },
+    "final_decision": {
+      "type": "string",
+      "enum": ["allow", "repaired", "abstained", "blocked", "require_human_review"]
+    },
+    "final_text": { "type": "string" },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
+

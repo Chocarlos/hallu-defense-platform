@@ -1,0 +1,5 @@
+{
+  "repo_ref": ".",
+  "commands": ["python --version"],
+  "network_policy": "deny"
+}

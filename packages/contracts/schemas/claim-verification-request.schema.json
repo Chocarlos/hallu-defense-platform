@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/claim-verification-request.schema.json",
+  "title": "ClaimVerificationRequest",
+  "type": "object",
+  "required": ["claims"],
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/claim.schema.json" }
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "https://hallu-defense.local/schemas/evidence.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,14 @@
+{
+  "tenant_id": "tenant-a",
+  "corpus_id": "hr",
+  "version": 2,
+  "previous_version": 1,
+  "action": "disable",
+  "changed_fields": ["disabled_state"],
+  "reader_roles_added": [],
+  "reader_roles_removed": [],
+  "writer_roles_added": [],
+  "writer_roles_removed": [],
+  "updated_by": "security-reviewer",
+  "updated_at": "2026-07-08T00:05:00Z"
+}

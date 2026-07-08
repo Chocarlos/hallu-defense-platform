@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/corpus-grant-history-diff.schema.json",
+  "title": "CorpusGrantHistoryDiff",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "corpus_id",
+    "version",
+    "previous_version",
+    "action",
+    "changed_fields",
+    "reader_roles_added",
+    "reader_roles_removed",
+    "writer_roles_added",
+    "writer_roles_removed",
+    "updated_by",
+    "updated_at"
+  ],
+  "properties": {
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "corpus_id": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "previous_version": { "type": ["integer", "null"], "minimum": 1 },
+    "action": { "type": "string", "enum": ["create", "update", "disable", "reenable"] },
+    "changed_fields": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["reader_roles", "writer_roles", "disabled_state"] }
+    },
+    "reader_roles_added": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "reader_roles_removed": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "writer_roles_added": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "writer_roles_removed": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "updated_by": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

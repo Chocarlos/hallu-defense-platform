@@ -1,0 +1,66 @@
+{
+  "repo_ref": ".",
+  "commands": ["python --version"],
+  "exit_codes": [0],
+  "stdout": ["Python 3.12.10"],
+  "stderr": [""],
+  "artifacts": ["reports/sandbox-inspection.json"],
+  "evidence": [
+    {
+      "evidence_id": "ev_sandbox_cmd_001",
+      "kind": "command_output",
+      "source_ref": "sandbox://command/1",
+      "content": "command: python --version\nexit_code: 0\nstdout:\nPython 3.12.10\nstderr:\n",
+      "structured_content": {
+        "command": "python --version",
+        "schema_version": "sandbox_command.v1",
+        "argv": ["python", "--version"],
+        "executable": "python",
+        "command_kind": "script",
+        "command_target_args": [],
+        "command_target_tokens": [],
+        "is_targeted": false,
+        "exit_code": 0,
+        "stdout": "Python 3.12.10",
+        "stderr": "",
+        "network_policy": "deny"
+      },
+      "authority": "internal",
+      "freshness": {
+        "retrieved_at": "2026-07-07T00:00:00Z",
+        "published_at": null,
+        "staleness_class": "fresh"
+      }
+    },
+    {
+      "evidence_id": "ev_sandbox_inspection",
+      "kind": "repo_file",
+      "source_ref": "reports/sandbox-inspection.json",
+      "content": "{\"schema_version\":\"sandbox_inspection.v1\"}",
+      "structured_content": {
+        "schema_version": "sandbox_inspection.v1",
+        "git": {
+          "is_repository": true,
+          "status": [],
+          "diff_files": [],
+          "diff_stat": "",
+          "errors": []
+        },
+        "static": {
+          "files": ["service.py"],
+          "python_symbols": [],
+          "parse_errors": [],
+          "truncated": false
+        }
+      },
+      "authority": "internal",
+      "freshness": {
+        "retrieved_at": "2026-07-07T00:00:00Z",
+        "published_at": null,
+        "staleness_class": "fresh"
+      }
+    }
+  ],
+  "network_policy": "deny",
+  "verdict": "SUPPORTED"
+}

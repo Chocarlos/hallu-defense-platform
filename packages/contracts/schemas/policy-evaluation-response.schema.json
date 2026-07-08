@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/policy-evaluation-response.schema.json",
+  "title": "PolicyEvaluationResponse",
+  "type": "object",
+  "required": ["trace_id", "allowed", "action", "policy_version", "matched_rules", "explanation"],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "allowed": { "type": "boolean" },
+    "action": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "allow_with_citation",
+        "rewrite",
+        "abstain",
+        "ask_clarification",
+        "block",
+        "require_human_review"
+      ]
+    },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "matched_rules": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "explanation": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

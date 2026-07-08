@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/tool-validation-response.schema.json",
+  "title": "ToolValidationResponse",
+  "type": "object",
+  "required": ["allowed", "action", "reason", "approval_required"],
+  "properties": {
+    "allowed": { "type": "boolean" },
+    "action": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "allow_with_citation",
+        "rewrite",
+        "abstain",
+        "ask_clarification",
+        "block",
+        "require_human_review"
+      ]
+    },
+    "reason": { "type": "string", "minLength": 1 },
+    "approval_required": { "type": "boolean" },
+    "approval_id": { "type": ["string", "null"], "minLength": 1 },
+    "sanitized_output": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,5 @@
+{
+  "corpus_id": "hr",
+  "reader_roles": ["hr_reader"],
+  "expected_version": -1
+}

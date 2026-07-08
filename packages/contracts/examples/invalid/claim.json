@@ -1,0 +1,11 @@
+{
+  "claim_id": "clm_bad",
+  "text": "",
+  "canonical_form": "",
+  "type": "unsupported_type",
+  "risk_level": "medium",
+  "requires_evidence": true,
+  "source_span": null,
+  "metadata": {}
+}
+

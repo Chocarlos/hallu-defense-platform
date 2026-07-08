@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/policy-evaluation-request.schema.json",
+  "title": "PolicyEvaluationRequest",
+  "type": "object",
+  "required": ["action"],
+  "properties": {
+    "subject": { "type": "string", "minLength": 1 },
+    "action": { "type": "string", "minLength": 1 },
+    "resource": { "type": "string" },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "attributes": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": false
+}

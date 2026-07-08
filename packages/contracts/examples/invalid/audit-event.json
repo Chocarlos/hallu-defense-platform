@@ -1,0 +1,13 @@
+{
+  "event_id": "evt_bad",
+  "trace_id": "tr_audit_0001",
+  "tenant_id": "tenant-a",
+  "event_type": "http_request",
+  "method": "POST",
+  "path": "/claims/extract",
+  "status_code": 99,
+  "outcome": "unknown",
+  "metadata": {},
+  "created_at": "2026-07-07T00:00:00Z"
+}
+

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/approval-record.schema.json",
+  "title": "ApprovalRecord",
+  "type": "object",
+  "required": [
+    "approval_id",
+    "tenant_id",
+    "trace_id",
+    "tool_call",
+    "status",
+    "risk_level",
+    "reason",
+    "requested_by",
+    "created_at"
+  ],
+  "properties": {
+    "approval_id": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "trace_id": { "type": "string", "minLength": 1 },
+    "tool_call": { "$ref": "https://hallu-defense.local/schemas/tool-call-envelope.schema.json" },
+    "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "requested_by": { "type": "string", "minLength": 1 },
+    "decided_by": { "type": ["string", "null"], "minLength": 1 },
+    "decision_reason": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "decided_at": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "additionalProperties": false
+}

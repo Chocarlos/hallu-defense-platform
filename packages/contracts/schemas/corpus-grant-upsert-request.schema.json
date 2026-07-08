@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/corpus-grant-upsert-request.schema.json",
+  "title": "CorpusGrantUpsertRequest",
+  "type": "object",
+  "required": ["corpus_id"],
+  "properties": {
+    "corpus_id": { "type": "string", "minLength": 1 },
+    "reader_roles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "writer_roles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "expected_version": { "type": ["integer", "null"], "minimum": 0 }
+  },
+  "additionalProperties": false
+}

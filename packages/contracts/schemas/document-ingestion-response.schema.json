@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/document-ingestion-response.schema.json",
+  "title": "DocumentIngestionResponse",
+  "type": "object",
+  "required": [
+    "trace_id",
+    "tenant_id",
+    "corpus_id",
+    "backend",
+    "document_count",
+    "indexed_count",
+    "evidence_ids",
+    "warnings"
+  ],
+  "properties": {
+    "trace_id": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "corpus_id": { "type": "string", "minLength": 1 },
+    "backend": { "type": "string", "minLength": 1 },
+    "document_count": { "type": "integer", "minimum": 0 },
+    "indexed_count": { "type": "integer", "minimum": 0 },
+    "evidence_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

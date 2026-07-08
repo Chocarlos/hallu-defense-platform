@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-scenario-history-entry.schema.json",
+  "title": "EvalScenarioHistoryEntry",
+  "type": "object",
+  "required": ["run_id", "created_at", "metrics"],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "metrics": { "$ref": "eval-scenario-metrics.schema.json" }
+  },
+  "additionalProperties": false
+}
