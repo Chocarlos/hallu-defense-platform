@@ -15,6 +15,12 @@ The direct `mcp__claude_code.Agent` route does not expose registered local agent
 types in this session. The supported route is the Claude Code `Workflow` tool
 with `model: "fable"` and git worktree isolation.
 
+On 2026-07-08, Codex retried the direct route with `model: "fable"`,
+`mode: "auto"`, and worktree isolation so Fable could run with automatic
+permissions. The route still failed with `Agent type 'general-purpose' not
+found`. Use workflow-based Fable batches until that direct route exposes a
+usable agent type in this session.
+
 Reusable workflow:
 
 ```text
@@ -39,6 +45,10 @@ Workflow({
 
 Use `mode: "read"` for audits, surveys, or second opinions that must not edit
 files.
+
+For broad product work, delegate batches rather than one-off large tasks. The
+current batch backlog is recorded in
+`docs/development/fable-enterprise-batch.md`.
 
 Write mode intentionally fails unless `goal` and `acceptance` are supplied.
 This prevents sending Fable implementation work without context, target outcome,

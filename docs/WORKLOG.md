@@ -1,5 +1,50 @@
 # Worklog
 
+## 2026-07-08 - Fable enterprise batch delegation
+
+Slice selected:
+
+- Organized the remaining large product work into a batch for Fable and kept
+  Codex on lighter master-branch validation/integration work.
+
+Implementation:
+
+- Verified `master` and `fable5/delegation` were clean and aligned at
+  `1aad178` before the batch launch.
+- Retried direct Claude Code Agent delegation with `model=fable`,
+  `mode=auto`, and worktree isolation so Fable could use automatic permissions.
+- The direct route failed again with `Agent type 'general-purpose' not found`.
+- Launched fallback workflow `wf_6e5f935f-e44`, which delegates five parallel
+  Fable scopes:
+  - RAG live persistence and tenant isolation;
+  - semantic verification / provider-backed NLI hardening;
+  - console replay and approval workflows;
+  - production runtime validation gates;
+  - contract/codegen drift reduction.
+- Added `docs/development/fable-enterprise-batch.md` with the batch backlog,
+  active workflow ID, route limitation, and integration rule.
+- Updated `docs/development/fable-delegation.md` and traceability for `FND-012`.
+
+Validation:
+
+- `git status --short --branch`: clean `master` before batch docs.
+- `git -C .claude\worktrees\fable5-delegation status --short --branch`: clean
+  `fable5/delegation`.
+- `git rev-parse --short HEAD` and `git rev-parse --short fable5/delegation`:
+  both returned `1aad178`.
+- `git diff --name-status master...fable5/delegation`: no differences before
+  the batch launch.
+- Direct auto-mode Fable attempt returned `Agent type 'general-purpose' not
+  found`.
+- Workflow `wf_6e5f935f-e44` launched asynchronously.
+
+Remaining risks:
+
+- Workflow-based Fable agents may still hit approval gates because this session
+  does not expose the direct auto-mode Fable route.
+- No Fable batch diff is integrated until Codex inspects actual changed files
+  and runs validation from `master`.
+
 ## 2026-07-08 - OpenAPI drift gate
 
 Slice selected:
