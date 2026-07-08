@@ -1,5 +1,45 @@
 # Worklog
 
+## 2026-07-08 - Fable persistent branch alignment refresh
+
+Slice selected:
+
+- Refreshed the operational evidence for the Fable delegation branch before
+  concurrent Codex/Fable development.
+
+Implementation:
+
+- Verified `master` and `fable5/delegation` both point to
+  `4ac9df52d37c5999c6aaae7c567c124e51b9a026`.
+- Updated `docs/development/fable-delegation.md` so its current evidence no
+  longer treats the initial baseline commit as the latest delegation state.
+- Updated `docs/development/fable-project-brief.md` with the latest Fable
+  context-validation commit.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `FND-012` with the aligned branch
+  and worktree evidence.
+- Launched Fable workflow `wf_466d0d6a-cb2` in write mode for a bounded RAG
+  persistence tenant-isolation hardening slice while Codex stayed on `master`.
+
+Validation:
+
+- `git status --short --branch`: clean `master` before this documentation
+  refresh.
+- `git -C .claude\worktrees\fable5-delegation status --short --branch`: clean
+  `fable5/delegation`.
+- `git rev-parse --verify HEAD` and
+  `git rev-parse --verify fable5/delegation`: both resolved
+  `4ac9df52d37c5999c6aaae7c567c124e51b9a026`.
+- `git diff --name-status master...fable5/delegation`: no differences before
+  the new Fable workflow launch.
+
+Remaining risks:
+
+- Fable workflow `wf_466d0d6a-cb2` is still running at the time this entry was
+  written; its diff must be inspected and validated before integration.
+- The saved workflow uses temporary worktree isolation. The persistent
+  `fable5/delegation` branch remains the durable coordination branch and must
+  be fast-forwarded after accepted integration work.
+
 ## 2026-07-08 - Fable project context package
 
 Slice selected:
