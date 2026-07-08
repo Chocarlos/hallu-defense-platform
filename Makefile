@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run python-audit container-scan-config security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run python-audit container-scan-config security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -35,6 +35,9 @@ openapi-check:
 
 foundation-docs-check:
 	$(PY) scripts/ci/check_foundation_docs.py
+
+foundation-infra-check:
+	$(PY) scripts/ci/check_foundation_infra.py
 
 traceability-check:
 	$(PY) scripts/ci/check_traceability_matrix.py
