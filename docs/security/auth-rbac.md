@@ -201,7 +201,7 @@ HALLU_DEFENSE_CORPUS_GRANTS_PATH=var/rag/corpus-grants.jsonl
 
 ```text
 HALLU_DEFENSE_CORPUS_GRANTS_BACKEND=postgres
-HALLU_DEFENSE_POSTGRES_DSN=postgresql://postgres@postgres:5432/hallu_defense
+HALLU_DEFENSE_POSTGRES_DSN=postgresql://hallu:hallu@postgres:5432/hallu_defense
 HALLU_DEFENSE_CORPUS_GRANTS_TABLE_NAME=rag_corpus_grants
 ```
 

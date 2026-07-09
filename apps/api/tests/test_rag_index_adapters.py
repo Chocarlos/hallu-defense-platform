@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from hallu_defense.config import Settings
 from hallu_defense.api import routes
 from hallu_defense.domain.models import (
     Authority,
@@ -25,12 +27,15 @@ from hallu_defense.services.rag_index import (
     DeterministicHashEmbedder,
     OpenSearchRagIndexBackend,
     PgVectorRagIndexBackend,
+    PsycopgPgVectorConnection,
     RagChunk,
     RagIndexConfigurationError,
     RagIndexTransportError,
     RagIndexWriteResult,
     RagSearchRequest,
+    create_rag_index_backend,
 )
+import hallu_defense.services.rag_index as rag_index_module
 from hallu_defense.services.retrieval import HybridRetriever
 
 
@@ -1058,6 +1063,138 @@ def test_pgvector_rejects_unsafe_table_names() -> None:
         )
 
 
+def test_create_pgvector_backend_uses_runtime_psycopg_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connect = RecordingPgVectorPsycopgConnect(
+        rows=[
+            {
+                "tenant_id": "tenant-a",
+                "evidence_id": "ev_pg",
+                "source_ref": "policy-a",
+                "content": "Remote work needs manager approval.",
+                "authority": "internal",
+                "staleness_class": "fresh",
+                "published_at": None,
+                "metadata": {"department": "hr"},
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        rag_index_module,
+        "_load_psycopg_connect",
+        lambda: (fake_connect, "dict-row"),
+    )
+    backend = create_rag_index_backend(
+        _settings(
+            rag_index_backend="pgvector",
+            postgres_dsn="postgresql://postgres@localhost/hallu_defense",
+        )
+    )
+
+    assert isinstance(backend, PgVectorRagIndexBackend)
+
+    backend.index_chunks([_chunk()])
+    evidence = backend.search(
+        RagSearchRequest(
+            tenant_id="tenant-a",
+            claim_id="clm_remote",
+            query_text="Remote work needs manager approval.",
+            metadata_filter={"department": "hr"},
+            context_refs=["policy-a"],
+            max_results=3,
+        )
+    )
+
+    assert fake_connect.calls == [
+        ("postgresql://postgres@localhost/hallu_defense", "dict-row"),
+        ("postgresql://postgres@localhost/hallu_defense", "dict-row"),
+    ]
+    assert fake_connect.connections[0].cursor_instance.executemany_calls
+    assert fake_connect.connections[1].cursor_instance.execute_calls
+    assert [item.evidence_id for item in evidence] == ["ev_pg"]
+
+
+def test_create_pgvector_backend_requires_postgres_dsn() -> None:
+    with pytest.raises(RagIndexConfigurationError, match="HALLU_DEFENSE_POSTGRES_DSN"):
+        create_rag_index_backend(_settings(rag_index_backend="pgvector", postgres_dsn=None))
+
+
+def test_create_pgvector_backend_fails_closed_when_psycopg_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_import(module_name: str) -> object:
+        raise ImportError(f"{module_name} unavailable")
+
+    monkeypatch.setattr(rag_index_module, "import_module", missing_import)
+
+    with pytest.raises(RagIndexConfigurationError, match="psycopg package"):
+        create_rag_index_backend(
+            _settings(
+                rag_index_backend="pgvector",
+                postgres_dsn="postgresql://postgres@localhost/hallu_defense",
+            )
+        )
+
+
+def test_create_pgvector_backend_rejects_unsafe_runtime_table_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rag_index_module,
+        "_load_psycopg_connect",
+        lambda: pytest.fail("psycopg should not load before table validation"),
+    )
+
+    with pytest.raises(RagIndexConfigurationError, match="identifier"):
+        create_rag_index_backend(
+            _settings(
+                rag_index_backend="pgvector",
+                postgres_dsn="postgresql://postgres@localhost/hallu_defense",
+                pgvector_table_name="rag_chunks;drop",
+            )
+        )
+
+
+def test_create_pgvector_backend_rejects_dimension_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rag_index_module,
+        "_load_psycopg_connect",
+        lambda: pytest.fail("psycopg should not load before dimension validation"),
+    )
+
+    with pytest.raises(RagIndexConfigurationError, match="EMBEDDING_DIMENSION=16"):
+        create_rag_index_backend(
+            _settings(
+                rag_index_backend="pgvector",
+                postgres_dsn="postgresql://postgres@localhost/hallu_defense",
+                rag_embedding_dimension=4,
+            )
+        )
+
+
+def test_psycopg_pgvector_connection_wraps_connection_errors() -> None:
+    connection = PsycopgPgVectorConnection(
+        dsn="postgresql://postgres@localhost/hallu_defense",
+        connect=RecordingPgVectorPsycopgConnect(connect_error=RuntimeError("database down")),
+    )
+
+    with pytest.raises(RagIndexTransportError, match="pgvector execute_many failed"):
+        connection.execute_many("INSERT INTO rag_evidence_chunks VALUES (%s)", [[1]])
+
+
+def test_psycopg_pgvector_connection_wraps_query_errors() -> None:
+    connection = PsycopgPgVectorConnection(
+        dsn="postgresql://postgres@localhost/hallu_defense",
+        connect=RecordingPgVectorPsycopgConnect(execute_error=RuntimeError("bad query")),
+    )
+
+    with pytest.raises(RagIndexTransportError, match="pgvector fetch_all failed"):
+        connection.fetch_all("SELECT * FROM rag_evidence_chunks WHERE tenant_id = %s", ["tenant-a"])
+
+
 class RecordingRagIndexBackend:
     backend_name = "recording"
 
@@ -1138,6 +1275,92 @@ class RecordingPgVectorConnection:
         return self._rows
 
 
+class RecordingPgVectorPsycopgCursor:
+    def __init__(
+        self,
+        rows: Sequence[Mapping[str, object]] = (),
+        execute_error: Exception | None = None,
+    ) -> None:
+        self.execute_calls: list[tuple[str, Sequence[object]]] = []
+        self.executemany_calls: list[tuple[str, Sequence[Sequence[object]]]] = []
+        self._rows = list(rows)
+        self._execute_error = execute_error
+
+    def __enter__(self) -> "RecordingPgVectorPsycopgCursor":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object | None,
+    ) -> bool | None:
+        return None
+
+    def execute(self, statement: str, parameters: Sequence[object]) -> None:
+        if self._execute_error is not None:
+            raise self._execute_error
+        self.execute_calls.append((statement, parameters))
+
+    def executemany(self, statement: str, parameters: Sequence[Sequence[object]]) -> None:
+        if self._execute_error is not None:
+            raise self._execute_error
+        self.executemany_calls.append((statement, parameters))
+
+    def fetchall(self) -> Sequence[Mapping[str, object]]:
+        return self._rows
+
+
+class RecordingPgVectorPsycopgConnection:
+    def __init__(
+        self,
+        rows: Sequence[Mapping[str, object]] = (),
+        execute_error: Exception | None = None,
+    ) -> None:
+        self.cursor_instance = RecordingPgVectorPsycopgCursor(rows, execute_error)
+
+    def __enter__(self) -> "RecordingPgVectorPsycopgConnection":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object | None,
+    ) -> bool | None:
+        return None
+
+    def cursor(self) -> RecordingPgVectorPsycopgCursor:
+        return self.cursor_instance
+
+
+class RecordingPgVectorPsycopgConnect:
+    def __init__(
+        self,
+        rows: Sequence[Mapping[str, object]] = (),
+        execute_error: Exception | None = None,
+        connect_error: Exception | None = None,
+    ) -> None:
+        self.calls: list[tuple[str, object | None]] = []
+        self.connections: list[RecordingPgVectorPsycopgConnection] = []
+        self._rows = list(rows)
+        self._execute_error = execute_error
+        self._connect_error = connect_error
+
+    def __call__(
+        self,
+        conninfo: str,
+        *,
+        row_factory: object | None = None,
+    ) -> RecordingPgVectorPsycopgConnection:
+        self.calls.append((conninfo, row_factory))
+        if self._connect_error is not None:
+            raise self._connect_error
+        connection = RecordingPgVectorPsycopgConnection(self._rows, self._execute_error)
+        self.connections.append(connection)
+        return connection
+
+
 def _chunk(tenant_id: str = "tenant-a", evidence_id: str = "ev_001_001") -> RagChunk:
     return RagChunk(
         tenant_id=tenant_id,
@@ -1169,3 +1392,16 @@ def _opensearch_template() -> dict[str, object]:
             "required_query_filter": "tenant_id",
         },
     }
+
+
+def _settings(**overrides: object) -> Settings:
+    values = {
+        "environment": "local",
+        "policy_version": "test",
+        "auth_required": False,
+        "allowed_workspace": Path(".").resolve(),
+        "max_command_seconds": 30,
+        "max_output_chars": 12000,
+    }
+    values.update(overrides)
+    return Settings(**values)

@@ -39,14 +39,16 @@ HALLU_DEFENSE_RAG_INDEX_BACKEND=local
 HALLU_DEFENSE_RAG_INDEX_TIMEOUT_SECONDS=5
 HALLU_DEFENSE_OPENSEARCH_ENDPOINT=http://localhost:9200
 HALLU_DEFENSE_OPENSEARCH_INDEX_NAME=hallu_evidence
+HALLU_DEFENSE_POSTGRES_DSN=postgresql://hallu:hallu@localhost:5432/hallu_defense
 HALLU_DEFENSE_PGVECTOR_TABLE_NAME=rag_evidence_chunks
 HALLU_DEFENSE_RAG_EMBEDDING_DIMENSION=16
 ```
 
-`local` is the only fully wired runtime backend. OpenSearch has a stdlib HTTP
-transport; pgvector requires an injected database connection and is intentionally
-fail-closed through `create_rag_index_backend()` until runtime connection wiring
-exists.
+`local` remains the default runtime backend. OpenSearch has a stdlib HTTP
+transport. pgvector has a synchronous psycopg runtime connection adapter behind
+`create_rag_index_backend()` when `HALLU_DEFENSE_POSTGRES_DSN` is configured,
+and still fails closed on missing DSN, missing psycopg, unsafe table names, or
+embedding dimensions that do not match the committed `VECTOR(16)` migration.
 
 ## Runtime Artifacts
 
@@ -64,6 +66,8 @@ exists.
 - `scripts/dev/bootstrap_opensearch_template.py` installs the OpenSearch index
   template with `PUT /_index_template/hallu_evidence_template`. Its `--dry-run`
   mode validates the same local template without contacting OpenSearch.
+- `scripts/dev/live_pgvector_rag_smoke.py` exercises `PgVectorRagIndexBackend`
+  with the same psycopg-backed connection adapter used by the runtime factory.
 
 ## OpenSearch Bootstrap
 
@@ -112,6 +116,45 @@ Current local prerequisites:
   single-node discovery, disabled security, and the local-only bootstrap password
   from `docker-compose.yml`.
 
+## Live pgvector RAG Smoke
+
+The live pgvector RAG smoke is also opt-in. It is not part of
+`rag-persistence-config`, `security-check`, CI, or security CI because it requires
+a running PostgreSQL/pgvector service. Use it only when validating the local
+adapter path:
+
+```text
+HALLU_DEFENSE_LIVE_PGVECTOR_RAG_SMOKE_ENABLED=true make rag-pgvector-live-smoke
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:HALLU_DEFENSE_LIVE_PGVECTOR_RAG_SMOKE_ENABLED = 'true'
+make rag-pgvector-live-smoke
+```
+
+The Makefile target runs `scripts/dev/live_pgvector_rag_smoke.py`. The smoke uses
+the default `HALLU_DEFENSE_POSTGRES_DSN` value
+`postgresql://hallu:hallu@localhost:5432/hallu_defense` and the default
+`HALLU_DEFENSE_PGVECTOR_TABLE_NAME=rag_evidence_chunks`, unless those variables
+are overridden. It verifies the `vector` extension and `VECTOR(16)` embedding
+column, indexes synthetic tenant A/B documents through the existing ingestion
+and retrieval services, asserts tenant isolation through pgvector searches, and
+cleans up only rows tagged for the current smoke run. It does not create, drop,
+truncate, or delete tables or databases.
+
+Current local prerequisites:
+
+- Docker Desktop or Docker Engine must be running.
+- Start the local Postgres/pgvector service from the committed Compose topology:
+  `docker compose up -d postgres`.
+- The `infra/rag/pgvector/001_rag_evidence_chunks.sql` migration must have run
+  for the target database. Compose applies it when the Postgres volume is first
+  initialized.
+- The local Compose service uses `pgvector/pgvector:pg16` with the local-only
+  `hallu` user, password, and database from `docker-compose.yml`.
+
 ## Validation
 
 `apps/api/tests/test_rag_index_adapters.py` verifies:
@@ -131,12 +174,18 @@ Current local prerequisites:
 installation behavior, and fail-closed handling when OpenSearch does not acknowledge
 the template installation.
 
+`apps/api/tests/test_live_pgvector_rag_smoke.py` verifies the pgvector smoke env
+gate, safe table validation, fake-connection live path, tenant isolation checks,
+DSN redaction, and row-only cleanup without Docker.
+
 `apps/api/tests/test_rag_persistence_config.py` verifies the runtime artifacts fail closed
-when tenant isolation, pinned images, bootstrap dry-run wiring, or CI wiring are removed.
+when tenant isolation, pinned images, bootstrap dry-run wiring, live smoke wiring, or CI
+wiring are removed.
 
 ## Current Limits
 
-OpenSearch has an opt-in live smoke for local validation, but it is intentionally
-not part of default CI because it requires Docker/OpenSearch. pgvector remains an
-adapter and static configuration boundary only: connection pools, live migration
-execution evidence, integration tests, and backfill workers remain future work.
+OpenSearch and pgvector have opt-in live smokes for local validation, but they are
+intentionally not part of default CI because they require Docker-backed services.
+Managed connection pooling, repeatable migration execution in deployment,
+integration tests against managed services, and backfill workers remain future
+work.

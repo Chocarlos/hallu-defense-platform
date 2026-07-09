@@ -1,5 +1,78 @@
 # Worklog
 
+## 2026-07-08 - Live pgvector RAG smoke and runtime factory
+
+Slice selected:
+
+- Complete the pgvector side of persistent RAG by wiring a runtime psycopg
+  backend and proving tenant-isolated live vector search against Docker
+  Postgres/pgvector.
+
+Coordination:
+
+- Used four read-only subagents to audit pgvector runtime gaps, Docker/Postgres
+  prerequisites, tenant-isolation invariants, and live-smoke test strategy.
+- Used two writing subagents with separated ownership: one for pgvector runtime
+  factory/tests and one for live-smoke/wiring/docs. Codex audited and integrated
+  both diffs, then tightened dimension validation, schema verification, and DSN
+  consistency.
+
+Implementation:
+
+- Added `PsycopgPgVectorConnection` and wired `create_rag_index_backend()` so
+  `HALLU_DEFENSE_RAG_INDEX_BACKEND=pgvector` works when
+  `HALLU_DEFENSE_POSTGRES_DSN` is configured.
+- Kept pgvector fail-closed on missing DSN, missing psycopg, unsafe table names,
+  connection/query failures, and embedding dimensions other than the committed
+  `VECTOR(16)` migration.
+- Added `scripts/dev/live_pgvector_rag_smoke.py`, an opt-in smoke that verifies
+  the `vector` extension and embedding column, indexes synthetic tenant A/B
+  documents, proves same public evidence IDs do not cross tenants, asserts
+  tenant-isolated retrieval, and deletes only current-run smoke rows.
+- Added `make rag-pgvector-live-smoke`, unit/fake-connection smoke tests, static
+  RAG wiring checks, and persistent RAG documentation.
+- Corrected `.env.example`, RAG docs, auth/RBAC docs, and corpus-grants config
+  validation to use the Compose-aligned Postgres DSN:
+  `postgresql://hallu:hallu@postgres:5432/hallu_defense`.
+- Updated `docs/TRACEABILITY_MATRIX.md` for API/RAG/Python/CI evidence.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_rag_index_adapters.py apps\api\tests\test_live_pgvector_rag_smoke.py apps\api\tests\test_rag_persistence_config.py -q`:
+  69 passed, with the existing FastAPI TestClient deprecation warning.
+- `.venv\Scripts\python -m ruff check apps\api\src\hallu_defense\services\rag_index.py apps\api\tests\test_rag_index_adapters.py scripts\dev\live_pgvector_rag_smoke.py apps\api\tests\test_live_pgvector_rag_smoke.py scripts\ci\check_rag_persistence_config.py apps\api\tests\test_rag_persistence_config.py`:
+  passed.
+- `.venv\Scripts\python scripts\ci\check_rag_persistence_config.py`: validated
+  RAG persistence configuration.
+- `docker compose -p hallu_pgvector_smoke up -d postgres`: started an isolated
+  Postgres/pgvector service with a temporary smoke volume.
+- `docker compose -p hallu_pgvector_smoke exec -T postgres pg_isready -U hallu -d hallu_defense`:
+  accepting connections.
+- `HALLU_DEFENSE_LIVE_PGVECTOR_RAG_SMOKE_ENABLED=true` with
+  `HALLU_DEFENSE_POSTGRES_DSN=postgresql://hallu:hallu@localhost:5432/hallu_defense`:
+  smoke returned status passed, indexed_count 2, tenant_isolation true, and a
+  redacted DSN.
+- `psql` smoke-row count after the smoke returned `0`.
+- `docker compose -p hallu_pgvector_smoke down --volumes`: removed the isolated
+  smoke container, network, and temporary volume.
+- `.venv\Scripts\python scripts\ci\check_corpus_grants_config.py`: validated
+  corpus grants configuration.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 383 passed, with the
+  existing FastAPI TestClient deprecation warning.
+- `.venv\Scripts\python -m mypy apps\api\src`: success, no issues in 37 source
+  files.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  passed.
+- `git diff --check`: no whitespace errors; Windows LF/CRLF warnings only.
+
+Remaining risks:
+
+- The pgvector smoke is opt-in and local Docker only; default CI does not start
+  Postgres/pgvector.
+- Runtime pgvector uses short-lived psycopg connections; production pooling and
+  managed-service validation remain future deployment work.
+- Repeatable production migrations and backfill workers remain future slices.
+
 ## 2026-07-08 - Live OpenSearch RAG smoke and persistent ID hardening
 
 Slice selected:

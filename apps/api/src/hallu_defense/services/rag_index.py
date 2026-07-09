@@ -6,7 +6,9 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from importlib import import_module
+from types import TracebackType
+from typing import Protocol, Self, cast
 from urllib import error, request
 
 from hallu_defense.config import Settings
@@ -20,6 +22,7 @@ from hallu_defense.domain.models import (
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 STRUCTURAL_METADATA_PREFIX = "structural_"
+PGVECTOR_EMBEDDING_DIMENSION = 16
 
 
 class RagIndexError(RuntimeError):
@@ -229,6 +232,88 @@ class PgVectorConnection(Protocol):
         ...
 
 
+class PgVectorPsycopgCursor(Protocol):
+    def __enter__(self) -> Self:
+        ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        ...
+
+    def execute(self, statement: str, parameters: Sequence[object]) -> None:
+        ...
+
+    def executemany(self, statement: str, parameters: Sequence[Sequence[object]]) -> None:
+        ...
+
+    def fetchall(self) -> Sequence[Mapping[str, object]]:
+        ...
+
+
+class PgVectorPsycopgConnection(Protocol):
+    def __enter__(self) -> Self:
+        ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        ...
+
+    def cursor(self) -> PgVectorPsycopgCursor:
+        ...
+
+
+class PgVectorPsycopgConnect(Protocol):
+    def __call__(
+        self,
+        conninfo: str,
+        *,
+        row_factory: object | None = None,
+    ) -> PgVectorPsycopgConnection:
+        ...
+
+
+class PsycopgPgVectorConnection:
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        connect: PgVectorPsycopgConnect | None = None,
+        row_factory: object | None = None,
+    ) -> None:
+        if not dsn.strip():
+            raise RagIndexConfigurationError("Postgres DSN must be configured.")
+        if connect is None:
+            connect, row_factory = _load_psycopg_connect()
+        self._dsn = dsn
+        self._connect = connect
+        self._row_factory = row_factory
+
+    def execute_many(self, statement: str, parameters: Sequence[Sequence[object]]) -> None:
+        try:
+            with self._connect(self._dsn, row_factory=self._row_factory) as connection:
+                with connection.cursor() as cursor:
+                    cursor.executemany(statement, parameters)
+        except Exception as exc:
+            raise RagIndexTransportError("pgvector execute_many failed") from exc
+
+    def fetch_all(self, statement: str, parameters: Sequence[object]) -> Sequence[Mapping[str, object]]:
+        try:
+            with self._connect(self._dsn, row_factory=self._row_factory) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(statement, parameters)
+                    return cursor.fetchall()
+        except Exception as exc:
+            raise RagIndexTransportError("pgvector fetch_all failed") from exc
+
+
 class PgVectorRagIndexBackend:
     backend_name = "pgvector"
 
@@ -338,10 +423,37 @@ def create_rag_index_backend(settings: Settings) -> RagIndexBackend | None:
             timeout_seconds=settings.rag_index_timeout_seconds,
         )
     if backend == "pgvector":
-        raise RagIndexConfigurationError(
-            "pgvector backend requires an injected PgVectorConnection; runtime wiring is pending."
+        _validate_identifier(settings.pgvector_table_name, "pgvector table name")
+        if not settings.postgres_dsn:
+            raise RagIndexConfigurationError(
+                "pgvector backend requires HALLU_DEFENSE_POSTGRES_DSN."
+            )
+        if settings.rag_embedding_dimension != PGVECTOR_EMBEDDING_DIMENSION:
+            raise RagIndexConfigurationError(
+                "pgvector backend requires HALLU_DEFENSE_RAG_EMBEDDING_DIMENSION=16 "
+                "to match infra/rag/pgvector/001_rag_evidence_chunks.sql"
+            )
+        return PgVectorRagIndexBackend(
+            table_name=settings.pgvector_table_name,
+            connection=PsycopgPgVectorConnection(dsn=settings.postgres_dsn),
+            embedder=DeterministicHashEmbedder(dimension=PGVECTOR_EMBEDDING_DIMENSION),
         )
     raise RagIndexConfigurationError(f"Unsupported RAG index backend: {settings.rag_index_backend}")
+
+
+def _load_psycopg_connect() -> tuple[PgVectorPsycopgConnect, object]:
+    try:
+        psycopg_module = import_module("psycopg")
+        rows_module = import_module("psycopg.rows")
+    except ImportError as exc:
+        raise RagIndexConfigurationError(
+            "pgvector backend requires the psycopg package."
+        ) from exc
+    connect = getattr(psycopg_module, "connect")
+    dict_row = getattr(rows_module, "dict_row")
+    if not callable(connect):
+        raise RagIndexConfigurationError("psycopg.connect is not callable.")
+    return cast(PgVectorPsycopgConnect, connect), dict_row
 
 
 def _opensearch_source_from_chunk(chunk: RagChunk) -> dict[str, object]:
