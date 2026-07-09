@@ -24,3 +24,6 @@ artifacts/
 .claude-fable-work/
 .claude/worktrees/
 .claude/settings.local.json
+var/
+test-results/
+playwright-report/

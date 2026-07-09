@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-replay-request.schema.json",
+  "title": "VerificationReplayRequest",
+  "type": "object",
+  "required": ["trace_id"],
+  "properties": {
+    "trace_id": { "type": "string", "minLength": 1, "pattern": "^tr_[A-Za-z0-9_-]+$" }
+  },
+  "additionalProperties": false
+}

@@ -2214,6 +2214,114 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Internal Server Error
+  /verification/replay:
+    post:
+      summary: Replay Verification
+      operationId: replay_verification_verification_replay_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationReplayRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationReplayResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
 components:
   schemas:
     ApprovalDecision:
@@ -3548,6 +3656,49 @@ components:
       - UNVERIFIABLE
       - OUT_OF_SCOPE
       title: VerdictStatus
+    VerificationReplayRequest:
+      properties:
+        trace_id:
+          type: string
+          minLength: 1
+          pattern: ^tr_[A-Za-z0-9_-]+$
+          title: Trace Id
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      title: VerificationReplayRequest
+    VerificationReplayResponse:
+      properties:
+        trace_id:
+          type: string
+          pattern: ^tr_[A-Za-z0-9_-]+$
+          title: Trace Id
+        source_trace_id:
+          type: string
+          pattern: ^tr_[A-Za-z0-9_-]+$
+          title: Source Trace Id
+        source_created_at:
+          type: string
+          format: date-time
+          title: Source Created At
+        source_final_decision:
+          $ref: '#/components/schemas/FinalDecision'
+        decision_changed:
+          type: boolean
+          title: Decision Changed
+        replayed_run:
+          $ref: '#/components/schemas/VerificationRun'
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - source_trace_id
+      - source_created_at
+      - source_final_decision
+      - decision_changed
+      - replayed_run
+      title: VerificationReplayResponse
     VerificationRun:
       properties:
         trace_id:

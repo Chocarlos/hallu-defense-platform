@@ -80,6 +80,86 @@ def test_jsonl_audit_ledger_persists_redacted_verification_runs(tmp_path: Path) 
     assert run.final_text == REDACTED
 
 
+def test_jsonl_audit_ledger_redacts_nested_snapshot_fields(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "audit" / "ledger.jsonl"
+    ledger = AuditLedger(storage_path=ledger_path)
+    run = _verification_run().model_copy(
+        update={
+            "claims": [
+                Claim(
+                    claim_id="clm_secret",
+                    text="This claim mentions password handling.",
+                    canonical_form="canonical api_key value short",
+                    metadata={"api_key": "short", "safe": "kept"},
+                )
+            ],
+            "evidence": [
+                Evidence(
+                    evidence_id="ev_secret",
+                    kind=EvidenceKind.DOCUMENT_CHUNK,
+                    content="This evidence mentions token handling.",
+                    structured_content={"token": "short", "structure": {"secret": "short"}},
+                )
+            ],
+            "verdicts": [
+                ClaimVerdict(
+                    claim_id="clm_secret",
+                    status=VerdictStatus.SUPPORTED,
+                    confidence=0.9,
+                    action=VerdictAction.ALLOW,
+                    reason="The password evidence supports the claim.",
+                    validator_trace={"secret": "short", "matched_rules": ["rule_ok"]},
+                )
+            ],
+        }
+    )
+
+    ledger.append(run)
+
+    stored = ledger.export(tenant_id="tenant-a", trace_id="tr_audit_run")[0]
+    assert stored.claims[0].canonical_form == REDACTED
+    assert stored.claims[0].metadata == {"api_key": REDACTED, "safe": "kept"}
+    assert stored.evidence[0].structured_content == {
+        "token": REDACTED,
+        "structure": {"secret": REDACTED},
+    }
+    assert stored.verdicts[0].reason == REDACTED
+    assert stored.verdicts[0].validator_trace == {
+        "secret": REDACTED,
+        "matched_rules": ["rule_ok"],
+    }
+    assert "short" not in ledger_path.read_text(encoding="utf-8")
+
+
+def test_jsonl_audit_ledger_redacts_source_refs_and_bare_secret_values(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "audit" / "ledger.jsonl"
+    ledger = AuditLedger(storage_path=ledger_path)
+    bare_secret = "sk-" + "a" * 24
+    run = _verification_run().model_copy(
+        update={
+            "input": {"message_text": f"Rotated value {bare_secret}."},
+            "evidence": [
+                Evidence(
+                    evidence_id="ev_signed",
+                    kind=EvidenceKind.DOCUMENT_CHUNK,
+                    source_ref="https://storage.example/hr.pdf?sig=abcdef1234567890",
+                    content=f"Stored value {bare_secret} was present.",
+                )
+            ],
+        }
+    )
+
+    ledger.append(run)
+
+    raw_text = ledger_path.read_text(encoding="utf-8")
+    stored = ledger.export(tenant_id="tenant-a", trace_id="tr_audit_run")[0]
+    assert bare_secret not in raw_text
+    assert "abcdef1234567890" not in raw_text
+    assert stored.input["message_text"] == f"Rotated value {REDACTED}."
+    assert stored.evidence[0].source_ref == f"https://storage.example/hr.pdf{REDACTED}"
+    assert stored.evidence[0].content == f"Stored value {REDACTED} was present."
+
+
 def test_jsonl_audit_ledger_redacts_event_metadata(tmp_path: Path) -> None:
     ledger_path = tmp_path / "audit" / "ledger.jsonl"
     ledger = AuditLedger(storage_path=ledger_path)

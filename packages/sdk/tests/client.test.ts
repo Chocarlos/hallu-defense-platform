@@ -437,4 +437,75 @@ describe("HalluDefenseClient", () => {
       "http://api.local/approvals/decide"
     ]);
   });
+
+  it("replays verification runs through the typed endpoint", async () => {
+    const endpoints: string[] = [];
+    const bodies: unknown[] = [];
+    const fakeFetch: typeof fetch = async (input, init) => {
+      endpoints.push(String(input));
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({
+          trace_id: "tr_replay_call",
+          source_trace_id: "tr_replay_source",
+          source_created_at: "2026-07-08T00:00:00Z",
+          source_final_decision: "allow",
+          decision_changed: false,
+          replayed_run: {
+            trace_id: "tr_replay_call",
+            tenant_id: "tenant-a",
+            input: { replay_of: "tr_replay_source" },
+            claims: [],
+            evidence: [],
+            verdicts: [],
+            final_decision: "allow",
+            final_text: "ok",
+            policy_version: "test",
+            created_at: "2026-07-08T00:01:00Z"
+          }
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      tenantId: "tenant-a",
+      fetchImpl: fakeFetch
+    });
+
+    const replay = await client.replayVerification({ trace_id: "tr_replay_source" });
+
+    expect(endpoints).toEqual(["http://api.local/verification/replay"]);
+    expect(bodies).toEqual([{ trace_id: "tr_replay_source" }]);
+    expect(replay.source_trace_id).toBe("tr_replay_source");
+    expect(replay.decision_changed).toBe(false);
+    expect(replay.replayed_run.input["replay_of"]).toBe("tr_replay_source");
+  });
+
+  it("binds injected browser fetch implementations", async () => {
+    let observedThis: unknown;
+    const browserFetch = async function (
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit
+    ): Promise<Response> {
+      observedThis = this;
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+      return new Response(JSON.stringify({ claims: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    } as typeof fetch;
+
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      fetchImpl: browserFetch
+    });
+
+    await expect(client.extractClaims("hello world claim")).resolves.toEqual([]);
+    expect(observedThis).toBe(globalThis);
+  });
 });

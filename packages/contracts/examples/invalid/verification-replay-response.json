@@ -1,0 +1,7 @@
+{
+  "trace_id": "tr_contract_replay_0001",
+  "source_trace_id": "not-a-trace-id",
+  "source_created_at": "not-a-date",
+  "source_final_decision": "maybe",
+  "decision_changed": "yes"
+}

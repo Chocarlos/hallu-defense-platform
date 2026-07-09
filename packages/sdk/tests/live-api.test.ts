@@ -56,6 +56,32 @@ describe("HalluDefenseClient live API contract", () => {
     expect(run.claims.length).toBeGreaterThan(0);
     expect(run.verdicts.length).toBeGreaterThan(0);
 
+    const replayClient = new HalluDefenseClient({
+      baseUrl: server.baseUrl,
+      tenantId,
+      traceId: "tr_sdk_live_replay"
+    });
+    const replay = await replayClient.replayVerification({ trace_id: traceId });
+
+    expect(replay.trace_id).toBe("tr_sdk_live_replay");
+    expect(replay.source_trace_id).toBe(traceId);
+    expect(replay.source_final_decision).toBe(run.final_decision);
+    expect(replay.replayed_run.trace_id).toBe("tr_sdk_live_replay");
+    expect(replay.replayed_run.tenant_id).toBe(tenantId);
+    expect(replay.replayed_run.input["replay_of"]).toBe(traceId);
+    expect(replay.decision_changed).toBe(
+      replay.replayed_run.final_decision !== run.final_decision
+    );
+
+    const foreignTenantClient = new HalluDefenseClient({
+      baseUrl: server.baseUrl,
+      tenantId: "sdk-live-foreign-tenant",
+      traceId: "tr_sdk_live_replay_denied"
+    });
+    await expect(
+      foreignTenantClient.replayVerification({ trace_id: traceId })
+    ).rejects.toMatchObject({ status: 404 });
+
     const ingestion = await client.ingestDocuments({
       corpus_id: "hr",
       documents: [
@@ -151,6 +177,12 @@ describe("HalluDefenseClient live API contract", () => {
           tenant_id: tenantId,
           trace_id: traceId,
           path: "/documents/ingest",
+          outcome: "success"
+        }),
+        expect.objectContaining({
+          tenant_id: tenantId,
+          trace_id: "tr_sdk_live_replay",
+          path: "/verification/replay",
           outcome: "success"
         }),
         expect.objectContaining({

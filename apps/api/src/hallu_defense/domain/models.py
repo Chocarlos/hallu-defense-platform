@@ -560,3 +560,20 @@ class VerificationRun(BaseModel):
     final_text: str
     policy_version: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class VerificationReplayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(min_length=1, pattern=r"^tr_[A-Za-z0-9_-]+$")
+
+
+class VerificationReplayResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(pattern=r"^tr_[A-Za-z0-9_-]+$")
+    source_trace_id: str = Field(pattern=r"^tr_[A-Za-z0-9_-]+$")
+    source_created_at: datetime
+    source_final_decision: FinalDecision
+    decision_changed: bool
+    replayed_run: VerificationRun

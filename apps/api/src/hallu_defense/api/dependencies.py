@@ -86,6 +86,7 @@ ENDPOINT_ROLE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "POST /repo/checks/run": frozenset({SANDBOX_RUNNER_ROLE}),
     "POST /audit/export": frozenset({AUDITOR_ROLE}),
     "POST /verification/run": frozenset({VERIFIER_ROLE}),
+    "POST /verification/replay": frozenset({VERIFIER_ROLE}),
 }
 
 

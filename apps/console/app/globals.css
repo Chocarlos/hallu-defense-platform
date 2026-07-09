@@ -357,6 +357,14 @@ pre {
   padding: 1rem;
 }
 
+.replay-panel {
+  margin-top: 1rem;
+}
+
+.approval-input-snippet {
+  overflow-wrap: anywhere;
+}
+
 .eval-dashboard-grid {
   display: grid;
   grid-template-columns: 1fr;

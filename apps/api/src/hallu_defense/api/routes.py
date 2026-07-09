@@ -62,6 +62,8 @@ from hallu_defense.domain.models import (
     SandboxRun,
     ToolCallEnvelope,
     ToolValidationResponse,
+    VerificationReplayRequest,
+    VerificationReplayResponse,
     VerificationRun,
     VerificationRunRequest,
     VerdictAction,
@@ -509,3 +511,43 @@ def run_verification(
 ) -> VerificationRun:
     tenant_request = request.model_copy(update={"tenant_id": request.tenant_id or context.tenant_id})
     return orchestrator.run(tenant_request)
+
+
+@router.post("/verification/replay", response_model=VerificationReplayResponse)
+def replay_verification(
+    request: VerificationReplayRequest,
+    context: RequestContext = Depends(require_endpoint_roles("POST /verification/replay")),
+) -> VerificationReplayResponse:
+    source_runs = audit_ledger.export(tenant_id=context.tenant_id, trace_id=request.trace_id)
+    source_candidates = [run for run in source_runs if not isinstance(run.input.get("replay_of"), str)]
+    if not source_candidates:
+        raise HTTPException(
+            status_code=404,
+            detail="Verification run was not found for this tenant.",
+        )
+    source = source_candidates[-1]
+    replayed_run = orchestrator.replay(source)
+    decision_changed = replayed_run.final_decision != source.final_decision
+    audit_ledger.append_event(
+        trace_id=context.trace_id,
+        tenant_id=context.tenant_id,
+        event_type="verification_replay",
+        method="POST",
+        path="/verification/replay",
+        status_code=200,
+        outcome="success",
+        metadata={
+            "source_trace_id": source.trace_id,
+            "source_final_decision": source.final_decision.value,
+            "replay_final_decision": replayed_run.final_decision.value,
+            "decision_changed": decision_changed,
+        },
+    )
+    return VerificationReplayResponse(
+        trace_id=context.trace_id,
+        source_trace_id=source.trace_id,
+        source_created_at=source.created_at,
+        source_final_decision=source.final_decision,
+        decision_changed=decision_changed,
+        replayed_run=replayed_run,
+    )
