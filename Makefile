@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config python-audit container-scan-config observability-config otel-export-live-smoke observability-live-smoke security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config verifier-calibration-generate verifier-calibration-check dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config python-audit container-scan-config observability-config otel-export-live-smoke observability-live-smoke security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -68,6 +68,12 @@ evals-scenarios:
 
 eval-thresholds-config:
 	$(PY) scripts/ci/check_eval_thresholds_config.py
+
+verifier-calibration-generate:
+	$(PY) scripts/dev/generate_verifier_calibration.py
+
+verifier-calibration-check:
+	$(PY) scripts/ci/check_verifier_calibration.py
 
 dashboard-lint:
 	$(PY) scripts/ci/check_grafana_dashboards.py
@@ -157,6 +163,7 @@ security-check:
 	$(PY) scripts/ci/check_backup_retention_config.py
 	$(PY) scripts/ci/check_rag_persistence_config.py
 	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
+	$(PY) scripts/ci/check_verifier_calibration.py
 	$(PY) scripts/ci/check_ingestion_pipeline_config.py
 	$(PY) scripts/ci/python_dependency_audit.py
 	$(PY) scripts/ci/check_sandbox_isolation_config.py

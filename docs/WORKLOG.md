@@ -6055,3 +6055,43 @@ Remaining risks:
 - Prometheus scrape token provisioning, rotation, and deployment-specific
   secret-store wiring remain operational tasks outside this code slice.
 - No row is marked `accepted`.
+
+## 2026-07-09 - Batch 5 - Verifier calibration drift gate
+
+Slice selected:
+
+- Integrated only the verifier calibration slice from the isolated agent
+  worktree `.codex-leader-worktrees/leader-b-b5-b6-runtime`.
+- Scope was limited to deterministic calibration artifact generation, drift
+  gating, CI/evals/Makefile wiring, tests, and traceability rows.
+- Eval report ingestion and async ingestion runtime were intentionally left for
+  separate integration commits because they touch routes, contracts, metrics,
+  and local runtime composition.
+
+Implementation:
+
+- Added `scripts/dev/generate_verifier_calibration.py` and committed
+  `evals/reports/verifier-calibration.json`.
+- Added `scripts/ci/check_verifier_calibration.py` so CI regenerates the
+  artifact and fails on drift.
+- Added focused tests for calibration artifact shape and gate wiring.
+- Wired `verifier-calibration-generate` and `verifier-calibration-check`
+  Makefile targets, backend CI, evals workflow, and `security-check`.
+- Added traceability rows `EVAL-004` and `CI-026`.
+
+Validation:
+
+- `.venv\Scripts\python.exe -m pytest apps\api\tests\test_verifier_calibration.py apps\api\tests\test_verifier_calibration_config.py -q`:
+  6 passed.
+- `.venv\Scripts\python.exe scripts\ci\check_verifier_calibration.py`:
+  verifier calibration artifact is up to date.
+- `.venv\Scripts\python.exe -m ruff check scripts\dev\generate_verifier_calibration.py scripts\ci\check_verifier_calibration.py apps\api\tests\test_verifier_calibration.py apps\api\tests\test_verifier_calibration_config.py`:
+  all checks passed.
+
+Remaining risks:
+
+- The calibration artifact is deterministic over local fixtures; it is not a
+  live statistical sampling job.
+- Eval report persistence/API publish-list and async ingestion runtime remain
+  pending in their own reviewed slices.
+- No row is marked `accepted`.

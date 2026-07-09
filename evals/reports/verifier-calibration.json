@@ -1,0 +1,231 @@
+{
+  "case_count": 8,
+  "cases": [
+    {
+      "actual_action": "allow_with_citation",
+      "actual_status": "SUPPORTED",
+      "category": "document_grounding",
+      "claim_type": "doc_grounded",
+      "confidence": 0.98,
+      "evidence_count": 1,
+      "evidence_ids": [
+        "ev_supported"
+      ],
+      "expected_action": "allow_with_citation",
+      "expected_status": "SUPPORTED",
+      "id": "doc_supported_exact_overlap",
+      "matches_expected": true,
+      "risk_level": "medium",
+      "validator_trace": {
+        "overlap": 1.0
+      }
+    },
+    {
+      "actual_action": "rewrite",
+      "actual_status": "PARTIALLY_SUPPORTED",
+      "category": "document_grounding",
+      "claim_type": "doc_grounded",
+      "confidence": 0.55,
+      "evidence_count": 1,
+      "evidence_ids": [
+        "ev_partial"
+      ],
+      "expected_action": "rewrite",
+      "expected_status": "PARTIALLY_SUPPORTED",
+      "id": "doc_partial_overlap",
+      "matches_expected": true,
+      "risk_level": "medium",
+      "validator_trace": {
+        "overlap": 0.444444
+      }
+    },
+    {
+      "actual_action": "rewrite",
+      "actual_status": "CONTRADICTED",
+      "category": "numeric_contradiction",
+      "claim_type": "doc_grounded",
+      "confidence": 0.82,
+      "evidence_count": 1,
+      "evidence_ids": [
+        "ev_numeric"
+      ],
+      "expected_action": "rewrite",
+      "expected_status": "CONTRADICTED",
+      "id": "doc_numeric_contradiction",
+      "matches_expected": true,
+      "risk_level": "medium",
+      "validator_trace": {
+        "claim_numbers": [
+          "99"
+        ],
+        "overlap": 1.0
+      }
+    },
+    {
+      "actual_action": "abstain",
+      "actual_status": "NOT_FOUND",
+      "category": "insufficient_evidence",
+      "claim_type": "doc_grounded",
+      "confidence": 0.9,
+      "evidence_count": 1,
+      "evidence_ids": [],
+      "expected_action": "abstain",
+      "expected_status": "NOT_FOUND",
+      "id": "doc_not_found_low_overlap",
+      "matches_expected": true,
+      "risk_level": "medium",
+      "validator_trace": {}
+    },
+    {
+      "actual_action": "block",
+      "actual_status": "NOT_FOUND",
+      "category": "insufficient_evidence",
+      "claim_type": "world_fact",
+      "confidence": 0.9,
+      "evidence_count": 0,
+      "evidence_ids": [],
+      "expected_action": "block",
+      "expected_status": "NOT_FOUND",
+      "id": "high_risk_no_evidence_blocks",
+      "matches_expected": true,
+      "risk_level": "high",
+      "validator_trace": {}
+    },
+    {
+      "actual_action": "allow",
+      "actual_status": "OUT_OF_SCOPE",
+      "category": "scope",
+      "claim_type": "creative_statement",
+      "confidence": 0.95,
+      "evidence_count": 0,
+      "evidence_ids": [],
+      "expected_action": "allow",
+      "expected_status": "OUT_OF_SCOPE",
+      "id": "creative_out_of_scope",
+      "matches_expected": true,
+      "risk_level": "low",
+      "validator_trace": {}
+    },
+    {
+      "actual_action": "allow_with_citation",
+      "actual_status": "SUPPORTED",
+      "category": "code_agent_evidence",
+      "claim_type": "test_result",
+      "confidence": 0.98,
+      "evidence_count": 1,
+      "evidence_ids": [
+        "ev_pytest_ok"
+      ],
+      "expected_action": "allow_with_citation",
+      "expected_status": "SUPPORTED",
+      "id": "test_result_exit_zero_supported",
+      "matches_expected": true,
+      "risk_level": "high",
+      "validator_trace": {
+        "exit_codes": [
+          0
+        ]
+      }
+    },
+    {
+      "actual_action": "block",
+      "actual_status": "CONTRADICTED",
+      "category": "code_agent_evidence",
+      "claim_type": "test_result",
+      "confidence": 0.98,
+      "evidence_count": 1,
+      "evidence_ids": [
+        "ev_pytest_failed"
+      ],
+      "expected_action": "block",
+      "expected_status": "CONTRADICTED",
+      "id": "test_result_exit_nonzero_contradicted",
+      "matches_expected": true,
+      "risk_level": "high",
+      "validator_trace": {
+        "exit_codes": [
+          1
+        ]
+      }
+    }
+  ],
+  "confidence_curve": [
+    {
+      "expected_precision": 1.0,
+      "included_cases": 8,
+      "suite_recall": 1.0,
+      "threshold": 0.4
+    },
+    {
+      "expected_precision": 1.0,
+      "included_cases": 8,
+      "suite_recall": 1.0,
+      "threshold": 0.55
+    },
+    {
+      "expected_precision": 1.0,
+      "included_cases": 7,
+      "suite_recall": 0.875,
+      "threshold": 0.7
+    },
+    {
+      "expected_precision": 1.0,
+      "included_cases": 7,
+      "suite_recall": 0.875,
+      "threshold": 0.82
+    },
+    {
+      "expected_precision": 1.0,
+      "included_cases": 6,
+      "suite_recall": 0.75,
+      "threshold": 0.9
+    },
+    {
+      "expected_precision": 1.0,
+      "included_cases": 4,
+      "suite_recall": 0.5,
+      "threshold": 0.95
+    },
+    {
+      "expected_precision": 1.0,
+      "included_cases": 3,
+      "suite_recall": 0.375,
+      "threshold": 0.98
+    }
+  ],
+  "schema_version": "verifier-calibration.v1",
+  "status_summary": {
+    "CONTRADICTED": {
+      "avg_confidence": 0.9,
+      "count": 2,
+      "max_confidence": 0.98,
+      "min_confidence": 0.82
+    },
+    "NOT_FOUND": {
+      "avg_confidence": 0.9,
+      "count": 2,
+      "max_confidence": 0.9,
+      "min_confidence": 0.9
+    },
+    "OUT_OF_SCOPE": {
+      "avg_confidence": 0.95,
+      "count": 1,
+      "max_confidence": 0.95,
+      "min_confidence": 0.95
+    },
+    "PARTIALLY_SUPPORTED": {
+      "avg_confidence": 0.55,
+      "count": 1,
+      "max_confidence": 0.55,
+      "min_confidence": 0.55
+    },
+    "SUPPORTED": {
+      "avg_confidence": 0.98,
+      "count": 2,
+      "max_confidence": 0.98,
+      "min_confidence": 0.98
+    }
+  },
+  "suite": "deterministic_claim_verifier",
+  "verifier": "hallu_defense.services.verifier.ClaimVerifier"
+}
