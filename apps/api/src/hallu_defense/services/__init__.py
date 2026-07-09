@@ -107,6 +107,15 @@ from hallu_defense.services.rag_index import (
 from hallu_defense.services.repair import ResponseRepairer
 from hallu_defense.services.retrieval import HybridRetriever
 from hallu_defense.services.sandbox import SandboxRunner
+from hallu_defense.services.sandbox_exec import (
+    DockerContainerBackend,
+    ExecutionResult,
+    HostSubprocessBackend,
+    SandboxExecutionBackend,
+    SandboxExecutionConfigurationError,
+    SandboxExecutionError,
+    build_sandbox_execution_backend,
+)
 from hallu_defense.services.secrets import (
     EnvSecretManager,
     SecretAccessError,
@@ -202,6 +211,12 @@ __all__ = [
     "RagIndexWriteResult",
     "RagSearchRequest",
     "SandboxRunner",
+    "DockerContainerBackend",
+    "ExecutionResult",
+    "HostSubprocessBackend",
+    "SandboxExecutionBackend",
+    "SandboxExecutionConfigurationError",
+    "SandboxExecutionError",
     "SANDBOX_RUNNER_ROLE",
     "EnvSecretManager",
     "SecretAccessError",
@@ -223,6 +238,7 @@ __all__ = [
     "create_audit_ledger",
     "create_approval_queue",
     "create_corpus_grant_registry",
+    "build_sandbox_execution_backend",
     "fetch_json_url",
     "load_jwks",
     "principal_from_headers",

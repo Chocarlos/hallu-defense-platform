@@ -31,6 +31,7 @@ from hallu_defense.services import (
     ToolValidationRateLimiter,
     ToolSafetyService,
     VerificationOrchestrator,
+    build_sandbox_execution_backend,
     create_model_provider,
     create_secret_manager,
 )
@@ -132,7 +133,8 @@ tool_validation_rate_limiter = ToolValidationRateLimiter(
     max_requests=settings.tool_validation_rate_limit_max_requests,
     window_seconds=settings.tool_validation_rate_limit_window_seconds,
 )
-sandbox_runner = SandboxRunner(settings)
+sandbox_execution_backend = build_sandbox_execution_backend(settings)
+sandbox_runner = SandboxRunner(settings, execution_backend=sandbox_execution_backend)
 orchestrator = VerificationOrchestrator(
     settings=settings,
     audit=audit_ledger,

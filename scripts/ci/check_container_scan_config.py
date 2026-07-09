@@ -9,10 +9,12 @@ SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 DOCKERFILES = {
     "api": ROOT / "infra" / "docker" / "api.Dockerfile",
     "console": ROOT / "infra" / "docker" / "console.Dockerfile",
+    "sandbox": ROOT / "infra" / "docker" / "sandbox.Dockerfile",
 }
 IMAGE_REFS = {
     "api": "hallu-defense-api:ci",
     "console": "hallu-defense-console:ci",
+    "sandbox": "hallu-defense-sandbox:ci",
 }
 FORBIDDEN_ACTION_REFS = {"master", "main", "HEAD"}
 
@@ -93,6 +95,13 @@ def _validate_dockerfile(
         errors.append(f"{dockerfile_path} must install Python dependencies without pip cache")
     if name == "console" and "npm ci" not in dockerfile_text:
         errors.append(f"{dockerfile_path} must use npm ci for reproducible installs")
+    if name == "sandbox":
+        if "pytest==" not in dockerfile_text:
+            errors.append(f"{dockerfile_path} must install pinned pytest")
+        if "node:" not in dockerfile_text or "/usr/local/bin/node" not in dockerfile_text:
+            errors.append(f"{dockerfile_path} must include pinned Node/npm runtime support")
+        if "USER 10001" not in dockerfile_text:
+            errors.append(f"{dockerfile_path} must run as non-root UID 10001")
 
 
 def load_current_config() -> tuple[str, dict[str, str]]:

@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke python-audit container-scan-config security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke python-audit container-scan-config security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -50,6 +50,15 @@ policy-test:
 
 sandbox-test:
 	$(PY) -m pytest apps/api/tests -k sandbox
+
+sandbox-image:
+	docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci .
+
+sandbox-isolation-config:
+	$(PY) scripts/ci/check_sandbox_isolation_config.py
+
+sandbox-live-smoke:
+	$(PY) scripts/dev/live_docker_sandbox_smoke.py
 
 evals-smoke:
 	$(PY) evals/runners/smoke.py
@@ -128,5 +137,6 @@ security-check:
 	$(PY) scripts/ci/check_rag_persistence_config.py
 	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
 	$(PY) scripts/ci/python_dependency_audit.py
+	$(PY) scripts/ci/check_sandbox_isolation_config.py
 	$(PY) scripts/ci/check_container_scan_config.py
 	npm audit --omit dev
