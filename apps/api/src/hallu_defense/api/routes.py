@@ -22,6 +22,7 @@ from hallu_defense.api.dependencies import (
     policy_engine,
     rag_access_policy,
     require_endpoint_roles,
+    require_metrics_access,
     response_repairer,
     sandbox_runner,
     telemetry,
@@ -114,7 +115,7 @@ def health() -> dict[str, str]:
     },
 )
 def metrics(
-    _context: RequestContext = Depends(require_endpoint_roles("GET /metrics")),
+    _context: RequestContext = Depends(require_metrics_access()),
 ) -> PlainTextResponse:
     return PlainTextResponse(
         metrics_collector.render(),

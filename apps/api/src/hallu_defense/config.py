@@ -38,6 +38,10 @@ class SandboxConfigurationError(ValueError):
     pass
 
 
+class MetricsAuthConfigurationError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -56,6 +60,7 @@ class Settings:
     auth_claims_mode: str = "unsigned_headers"
     auth_claims_signature_secret_name: str = "auth/trusted-header-signing-key"
     auth_claims_signature_tolerance_seconds: int = 300
+    metrics_bearer_token_secret_name: str | None = None
     oidc_issuer: str | None = None
     oidc_audience: str | None = None
     oidc_jwks_path: Path | None = None
@@ -129,6 +134,9 @@ def load_settings() -> Settings:
         ),
         auth_claims_signature_tolerance_seconds=int(
             os.getenv("HALLU_DEFENSE_AUTH_CLAIMS_SIGNATURE_TOLERANCE_SECONDS", "300")
+        ),
+        metrics_bearer_token_secret_name=(
+            os.getenv("HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME") or None
         ),
         oidc_issuer=os.getenv("HALLU_DEFENSE_OIDC_ISSUER") or None,
         oidc_audience=os.getenv("HALLU_DEFENSE_OIDC_AUDIENCE") or None,
@@ -240,6 +248,7 @@ def load_settings() -> Settings:
         ),
     )
     validate_auth_settings(settings)
+    validate_metrics_auth_settings(settings)
     validate_cors_settings(settings)
     validate_rate_limit_settings(settings)
     validate_sandbox_settings(settings)
@@ -379,6 +388,33 @@ def validate_auth_settings(settings: Settings) -> None:
 
     if errors:
         raise AuthConfigurationError("\n".join(errors))
+
+
+def validate_metrics_auth_settings(settings: Settings) -> None:
+    environment = settings.environment.strip().lower()
+    secret_name = settings.metrics_bearer_token_secret_name
+    normalized_secret_name = secret_name.strip() if secret_name is not None else ""
+    errors: list[str] = []
+
+    if secret_name is not None and not normalized_secret_name:
+        errors.append(
+            "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME must not be blank; "
+            "unset it only in local/test/dev/CI environments."
+        )
+
+    if environment in PRODUCTION_LIKE_ENVIRONMENTS:
+        if not normalized_secret_name:
+            errors.append(
+                "Production and staging must set HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME."
+            )
+        if settings.secrets_backend.strip().lower() == "env":
+            errors.append(
+                "Production and staging must not use the env secrets backend for the "
+                "metrics bearer token; configure the vault backend instead."
+            )
+
+    if errors:
+        raise MetricsAuthConfigurationError("\n".join(errors))
 
 
 def _validate_oidc_url(

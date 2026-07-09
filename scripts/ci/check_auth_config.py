@@ -13,6 +13,7 @@ CONFIG_MODULE = ROOT / "apps" / "api" / "src" / "hallu_defense" / "config.py"
 AUTH_SERVICE = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "auth.py"
 API_DEPENDENCIES = ROOT / "apps" / "api" / "src" / "hallu_defense" / "api" / "dependencies.py"
 OIDC_PROVIDER_SMOKE = ROOT / "scripts" / "ci" / "oidc_provider_smoke.py"
+METRICS_PROD_SCRAPE_CONFIG = ROOT / "infra" / "prometheus" / "prometheus.prod.yml"
 MAKEFILE = ROOT / "Makefile"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
@@ -38,6 +39,7 @@ REQUIRED_ENV_KEYS = {
     "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_EXPECTED_SUBJECT=",
     "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_EXPECTED_TENANT=",
     "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_REQUIRED_ROLE=",
+    "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=",
 }
 
 
@@ -111,6 +113,22 @@ def validate_policy(policy: Mapping[str, object]) -> None:
     if not isinstance(replay_window, int) or replay_window > 300:
         errors.append("runtime_controls.signed_claims_replay_window_seconds_max must be <= 300")
 
+    metrics_scrape_auth = _mapping(policy.get("metrics_scrape_auth"), "metrics_scrape_auth", errors)
+    if metrics_scrape_auth.get("bearer_token_alternative_allowed") is not True:
+        errors.append("metrics_scrape_auth.bearer_token_alternative_allowed must be true")
+    if (
+        metrics_scrape_auth.get("bearer_token_secret_reference_env")
+        != "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME"
+    ):
+        errors.append(
+            "metrics_scrape_auth.bearer_token_secret_reference_env must reference "
+            "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME"
+        )
+    if metrics_scrape_auth.get("constant_time_comparison_required") is not True:
+        errors.append("metrics_scrape_auth.constant_time_comparison_required must be true")
+    if metrics_scrape_auth.get("fail_closed_when_unconfigured") is not True:
+        errors.append("metrics_scrape_auth.fail_closed_when_unconfigured must be true")
+
     if errors:
         raise AuthConfigError("\n".join(errors))
 
@@ -145,6 +163,9 @@ def validate_supporting_files(
             "Endpoint Role Matrix",
             "HALLU_DEFENSE_AUTH_CLAIMS_SIGNATURE_TOLERANCE_SECONDS",
             "Local development with `HALLU_DEFENSE_AUTH_REQUIRED=false`",
+            "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME",
+            "constant-time",
+            "prometheus.prod.yml",
         },
         "docs/security/auth-rbac.md",
         errors,
@@ -171,13 +192,17 @@ def validate_supporting_files(
             "HALLU_DEFENSE_OIDC_JWKS_PATH, HALLU_DEFENSE_OIDC_JWKS_URL, ",
             "HALLU_DEFENSE_OIDC_JWKS_CACHE_TTL_SECONDS must be positive.",
             "validate_auth_settings(settings)",
+            "validate_metrics_auth_settings(settings)",
+            "metrics_bearer_token_secret_name",
+            "Production and staging must set HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME.",
+            "must not use the env secrets backend",
         },
         "config.py",
         errors,
     )
     _require(
         auth_service_text,
-        {"ADMIN_ROLE", "require_any_role", "sign_trusted_headers"},
+        {"ADMIN_ROLE", "require_any_role", "sign_trusted_headers", "METRICS_READER_ROLE"},
         "auth.py",
         errors,
     )
@@ -190,8 +215,17 @@ def validate_supporting_files(
             "Tenant header does not match OIDC token tenant claim.",
             "require_endpoint_roles",
             "signed_headers",
+            "require_metrics_access",
+            "_metrics_bearer_token_matches",
+            "hmac.compare_digest",
         },
         "api/dependencies.py",
+        errors,
+    )
+    _require(
+        METRICS_PROD_SCRAPE_CONFIG.read_text(encoding="utf-8"),
+        {"authorization:", "credentials_file", "type: Bearer"},
+        "infra/prometheus/prometheus.prod.yml",
         errors,
     )
     _require(

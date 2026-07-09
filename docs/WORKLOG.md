@@ -5984,3 +5984,74 @@ Remaining risks:
 - Production profile, lifecycle deletion, backup/restore drill, Helm chart, and
   kind smoke remain unimplemented in this worktree.
 - No row is marked `accepted`.
+
+## 2026-07-09 - Batch 4 - Live observability and metrics scrape auth
+
+Slice selected:
+
+- Implemented the Batch 4 vertical slice for live observability and scrape
+  authentication in the isolated Codex worktree
+  `.codex-leader-worktrees/leader-a-b4-observability`.
+- Scope was limited to OTel file export, opt-in live observability smokes,
+  authenticated `/metrics`, Prometheus production scrape config, static gates,
+  tests, docs, traceability, and workflow wiring.
+
+Implementation:
+
+- Added an OTel collector `file` exporter writing JSON spans to
+  `/otel-output/spans.jsonl` with rotation and mounted `./var/otel` into the
+  local collector container.
+- Added `scripts/dev/live_otel_export_check.py`, disabled by default, to drive
+  API traffic, poll the spans JSONL file, require HTTP/domain spans, and reject
+  sensitive attributes, payloads, secret markers, and tenant leaks.
+- Added `scripts/dev/live_observability_smoke.py`, disabled by default, to
+  check Prometheus target health, generate verification load, query
+  `hallu_http_requests_total` and `hallu_verification_*`, and verify Grafana
+  health plus the Prometheus datasource.
+- Added authenticated `/metrics` support using
+  `HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME`, `SecretManager`, and
+  constant-time bearer token comparison, while preserving the existing
+  `metrics_reader` role path.
+- Added production fail-closed settings validation for metrics scrape auth and
+  `infra/prometheus/prometheus.prod.yml` using
+  `authorization.credentials_file`.
+- Added `scripts/ci/check_observability_config.py`, focused negative tests,
+  Makefile targets, CI/security static wiring, and an `observability-live` job
+  in `.github/workflows/live.yml`.
+- Resolved integration conflicts with the prior Vault-local slice by preserving
+  both `vault-live` and `observability-live` jobs and both Makefile target sets.
+
+Validation:
+
+- In `.codex-leader-worktrees/leader-a-b4-observability`,
+  `..\..\.venv\Scripts\python.exe -m pytest apps\api\tests\test_live_otel_export_check.py apps\api\tests\test_live_observability_smoke.py apps\api\tests\test_observability_config.py apps\api\tests\test_auth.py apps\api\tests\test_auth_config.py apps\api\tests\test_local_runtime_config.py apps\api\tests\test_traceability_matrix.py apps\api\tests\test_worklog.py -q`:
+  99 passed, with the existing FastAPI/Starlette TestClient warning.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_observability_config.py`:
+  validated live observability config.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_auth_config.py`:
+  validated auth/RBAC configuration.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_local_runtime_config.py`:
+  validated local runtime Compose configuration for 10 services and 3 volumes
+  in the B4 worktree before Vault reconciliation.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_traceability_matrix.py`:
+  validated traceability matrix with 167 requirement rows.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_worklog.py`: validated
+  worklog with 101 entries.
+- `..\..\.venv\Scripts\python.exe -m ruff check` on B4-touched API, tests,
+  scripts, and gates: all checks passed.
+- `..\..\.venv\Scripts\python.exe scripts\dev\live_otel_export_check.py` and
+  `..\..\.venv\Scripts\python.exe scripts\dev\live_observability_smoke.py`:
+  both skipped cleanly because their live env gates were not enabled.
+- `..\..\.venv\Scripts\python.exe scripts\ci\secret_scan.py`: no obvious
+  secrets found.
+- `git diff --check`: no whitespace errors; Git emitted expected LF-to-CRLF
+  working-copy warnings on this Windows checkout.
+
+Remaining risks:
+
+- The enabled live observability checks require Docker Compose services and run
+  in the live workflow or on a Docker-enabled host; local default execution is
+  intentionally skip-safe.
+- Prometheus scrape token provisioning, rotation, and deployment-specific
+  secret-store wiring remain operational tasks outside this code slice.
+- No row is marked `accepted`.

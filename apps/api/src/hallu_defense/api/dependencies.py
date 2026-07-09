@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -248,6 +249,77 @@ def require_endpoint_roles(
     except KeyError as exc:
         raise ValueError(f"No RBAC role requirement configured for endpoint {endpoint!r}.") from exc
     return require_roles(*roles, enforce_when_auth_optional=enforce_when_auth_optional)
+
+
+METRICS_BEARER_TOKEN_SUBJECT = "metrics-scraper"
+
+
+def require_metrics_access() -> Callable[..., RequestContext]:
+    def dependency(
+        request: Request,
+        x_tenant_id: str | None = Header(default=None),
+        x_subject_id: str | None = Header(default=None),
+        x_roles: str | None = Header(default=None),
+        x_auth_claims_signature: str | None = Header(default=None),
+        x_auth_claims_timestamp: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> RequestContext:
+        if _metrics_bearer_token_matches(authorization):
+            tenant_id = x_tenant_id or "local-dev"
+            request.state.authenticated_tenant_id = tenant_id
+            return RequestContext(
+                tenant_id=tenant_id,
+                trace_id=current_trace_id(),
+                principal=Principal(
+                    subject_id=METRICS_BEARER_TOKEN_SUBJECT,
+                    roles=frozenset({METRICS_READER_ROLE}),
+                ),
+            )
+
+        context = get_request_context(
+            request=request,
+            x_tenant_id=x_tenant_id,
+            x_subject_id=x_subject_id,
+            x_roles=x_roles,
+            x_auth_claims_signature=x_auth_claims_signature,
+            x_auth_claims_timestamp=x_auth_claims_timestamp,
+            authorization=authorization,
+        )
+        if not settings.auth_required:
+            return context
+        try:
+            context.principal.require_any_role(frozenset({METRICS_READER_ROLE}))
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        return context
+
+    return dependency
+
+
+def _metrics_bearer_token_matches(authorization: str | None) -> bool:
+    secret_name = settings.metrics_bearer_token_secret_name
+    if secret_name is None or not secret_name.strip():
+        return False
+    token = _bearer_token(authorization)
+    if token is None:
+        return False
+    try:
+        expected = secret_manager.get_secret(secret_name.strip()).reveal()
+    except (SecretAccessError, SecretConfigurationError, SecretNotFoundError):
+        return False
+    if not expected:
+        return False
+    return hmac.compare_digest(token, expected)
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if authorization is None:
+        return None
+    prefix = "bearer "
+    if not authorization.lower().startswith(prefix):
+        return None
+    token = authorization[len(prefix) :].strip()
+    return token or None
 
 
 def _auth_claims_signature_secret() -> str | None:

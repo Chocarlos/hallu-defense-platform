@@ -17,13 +17,30 @@ from hallu_defense.services.auth import (
     APPROVAL_REVIEWER_ROLE,
     AUTH_CLAIMS_MODE_SIGNED_HEADERS,
     AUDITOR_ROLE,
+    METRICS_READER_ROLE,
     AuthenticationError,
     AuthorizationError,
     principal_from_headers,
     Principal,
     sign_trusted_headers,
 )
-from hallu_defense.services.secrets import SecretValue
+from hallu_defense.services.secrets import SecretAccessError, SecretValue
+
+
+class _FakeMetricsSecretManager:
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def get_secret(self, name: str, *, field: str = "value") -> SecretValue:
+        assert name == "observability/metrics-bearer-token"
+        assert field == "value"
+        return SecretValue(name=name, _value=self._token)
+
+
+class _FailingMetricsSecretManager:
+    def get_secret(self, name: str, *, field: str = "value") -> SecretValue:
+        del name, field
+        raise SecretAccessError("secret backend unavailable")
 
 
 class _FakeSecretManager:
@@ -332,3 +349,179 @@ def test_auth_required_requires_subject_header() -> None:
             authorization="Bearer fixture",
             auth_required=True,
         )
+
+
+def _metrics_settings(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "environment": "local",
+        "policy_version": "test",
+        "auth_required": True,
+        "allowed_workspace": Path("."),
+        "max_command_seconds": 5,
+        "max_output_chars": 1000,
+        "metrics_bearer_token_secret_name": "observability/metrics-bearer-token",
+    }
+    values.update(overrides)
+    return Settings(**values)  # type: ignore[arg-type]
+
+
+def test_metrics_endpoint_denies_request_without_token_or_role_when_auth_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 401
+
+
+def test_metrics_endpoint_accepts_valid_bearer_token_when_auth_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret-token"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+
+
+def test_metrics_endpoint_rejects_wrong_bearer_token_when_auth_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/metrics", headers={"Authorization": "Bearer wrong-token"})
+
+    assert response.status_code == 401
+
+
+def test_metrics_endpoint_fails_closed_when_secret_cannot_be_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(dependencies, "secret_manager", _FailingMetricsSecretManager())
+    client = TestClient(app)
+
+    response = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret-token"})
+
+    assert response.status_code == 401
+
+
+def test_metrics_endpoint_accepts_metrics_reader_role_when_auth_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/metrics",
+        headers={
+            "Authorization": "Bearer irrelevant",
+            "x-subject-id": "monitoring-agent",
+            "x-roles": METRICS_READER_ROLE,
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_metrics_endpoint_denies_unrelated_role_without_bearer_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/metrics",
+        headers={
+            "Authorization": "Bearer irrelevant",
+            "x-subject-id": "analyst",
+            "x-roles": "verifier",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_metrics_bearer_token_does_not_grant_access_to_other_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dependencies, "settings", _metrics_settings())
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/audit/export",
+        json={"include_events": True},
+        headers={"Authorization": "Bearer scrape-secret-token"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_metrics_endpoint_ignores_unconfigured_bearer_token_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dependencies,
+        "settings",
+        _metrics_settings(metrics_bearer_token_secret_name=None),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "secret_manager",
+        _FakeMetricsSecretManager("scrape-secret-token"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret-token"})
+
+    assert response.status_code == 401
+
+
+def test_metrics_endpoint_allows_local_mode_without_token_or_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dependencies,
+        "settings",
+        _metrics_settings(auth_required=False, metrics_bearer_token_secret_name=None),
+    )
+    client = TestClient(app)
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200

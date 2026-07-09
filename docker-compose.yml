@@ -72,6 +72,7 @@ services:
       - "4318:4318"
     volumes:
       - ./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./var/otel:/otel-output
 
   postgres:
     image: pgvector/pgvector:pg16
