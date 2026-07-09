@@ -31,6 +31,7 @@ jobs:
       - run: python scripts/ci/check_rag_persistence_config.py
       - run: python scripts/dev/bootstrap_opensearch_template.py --dry-run
       - run: python scripts/ci/python_dependency_audit.py
+      - run: python scripts/ci/check_sandbox_isolation_config.py
       - run: python scripts/ci/check_container_scan_config.py
       - run: npm audit --omit dev
       - name: Build API image
@@ -50,6 +51,17 @@ jobs:
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: hallu-defense-console:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Build sandbox image
+        run: docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci .
+      - name: Scan sandbox image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: hallu-defense-sandbox:ci
           format: table
           exit-code: "1"
           ignore-unfixed: true

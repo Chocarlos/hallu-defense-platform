@@ -34,6 +34,10 @@ class RateLimitConfigurationError(ValueError):
     pass
 
 
+class SandboxConfigurationError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -42,6 +46,13 @@ class Settings:
     allowed_workspace: Path
     max_command_seconds: int
     max_output_chars: int
+    sandbox_backend: str = "host"
+    sandbox_docker_image: str = "hallu-defense-sandbox:ci"
+    sandbox_docker_path: str = "docker"
+    sandbox_docker_memory_mb: int = 512
+    sandbox_docker_cpus: float = 1.0
+    sandbox_docker_pids_limit: int = 256
+    sandbox_docker_timeout_grace_seconds: float = 2.0
     auth_claims_mode: str = "unsigned_headers"
     auth_claims_signature_secret_name: str = "auth/trusted-header-signing-key"
     auth_claims_signature_tolerance_seconds: int = 300
@@ -137,6 +148,20 @@ def load_settings() -> Settings:
         allowed_workspace=Path(workspace).resolve(),
         max_command_seconds=int(os.getenv("HALLU_DEFENSE_MAX_COMMAND_SECONDS", "30")),
         max_output_chars=int(os.getenv("HALLU_DEFENSE_MAX_OUTPUT_CHARS", "12000")),
+        sandbox_backend=os.getenv("HALLU_DEFENSE_SANDBOX_BACKEND", "host").strip().lower(),
+        sandbox_docker_image=os.getenv(
+            "HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE",
+            "hallu-defense-sandbox:ci",
+        ),
+        sandbox_docker_path=os.getenv("HALLU_DEFENSE_SANDBOX_DOCKER_PATH", "docker"),
+        sandbox_docker_memory_mb=int(os.getenv("HALLU_DEFENSE_SANDBOX_DOCKER_MEMORY_MB", "512")),
+        sandbox_docker_cpus=float(os.getenv("HALLU_DEFENSE_SANDBOX_DOCKER_CPUS", "1.0")),
+        sandbox_docker_pids_limit=int(
+            os.getenv("HALLU_DEFENSE_SANDBOX_DOCKER_PIDS_LIMIT", "256")
+        ),
+        sandbox_docker_timeout_grace_seconds=float(
+            os.getenv("HALLU_DEFENSE_SANDBOX_DOCKER_TIMEOUT_GRACE_SECONDS", "2")
+        ),
         opa_enabled=_env_bool("HALLU_DEFENSE_OPA_ENABLED", False),
         opa_path=os.getenv("HALLU_DEFENSE_OPA_PATH"),
         opa_policy_dir=Path(os.getenv("HALLU_DEFENSE_OPA_POLICY_DIR", "infra/opa")).resolve(),
@@ -217,6 +242,7 @@ def load_settings() -> Settings:
     validate_auth_settings(settings)
     validate_cors_settings(settings)
     validate_rate_limit_settings(settings)
+    validate_sandbox_settings(settings)
     return settings
 
 
@@ -271,6 +297,32 @@ def validate_rate_limit_settings(settings: Settings) -> None:
         errors.append("HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS must be positive.")
     if errors:
         raise RateLimitConfigurationError("\n".join(errors))
+
+
+def validate_sandbox_settings(settings: Settings) -> None:
+    environment = settings.environment.strip().lower()
+    backend = settings.sandbox_backend.strip().lower()
+    errors: list[str] = []
+
+    if backend not in {"host", "docker"}:
+        errors.append("HALLU_DEFENSE_SANDBOX_BACKEND must be host or docker.")
+    if environment in PRODUCTION_LIKE_ENVIRONMENTS and backend == "host":
+        errors.append("Production and staging must set HALLU_DEFENSE_SANDBOX_BACKEND=docker.")
+    if not settings.sandbox_docker_image.strip():
+        errors.append("HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE must not be empty.")
+    if not settings.sandbox_docker_path.strip():
+        errors.append("HALLU_DEFENSE_SANDBOX_DOCKER_PATH must not be empty.")
+    if settings.sandbox_docker_memory_mb <= 0:
+        errors.append("HALLU_DEFENSE_SANDBOX_DOCKER_MEMORY_MB must be positive.")
+    if settings.sandbox_docker_cpus <= 0:
+        errors.append("HALLU_DEFENSE_SANDBOX_DOCKER_CPUS must be positive.")
+    if settings.sandbox_docker_pids_limit <= 0:
+        errors.append("HALLU_DEFENSE_SANDBOX_DOCKER_PIDS_LIMIT must be positive.")
+    if settings.sandbox_docker_timeout_grace_seconds <= 0:
+        errors.append("HALLU_DEFENSE_SANDBOX_DOCKER_TIMEOUT_GRACE_SECONDS must be positive.")
+
+    if errors:
+        raise SandboxConfigurationError("\n".join(errors))
 
 
 def validate_auth_settings(settings: Settings) -> None:

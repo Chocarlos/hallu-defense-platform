@@ -16,6 +16,9 @@ def test_container_scan_config_validates_required_images() -> None:
         workflow_text=workflow_text,
         dockerfile_texts=dockerfile_texts,
     )
+    assert "infra/docker/sandbox.Dockerfile" in workflow_text
+    assert "hallu-defense-sandbox:ci" in workflow_text
+    assert "sandbox" in dockerfile_texts
 
 
 def test_container_scan_config_rejects_missing_trivy_scan() -> None:
@@ -34,6 +37,16 @@ def test_container_scan_config_rejects_non_failing_scan() -> None:
     with pytest.raises(ContainerScanConfigError, match="exit-code"):
         validate_container_scan_config(
             workflow_text=workflow_text.replace('exit-code: "1"', 'exit-code: "0"'),
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_missing_sandbox_scan() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+
+    with pytest.raises(ContainerScanConfigError, match="hallu-defense-sandbox:ci"):
+        validate_container_scan_config(
+            workflow_text=workflow_text.replace("image-ref: hallu-defense-sandbox:ci", ""),
             dockerfile_texts=dockerfile_texts,
         )
 

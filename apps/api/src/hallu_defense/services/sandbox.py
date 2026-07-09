@@ -19,6 +19,11 @@ from hallu_defense.domain.models import (
     StalenessClass,
     VerdictStatus,
 )
+from hallu_defense.services.sandbox_exec import (
+    SandboxExecutionBackend,
+    SandboxExecutionError,
+    build_sandbox_execution_backend,
+)
 from hallu_defense.services.text import bounded, tokenize
 
 ALLOWED_EXECUTABLES = {"python", "pytest", "npm", "node"}
@@ -130,8 +135,13 @@ class SandboxError(ValueError):
 
 
 class SandboxRunner:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        execution_backend: SandboxExecutionBackend | None = None,
+    ) -> None:
         self._settings = settings
+        self._execution_backend = execution_backend or build_sandbox_execution_backend(settings)
 
     def run(self, request: RepoChecksRunRequest) -> SandboxRun:
         repo_path = self._resolve_repo(request.repo_ref)
@@ -144,15 +154,16 @@ class SandboxRunner:
         for command in request.commands:
             args = self._parse_command(command, repo_path, request.network_policy)
             parsed_commands.append(args)
-            completed = subprocess.run(
-                args,
-                cwd=repo_path,
-                env=self._sandbox_env(request.network_policy),
-                text=True,
-                capture_output=True,
-                timeout=self._settings.max_command_seconds,
-                check=False,
-            )
+            try:
+                completed = self._execution_backend.execute(
+                    args,
+                    cwd=repo_path,
+                    env=self._sandbox_env(request.network_policy),
+                    timeout=self._settings.max_command_seconds,
+                    output_caps=self._settings.max_output_chars,
+                )
+            except SandboxExecutionError as exc:
+                raise SandboxError(str(exc)) from exc
             exit_codes.append(completed.returncode)
             stdout.append(bounded(completed.stdout, self._settings.max_output_chars))
             stderr.append(bounded(completed.stderr, self._settings.max_output_chars))

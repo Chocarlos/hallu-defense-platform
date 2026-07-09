@@ -5755,3 +5755,76 @@ Remaining risks:
   `--api` smoke against a running Keycloak is closed by the lead in the
   integration regression.
 - Nothing advances beyond `tested`; no traceability row is marked `accepted`.
+
+## 2026-07-09 - Batch 3 - Sandbox Docker isolation
+
+Slice selected:
+
+- Implemented the M6 Batch 3 smallest vertical slice: Docker-backed sandbox
+  execution behind a backend abstraction, static isolation gates, sandbox image
+  scan wiring, and an opt-in live smoke.
+- All new and updated traceability rows remain `tested`; none are `accepted`.
+
+Implementation:
+
+- Added `services/sandbox_exec.py` with `SandboxExecutionBackend`,
+  `ExecutionResult`, `HostSubprocessBackend`, and `DockerContainerBackend`.
+- Kept `SandboxRunner` responsible for command allowlisting, destructive and
+  network preflight regex checks, artifact capture, and host-side read-only
+  git/static inspection, while delegating execution to the configured backend.
+- Added sandbox settings:
+  `HALLU_DEFENSE_SANDBOX_BACKEND`,
+  `HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE`,
+  `HALLU_DEFENSE_SANDBOX_DOCKER_PATH`,
+  `HALLU_DEFENSE_SANDBOX_DOCKER_MEMORY_MB`,
+  `HALLU_DEFENSE_SANDBOX_DOCKER_CPUS`,
+  `HALLU_DEFENSE_SANDBOX_DOCKER_PIDS_LIMIT`, and
+  `HALLU_DEFENSE_SANDBOX_DOCKER_TIMEOUT_GRACE_SECONDS`, with production and
+  staging fail-closed unless the backend is `docker`.
+- Added `infra/docker/sandbox.Dockerfile`, `sandbox-image`,
+  `sandbox-isolation-config`, and `sandbox-live-smoke` targets, Trivy scan
+  wiring for `hallu-defense-sandbox:ci`, and the `sandbox-live` job after
+  Batch 2 live jobs.
+- Added `scripts/ci/check_sandbox_isolation_config.py` and
+  `scripts/dev/live_docker_sandbox_smoke.py`.
+- Updated `.env.example`, the sandbox ADR, container-scanning docs, traceability
+  rows `SBOX-001`, `SBOX-002`, `SBOX-003`, `SBOX-006`, `SEC-009`, `PY-012`,
+  `API-009`, `FND-010`, `SEC-011`, `CI-008`, and row-count evidence, plus new
+  rows `SBOX-016`, `SBOX-017`, and `CI-023`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_sandbox_docker_backend.py apps\api\tests\test_sandbox_isolation_config.py apps\api\tests\test_container_scan_config.py -q`:
+  15 passed.
+- `.venv\Scripts\python scripts\ci\check_sandbox_isolation_config.py`:
+  validated sandbox Docker isolation config.
+- `.venv\Scripts\python scripts\ci\check_container_scan_config.py`:
+  validated container scan config for 3 images.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  159 requirement rows.
+- `.venv\Scripts\python -m pytest apps\api\tests -k sandbox -q`: 31 passed,
+  434 deselected, with the existing FastAPI/Starlette TestClient deprecation
+  warning.
+- `Get-Command docker -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source`:
+  no Docker executable was found on PATH in this shell.
+- `.venv\Scripts\python scripts\dev\live_docker_sandbox_smoke.py`: skipped
+  cleanly because `HALLU_DEFENSE_LIVE_DOCKER_SANDBOX_SMOKE_ENABLED` was not
+  enabled.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  all checks passed.
+- `.venv\Scripts\python -m mypy apps\api\src`: success, no issues in 39 source
+  files.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 98 entries.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_traceability_matrix.py apps\api\tests\test_worklog.py -q`:
+  12 passed.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_cors_config.py apps\api\tests\test_auth_config.py -q`:
+  21 passed.
+
+Remaining risks:
+
+- Docker was not available on PATH locally, so the image build, runtime Trivy
+  scan, and enabled live Docker sandbox smoke remain CI/live-pending.
+- The API container will need deliberate Docker daemon access for this backend
+  in production profile work; that socket-mount tradeoff remains a Batch 7
+  deployment decision.
+- Nothing advances beyond `tested`; no traceability row is marked `accepted`.
