@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
 from collections.abc import Iterable, Mapping
@@ -9,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+
+try:
+    from evals.runners.thresholds import evaluate_thresholds, load_suite_thresholds
+except ImportError:  # running as a standalone script (python evals/runners/scenarios.py)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from evals.runners.thresholds import evaluate_thresholds, load_suite_thresholds
 
 from hallu_defense.config import Settings
 from hallu_defense.domain.models import RepoChecksRunRequest
@@ -20,7 +27,6 @@ GOLDEN_SET = ROOT / "evals" / "golden_sets" / "scenarios.json"
 REPORT_PATH = ROOT / "evals" / "reports" / "scenario-metrics.json"
 HISTORY_PATH = ROOT / "evals" / "reports" / "scenario-history.json"
 HISTORY_LIMIT = 50
-P95_LATENCY_TARGET_MS = 2_500.0
 
 
 def main() -> None:
@@ -356,15 +362,8 @@ def _verdict_field(verdicts: object, key: str) -> list[Any]:
 
 
 def _metric_failures(metrics: Mapping[str, Any]) -> list[str]:
-    failures: list[str] = []
-    if metrics.get("pass_rate") != 1.0:
-        failures.append(f"metric pass_rate expected 1.0, got {metrics.get('pass_rate')}")
-    if float(metrics.get("p95_latency_ms", 0.0)) > P95_LATENCY_TARGET_MS:
-        failures.append(
-            f"metric p95_latency_ms expected <= {P95_LATENCY_TARGET_MS}, "
-            f"got {metrics.get('p95_latency_ms')}"
-        )
-    return failures
+    suite_config = load_suite_thresholds("scenarios")
+    return evaluate_thresholds(metrics, suite_config)
 
 
 def _append_history(metrics: Mapping[str, Any]) -> None:

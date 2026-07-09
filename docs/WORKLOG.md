@@ -5828,3 +5828,98 @@ Remaining risks:
   in production profile work; that socket-mount tradeoff remains a Batch 7
   deployment decision.
 - Nothing advances beyond `tested`; no traceability row is marked `accepted`.
+
+## 2026-07-09 - Batch 5 - Eval thresholds gate
+
+Slice selected:
+
+- Integrated the completed Batch 5 thresholds slice from the Sonnet worktree:
+  versioned eval thresholds, shared runner enforcement, and an
+  anti-weakening config gate.
+- This slice does not include verifier calibration or live eval report
+  ingestion; those remain separate Batch 5 slices.
+
+Coordination:
+
+- Launched 20 Sonnet CLI agents in isolated worktrees after the Claude Code
+  Workflow MCP route proved read-only in this session.
+- Seventeen agents exited on the Claude session limit
+  (`resets 5:50pm America/Panama`), so only completed worktrees with real
+  diffs and validation were considered.
+- Integrated this slice selectively, excluding volatile
+  `evals/reports/*.json` changes that only contained local run IDs and latency
+  drift.
+
+Implementation:
+
+- Added `evals/config/thresholds.json` with schema version
+  `eval-thresholds.v1` and per-suite `min`/`max` thresholds.
+- Added `evals/runners/thresholds.py` and refactored
+  `evals/runners/smoke.py` and `evals/runners/scenarios.py` so their
+  `_metric_failures` functions load the versioned thresholds.
+- Added `scripts/ci/check_eval_thresholds_config.py`, focused loader/runner
+  tests, and anti-weakening gate tests.
+- Wired `eval-thresholds-config` into `Makefile`, backend CI, and `evals.yml`.
+- Updated traceability rows `EVAL-003` and `CI-025`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_eval_thresholds_loader.py apps\api\tests\test_eval_runner_thresholds.py apps\api\tests\test_eval_thresholds_config.py -q`:
+  28 passed, with the existing FastAPI/Starlette TestClient deprecation
+  warning.
+- `.venv\Scripts\python scripts\ci\check_eval_thresholds_config.py`:
+  validated 25 gated metric thresholds.
+
+Remaining risks:
+
+- Thresholds are calibrated to the current deterministic golden sets; the
+  separate calibration/drift-gate slice remains pending.
+- Live eval report persistence, publish/list APIs, and Prometheus gauges remain
+  pending because their agents hit the Claude session limit.
+- No row is marked `accepted`.
+
+## 2026-07-09 - Batch 6 - Ingestion outbox storage
+
+Slice selected:
+
+- Integrated the completed Batch 6 storage-only slice from the Sonnet worktree:
+  PostgreSQL durable ingestion outbox migration, storage service, and static
+  config gate.
+- This slice intentionally does not wire async ingestion mode, the worker loop,
+  status endpoint, or backfill/reindex runtime.
+
+Coordination:
+
+- Reviewed the outbox worktree diff before integration and applied only
+  storage/gate/test changes plus shared Makefile/CI wiring.
+- Merged shared Makefile and CI edits after the thresholds slice to avoid
+  overwriting parallel work.
+
+Implementation:
+
+- Added `infra/rag/pgvector/006_ingestion_outbox.sql` with the
+  tenant-scoped `rag_ingestion_jobs` table and `(status, available_at)` index.
+- Added `apps/api/src/hallu_defense/services/ingestion_jobs.py` with enqueue,
+  atomic `FOR UPDATE SKIP LOCKED` claim, guarded complete, and guarded
+  fail/dead-letter backoff.
+- Added SQL-shape/state-transition tests against `RecordingSqlProvider`.
+- Added `scripts/ci/check_ingestion_pipeline_config.py`, focused negative
+  tests, `ingestion-pipeline-config` Makefile target, backend CI wiring, and
+  security workflow/security-check wiring.
+- Updated migration-applier tests to include `006_ingestion_outbox.sql`.
+- Updated traceability rows `RAG-008` and `CI-027`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_ingestion_jobs.py apps\api\tests\test_ingestion_pipeline_config.py apps\api\tests\test_apply_postgres_migrations.py -q`:
+  24 passed.
+- `.venv\Scripts\python scripts\ci\check_ingestion_pipeline_config.py`:
+  validated ingestion pipeline storage configuration.
+
+Remaining risks:
+
+- Atomicity is proven against a recording provider fake; live PostgreSQL
+  concurrency evidence remains pending.
+- Async API, worker, backfill/reindex, and their live smoke remain pending
+  because their agents hit the Claude session limit.
+- No row is marked `accepted`.

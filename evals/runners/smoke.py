@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+
+try:
+    from evals.runners.thresholds import evaluate_thresholds, load_suite_thresholds
+except ImportError:  # running as a standalone script (python evals/runners/smoke.py)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from evals.runners.thresholds import evaluate_thresholds, load_suite_thresholds
 
 from hallu_defense.main import app
 
@@ -15,7 +22,6 @@ GOLDEN_SET = ROOT / "evals" / "golden_sets" / "smoke.json"
 REPORT_PATH = ROOT / "evals" / "reports" / "smoke-metrics.json"
 SUPPORTED_STATUSES = {"SUPPORTED"}
 ALLOW_DECISIONS = {"allow"}
-P95_LATENCY_TARGET_MS = 2_500.0
 
 
 def main() -> None:
@@ -191,29 +197,8 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, float | int]:
 
 
 def _metric_failures(metrics: dict[str, float | int]) -> list[str]:
-    checks = {
-        "final_decision_accuracy": 1.0,
-        "trace_coverage": 1.0,
-        "claim_ledger_coverage": 1.0,
-        "verdict_ledger_coverage": 1.0,
-        "claim_precision": 1.0,
-        "claim_recall": 1.0,
-        "unsupported_claim_recall": 1.0,
-    }
-    failures = [
-        f"metric {metric} expected >= {minimum}, got {metrics[metric]}"
-        for metric, minimum in checks.items()
-        if float(metrics[metric]) < minimum
-    ]
-    if float(metrics["false_positive_blocking"]) > 0:
-        failures.append(f"metric false_positive_blocking expected 0, got {metrics['false_positive_blocking']}")
-    if float(metrics["critical_pass_through"]) > 0:
-        failures.append(f"metric critical_pass_through expected 0, got {metrics['critical_pass_through']}")
-    if float(metrics["p95_latency_ms"]) > P95_LATENCY_TARGET_MS:
-        failures.append(
-            f"metric p95_latency_ms expected <= {P95_LATENCY_TARGET_MS}, got {metrics['p95_latency_ms']}"
-        )
-    return failures
+    suite_config = load_suite_thresholds("smoke")
+    return evaluate_thresholds(metrics, suite_config)
 
 
 def _write_report(results: list[dict[str, Any]], metrics: dict[str, float | int]) -> None:
