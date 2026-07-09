@@ -119,6 +119,7 @@ role requirements.
 | `POST /claims/classify` | `verifier` |
 | `POST /evidence/retrieve` | `verifier` |
 | `POST /documents/ingest` | `rag_writer` |
+| `POST /documents/ingest/status` | `rag_writer` |
 | `POST /rag/corpus-grants/upsert` | `rag_writer` |
 | `POST /rag/corpus-grants/disable` | `rag_writer` |
 | `POST /rag/corpus-grants/list` | `rag_writer` or `verifier` |
@@ -133,6 +134,8 @@ role requirements.
 | `POST /approvals/decide` | `approval_reviewer` |
 | `POST /repo/checks/run` | `sandbox_runner` |
 | `POST /audit/export` | `auditor` |
+| `POST /evals/reports/publish` | `eval_publisher` |
+| `POST /evals/reports/list` | `auditor` or `verifier` |
 | `POST /verification/run` | `verifier` |
 | `POST /verification/replay` | `verifier` |
 
@@ -146,7 +149,8 @@ Local development with `HALLU_DEFENSE_AUTH_REQUIRED=false` bypasses this matrix
 except for `POST /approvals/decide`, `POST /rag/corpus-grants/upsert`,
 `POST /rag/corpus-grants/disable`, `POST /rag/corpus-grants/list`, and
 `POST /rag/corpus-grants/history`, and
-`POST /rag/corpus-grants/history/diff`; those routes always require an
+`POST /rag/corpus-grants/history/diff`, `POST /evals/reports/publish`, and
+`POST /evals/reports/list`; those routes always require an
 authenticated principal with one of their listed roles because they mutate or
 expose authorization state.
 

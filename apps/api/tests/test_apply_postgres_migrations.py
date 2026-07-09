@@ -19,15 +19,14 @@ from scripts.dev import apply_postgres_migrations as migrations
 MIGRATIONS_DIR: Path = migrations.ROOT / "infra" / "rag" / "pgvector"
 
 # The full, ordered migration set as it exists on disk (alphabetical filename
-# order is also apply order; 000 is the bootstrap ledger table). 005 is
-# reserved for a parallel Batch 5 migration not yet present on disk; the
-# applier's glob order is unaffected by the gap.
+# order is also apply order; 000 is the bootstrap ledger table).
 EXPECTED_ORDER: list[str] = [
     "000_schema_migrations.sql",
     "001_rag_evidence_chunks.sql",
     "002_rag_corpus_grants.sql",
     "003_audit_ledger.sql",
     "004_approval_queue.sql",
+    "005_eval_reports.sql",
     "006_ingestion_outbox.sql",
 ]
 
@@ -90,7 +89,7 @@ def test_first_application_applies_every_migration_in_order() -> None:
     assert applied == EXPECTED_ORDER
     # The bootstrap ledger migration must be applied first.
     assert applied[0] == "000_schema_migrations.sql"
-    # All five versions end up recorded in the ledger.
+    # All versions end up recorded in the ledger.
     assert connection.applied_versions == set(EXPECTED_ORDER)
 
 
@@ -117,6 +116,7 @@ def test_partial_state_applies_only_the_missing_migrations() -> None:
     assert applied == [
         "003_audit_ledger.sql",
         "004_approval_queue.sql",
+        "005_eval_reports.sql",
         "006_ingestion_outbox.sql",
     ]
 

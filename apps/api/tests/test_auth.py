@@ -137,6 +137,7 @@ def test_endpoint_role_matrix_covers_protected_routes() -> None:
         "POST /claims/classify": frozenset({"verifier"}),
         "POST /evidence/retrieve": frozenset({"verifier"}),
         "POST /documents/ingest": frozenset({"rag_writer"}),
+        "POST /documents/ingest/status": frozenset({"rag_writer"}),
         "POST /rag/corpus-grants/upsert": frozenset({"rag_writer"}),
         "POST /rag/corpus-grants/disable": frozenset({"rag_writer"}),
         "POST /rag/corpus-grants/list": frozenset({"rag_writer", "verifier"}),
@@ -151,6 +152,8 @@ def test_endpoint_role_matrix_covers_protected_routes() -> None:
         "POST /approvals/decide": frozenset({"approval_reviewer"}),
         "POST /repo/checks/run": frozenset({"sandbox_runner"}),
         "POST /audit/export": frozenset({"auditor"}),
+        "POST /evals/reports/publish": frozenset({"eval_publisher"}),
+        "POST /evals/reports/list": frozenset({"auditor", "verifier"}),
         "POST /verification/run": frozenset({"verifier"}),
         "POST /verification/replay": frozenset({"verifier"}),
     }

@@ -98,6 +98,111 @@ describe("HalluDefenseClient", () => {
     expect(audit.events[0]?.path).toBe("/claims/extract");
   });
 
+  it("publishes and lists eval reports through typed endpoints", async () => {
+    const endpoints: string[] = [];
+    const bodies: unknown[] = [];
+    const fakeFetch: typeof fetch = async (input, init) => {
+      endpoints.push(String(input));
+      bodies.push(JSON.parse(String(init?.body)));
+      if (String(input).endsWith("/evals/reports/publish")) {
+        return new Response(
+          JSON.stringify({
+            trace_id: "tr_eval_publish_sdk",
+            report: {
+              report_id: "evr_sdk",
+              tenant_id: "tenant-a",
+              suite: "scenarios",
+              run_id: "sdk-run",
+              source: "sdk-test",
+              metrics: {
+                scenario_count: 21,
+                pass_rate: 1,
+                p95_latency_ms: 4.79,
+                groundedness: 0.98,
+                faithfulness: 0.99
+              },
+              payload: { report_path: "evals/reports/scenario-metrics.json" },
+              published_by: "sdk-publisher",
+              published_at: "2026-07-09T15:00:00Z"
+            }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          trace_id: "tr_eval_list_sdk",
+          reports: [
+            {
+              report_id: "evr_sdk",
+              tenant_id: "tenant-a",
+              suite: "scenarios",
+              run_id: "sdk-run",
+              source: "sdk-test",
+              metrics: {
+                scenario_count: 21,
+                pass_rate: 1,
+                p95_latency_ms: 4.79,
+                groundedness: 0.98,
+                faithfulness: 0.99
+              },
+              payload: { report_path: "evals/reports/scenario-metrics.json" },
+              published_by: "sdk-publisher",
+              published_at: "2026-07-09T15:00:00Z"
+            }
+          ]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      tenantId: "tenant-a",
+      subjectId: "sdk-publisher",
+      roles: ["eval_publisher"],
+      fetchImpl: fakeFetch
+    });
+
+    const published = await client.publishEvalReport({
+      suite: "scenarios",
+      run_id: "sdk-run",
+      source: "sdk-test",
+      metrics: {
+        scenario_count: 21,
+        pass_rate: 1,
+        p95_latency_ms: 4.79,
+        groundedness: 0.98,
+        faithfulness: 0.99
+      },
+      payload: { report_path: "evals/reports/scenario-metrics.json" }
+    });
+    const listed = await client.listEvalReports({ suite: "scenarios", limit: 5 });
+
+    expect(published.report.report_id).toBe("evr_sdk");
+    expect(listed.reports[0]?.report_id).toBe("evr_sdk");
+    expect(endpoints).toEqual([
+      "http://api.local/evals/reports/publish",
+      "http://api.local/evals/reports/list"
+    ]);
+    expect(bodies).toEqual([
+      {
+        suite: "scenarios",
+        run_id: "sdk-run",
+        source: "sdk-test",
+        metrics: {
+          scenario_count: 21,
+          pass_rate: 1,
+          p95_latency_ms: 4.79,
+          groundedness: 0.98,
+          faithfulness: 0.99
+        },
+        payload: { report_path: "evals/reports/scenario-metrics.json" }
+      },
+      { suite: "scenarios", limit: 5 }
+    ]);
+  });
+
   it("ingests documents through the typed API", async () => {
     const endpoints: string[] = [];
     const fakeFetch: typeof fetch = async (input) => {
@@ -139,6 +244,42 @@ describe("HalluDefenseClient", () => {
     expect(endpoints).toEqual(["http://api.local/documents/ingest"]);
     expect(result.trace_id).toBe("tr_ingest");
     expect(result.backend).toBe("local");
+  });
+
+  it("fetches document ingestion status through the typed API", async () => {
+    const endpoints: string[] = [];
+    const bodies: unknown[] = [];
+    const fakeFetch: typeof fetch = async (input, init) => {
+      endpoints.push(String(input));
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({
+          trace_id: "tr_status",
+          tenant_id: "tenant-a",
+          job_id: "ing_123",
+          corpus_id: "hr",
+          job_type: "ingest",
+          job_status: "queued",
+          attempts: 0,
+          available_at: "2026-07-09T12:00:00Z",
+          created_at: "2026-07-09T12:00:00Z",
+          updated_at: "2026-07-09T12:00:00Z"
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      tenantId: "tenant-a",
+      fetchImpl: fakeFetch
+    });
+
+    const result = await client.getDocumentIngestionStatus({ job_id: "ing_123" });
+
+    expect(endpoints).toEqual(["http://api.local/documents/ingest/status"]);
+    expect(bodies).toEqual([{ job_id: "ing_123" }]);
+    expect(result.job_status).toBe("queued");
   });
 
   it("manages corpus grants through typed endpoints", async () => {

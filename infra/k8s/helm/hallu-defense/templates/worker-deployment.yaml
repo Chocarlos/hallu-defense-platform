@@ -1,0 +1,68 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-worker
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "hallu-defense.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      securityContext:
+        {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            {{- toYaml .Values.worker.command | nindent 12 }}
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "hallu-defense.apiEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: keycloak-jwks
+              mountPath: {{ .Values.oidc.jwksPath | quote }}
+              subPath: keycloak-jwks.json
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('worker probe placeholder')"
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('worker probe placeholder')"
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        - name: keycloak-jwks
+          secret:
+            secretName: {{ include "hallu-defense.fullname" . }}-runtime
+            items:
+              - key: keycloak-jwks.json
+                path: keycloak-jwks.json
+        - name: tmp
+          emptyDir: {}
+{{- end }}

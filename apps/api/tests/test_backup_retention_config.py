@@ -90,9 +90,83 @@ def test_backup_retention_policy_rejects_non_tenant_scoped_deletion() -> None:
 def test_supporting_files_must_wire_backup_retention_gate() -> None:
     with pytest.raises(BackupRetentionConfigError, match="Makefile"):
         validate_supporting_files(
-            docs_text="backup-retention-policy.json restore drill",
+            docs_text=(
+                "backup-retention-policy.json restore drill "
+                "run_retention_execution.py backup_restore_drill.py"
+            ),
             security_text="backup/restore and retention policy",
             makefile_text="security-check:\n\tpython scripts/ci/secret_scan.py\n",
             ci_workflow_text="python scripts/ci/check_backup_retention_config.py",
             security_workflow_text="python scripts/ci/check_backup_retention_config.py",
+            data_lifecycle_text=_valid_data_lifecycle_text(),
+            retention_execution_text=_valid_retention_script_text(),
+            backup_restore_drill_text=_valid_backup_drill_text(),
+            api_pyproject_text="cryptography",
         )
+
+
+def test_supporting_files_require_retention_script_safeguards() -> None:
+    with pytest.raises(BackupRetentionConfigError, match="confirm-tenant-id"):
+        validate_supporting_files(
+            docs_text=(
+                "backup-retention-policy.json restore drill "
+                "run_retention_execution.py backup_restore_drill.py"
+            ),
+            security_text="backup/restore and retention policy",
+            makefile_text=_valid_makefile_text(),
+            ci_workflow_text="python scripts/ci/check_backup_retention_config.py",
+            security_workflow_text="python scripts/ci/check_backup_retention_config.py",
+            data_lifecycle_text=_valid_data_lifecycle_text(),
+            retention_execution_text="HALLU_DEFENSE_RETENTION_EXECUTION_ENABLED",
+            backup_restore_drill_text=_valid_backup_drill_text(),
+            api_pyproject_text="cryptography",
+        )
+
+
+def test_supporting_files_require_backup_restore_drill_safeguards() -> None:
+    with pytest.raises(BackupRetentionConfigError, match="pg_restore"):
+        validate_supporting_files(
+            docs_text=(
+                "backup-retention-policy.json restore drill "
+                "run_retention_execution.py backup_restore_drill.py"
+            ),
+            security_text="backup/restore and retention policy",
+            makefile_text=_valid_makefile_text(),
+            ci_workflow_text="python scripts/ci/check_backup_retention_config.py",
+            security_workflow_text="python scripts/ci/check_backup_retention_config.py",
+            data_lifecycle_text=_valid_data_lifecycle_text(),
+            retention_execution_text=_valid_retention_script_text(),
+            backup_restore_drill_text="HALLU_DEFENSE_BACKUP_RESTORE_DRILL_ENABLED pg_dump",
+            api_pyproject_text="cryptography",
+        )
+
+
+def _valid_makefile_text() -> str:
+    return (
+        "backup-retention-config:\n\tpython scripts/ci/check_backup_retention_config.py\n"
+        "retention-execution:\n\tpython scripts/dev/run_retention_execution.py\n"
+        "backup-restore-drill:\n\tpython scripts/dev/backup_restore_drill.py\n"
+    )
+
+
+def _valid_data_lifecycle_text() -> str:
+    return (
+        "POSTGRES_LIFECYCLE_TABLES minimum_days retention_execution "
+        "tenant_data_deletion delete_tenant_data tenant_id = %s DELETE FROM append_event"
+    )
+
+
+def _valid_retention_script_text() -> str:
+    return (
+        "HALLU_DEFENSE_RETENTION_EXECUTION_ENABLED "
+        "HALLU_DEFENSE_TENANT_DATA_DELETION_ENABLED --confirm-tenant-id "
+        "execute_retention delete_tenant_data sys.exit(main())"
+    )
+
+
+def _valid_backup_drill_text() -> str:
+    return (
+        "HALLU_DEFENSE_BACKUP_RESTORE_DRILL_ENABLED docker compose exec -T "
+        "pg_dump pg_restore Fernet create_secret_manager minio/mc backup-drills "
+        "parity report_path sys.exit(main())"
+    )

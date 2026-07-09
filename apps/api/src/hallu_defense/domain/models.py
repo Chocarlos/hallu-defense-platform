@@ -91,6 +91,14 @@ class ApprovalDecision(StrEnum):
     REJECT = "reject"
 
 
+class DocumentIngestionJobStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DEAD = "dead"
+
+
 class ErrorResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -243,6 +251,29 @@ class DocumentIngestionResponse(BaseModel):
     indexed_count: int = Field(ge=0)
     evidence_ids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    job_id: str | None = Field(default=None, min_length=1)
+    job_status: DocumentIngestionJobStatus | None = None
+
+
+class DocumentIngestionStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1)
+
+
+class DocumentIngestionStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str
+    tenant_id: str
+    job_id: str
+    corpus_id: str | None = None
+    job_type: Literal["ingest", "reindex_corpus"]
+    job_status: DocumentIngestionJobStatus
+    attempts: int = Field(ge=0)
+    available_at: datetime
+    created_at: datetime
+    updated_at: datetime
 
 
 class CorpusGrant(BaseModel):
@@ -533,6 +564,66 @@ class AuditExportResponse(BaseModel):
     trace_id: str
     runs: list["VerificationRun"]
     events: list[AuditEvent] = Field(default_factory=list)
+
+
+class EvalReportMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_count: int = Field(ge=0)
+    pass_rate: float = Field(ge=0, le=1)
+    p95_latency_ms: float = Field(ge=0)
+    groundedness: float | None = Field(default=None, ge=0, le=1)
+    faithfulness: float | None = Field(default=None, ge=0, le=1)
+
+
+class EvalReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str = Field(pattern=r"^evr_[A-Za-z0-9_-]+$")
+    tenant_id: str = Field(min_length=1)
+    suite: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
+    run_id: str = Field(min_length=1, max_length=120)
+    source: str = Field(default="api", min_length=1, max_length=120)
+    metrics: EvalReportMetrics
+    payload: dict[str, object] = Field(default_factory=dict)
+    published_by: str = Field(min_length=1)
+    published_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EvalReportPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    suite: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
+    run_id: str = Field(min_length=1, max_length=120)
+    source: str = Field(default="api", min_length=1, max_length=120)
+    metrics: EvalReportMetrics
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class EvalReportPublishResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str
+    report: EvalReport
+
+
+class EvalReportListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    suite: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class EvalReportListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str
+    reports: list[EvalReport]
 
 
 class VerificationRunRequest(BaseModel):

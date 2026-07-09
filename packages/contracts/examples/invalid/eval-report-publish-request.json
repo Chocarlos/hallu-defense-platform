@@ -1,0 +1,9 @@
+{
+  "suite": "scenarios",
+  "run_id": "scenario-20260709-150000",
+  "metrics": {
+    "scenario_count": 21,
+    "pass_rate": 2,
+    "p95_latency_ms": 4.79
+  }
+}

@@ -1,0 +1,64 @@
+services:
+  api:
+    environment:
+      HALLU_DEFENSE_ENV: production
+      HALLU_DEFENSE_AUTH_REQUIRED: "true"
+      HALLU_DEFENSE_AUTH_CLAIMS_MODE: oidc_jwt
+      HALLU_DEFENSE_OIDC_ISSUER: https://auth.example.invalid/realms/hallu-defense
+      HALLU_DEFENSE_OIDC_AUDIENCE: hallu-defense-api
+      HALLU_DEFENSE_OIDC_JWKS_PATH: /run/hallu-defense/keycloak-jwks.json
+      HALLU_DEFENSE_CORS_ALLOW_ORIGINS: https://console.example.invalid
+      HALLU_DEFENSE_SECRETS_BACKEND: vault
+      HALLU_DEFENSE_VAULT_ADDR: http://vault:8200
+      HALLU_DEFENSE_VAULT_MOUNT: secret
+      HALLU_DEFENSE_VAULT_TOKEN_ENV: HALLU_DEFENSE_RUNTIME_VAULT_TOKEN
+      HALLU_DEFENSE_RUNTIME_VAULT_TOKEN: ${HALLU_DEFENSE_RUNTIME_VAULT_TOKEN:?set HALLU_DEFENSE_RUNTIME_VAULT_TOKEN outside git}
+      HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME: observability/metrics-scrape-token
+      HALLU_DEFENSE_POSTGRES_DSN: ${HALLU_DEFENSE_POSTGRES_DSN:?set HALLU_DEFENSE_POSTGRES_DSN outside git}
+      HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+      HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: postgres
+      HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
+      HALLU_DEFENSE_RAG_INDEX_BACKEND: pgvector
+      HALLU_DEFENSE_INGESTION_MODE: async
+      HALLU_DEFENSE_OTEL_ENABLED: "true"
+      HALLU_DEFENSE_OTEL_EXPORTER: otlp
+      HALLU_DEFENSE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+      HALLU_DEFENSE_SANDBOX_BACKEND: docker
+      HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: hallu-defense-sandbox:ci
+      HALLU_DEFENSE_SANDBOX_DOCKER_PATH: docker
+    volumes:
+      - ./var/keycloak/jwks.json:/run/hallu-defense/keycloak-jwks.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - otel-collector
+      - postgres
+      - redis
+      - vault
+
+  console:
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: https://api.example.invalid
+
+  prometheus:
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./var/prometheus/api-metrics.jwt:/run/secrets/hallu_defense_metrics_bearer_token:ro
+
+  grafana:
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER outside git}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD outside git}
+
+  postgres:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER outside git}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD outside git}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB outside git}
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER outside git}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD outside git}

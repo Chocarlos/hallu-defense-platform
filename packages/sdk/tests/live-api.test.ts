@@ -158,6 +158,45 @@ describe("HalluDefenseClient live API contract", () => {
     expect(historyDiff.diffs[1]?.previous_version).toBe(1);
     expect(historyDiff.next_cursor).toBeNull();
 
+    const evalPublisherClient = new HalluDefenseClient({
+      baseUrl: server.baseUrl,
+      tenantId,
+      traceId: "tr_sdk_live_eval_publish",
+      subjectId: "sdk-eval-publisher",
+      roles: ["eval_publisher"]
+    });
+    const evalPublish = await evalPublisherClient.publishEvalReport({
+      suite: "scenarios",
+      run_id: "sdk-live-run",
+      source: "sdk-live-test",
+      metrics: {
+        scenario_count: 21,
+        pass_rate: 1,
+        p95_latency_ms: 4.79,
+        groundedness: 0.98,
+        faithfulness: 0.99
+      },
+      payload: { report_path: "evals/reports/scenario-metrics.json" }
+    });
+    expect(evalPublish.trace_id).toBe("tr_sdk_live_eval_publish");
+    expect(evalPublish.report.tenant_id).toBe(tenantId);
+    expect(evalPublish.report.published_by).toBe("sdk-eval-publisher");
+
+    const evalAuditorClient = new HalluDefenseClient({
+      baseUrl: server.baseUrl,
+      tenantId,
+      traceId: "tr_sdk_live_eval_list",
+      subjectId: "sdk-auditor",
+      roles: ["auditor"]
+    });
+    const evalList = await evalAuditorClient.listEvalReports({
+      suite: "scenarios",
+      limit: 5
+    });
+    expect(evalList.reports.map((item) => item.report_id)).toContain(
+      evalPublish.report.report_id
+    );
+
     const auditClient = new HalluDefenseClient({
       baseUrl: server.baseUrl,
       tenantId,
@@ -196,6 +235,12 @@ describe("HalluDefenseClient live API contract", () => {
           trace_id: "tr_sdk_live_grant",
           path: "/rag/corpus-grants/disable",
           outcome: "success"
+        }),
+        expect.objectContaining({
+          tenant_id: tenantId,
+          trace_id: "tr_sdk_live_eval_publish",
+          path: "/evals/reports/publish",
+          outcome: "success"
         })
       ])
     );
@@ -213,6 +258,7 @@ async function startApiServer(): Promise<ApiServer> {
       cwd: repoRoot,
       env: {
         ...process.env,
+        PYTHONPATH: path.join(repoRoot, "apps/api/src"),
         HALLU_DEFENSE_ALLOWED_WORKSPACE: repoRoot
       },
       stdio: ["ignore", "pipe", "pipe"]

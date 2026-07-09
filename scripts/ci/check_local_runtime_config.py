@@ -22,6 +22,7 @@ CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 
 REQUIRED_SERVICES = {
     "api",
+    "ingestion-worker",
     "console",
     "prometheus",
     "grafana",
@@ -36,6 +37,7 @@ REQUIRED_SERVICES = {
 REQUIRED_VOLUMES = {"postgres-data", "opensearch-data", "minio-data"}
 REQUIRED_PORTS = {
     "api": "8000:8000",
+    "ingestion-worker": (),
     "console": "3000:3000",
     "prometheus": "9090:9090",
     "grafana": "3001:3000",
@@ -79,8 +81,22 @@ REQUIRED_API_ENV = {
     "HALLU_DEFENSE_RAG_INDEX_BACKEND": "opensearch",
     "HALLU_DEFENSE_OPENSEARCH_ENDPOINT": "http://opensearch:9200",
     "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME": "hallu_evidence",
+    "HALLU_DEFENSE_POSTGRES_DSN": "postgresql://hallu:hallu@postgres:5432/hallu_defense",
+    "HALLU_DEFENSE_INGESTION_MODE": "sync",
 }
 REQUIRED_API_DEPENDS_ON = {"otel-collector", "postgres", "redis", "opensearch"}
+REQUIRED_WORKER_ENV = {
+    "HALLU_DEFENSE_ENV": "local",
+    "HALLU_DEFENSE_AUTH_REQUIRED": "false",
+    "HALLU_DEFENSE_ALLOWED_WORKSPACE": "/workspace",
+    "HALLU_DEFENSE_RAG_INDEX_BACKEND": "opensearch",
+    "HALLU_DEFENSE_OPENSEARCH_ENDPOINT": "http://opensearch:9200",
+    "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME": "hallu_evidence",
+    "HALLU_DEFENSE_POSTGRES_DSN": "postgresql://hallu:hallu@postgres:5432/hallu_defense",
+    "HALLU_DEFENSE_INGESTION_MODE": "async",
+    "HALLU_DEFENSE_INGESTION_WORKER_ID": "compose-ingestion-worker",
+}
+REQUIRED_WORKER_DEPENDS_ON = {"postgres", "opensearch"}
 REQUIRED_GRAFANA_ENV = {
     "GF_USERS_ALLOW_SIGN_UP": "false",
     "GF_AUTH_ANONYMOUS_ENABLED": "false",
@@ -88,6 +104,7 @@ REQUIRED_GRAFANA_ENV = {
 }
 REQUIRED_COMPOSE_VOLUME_MOUNTS = {
     "api": ".:/workspace:ro",
+    "ingestion-worker": ".:/workspace:ro",
     "prometheus": "./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
     "grafana": "./infra/grafana/provisioning:/etc/grafana/provisioning:ro",
     "otel-collector": (
@@ -160,6 +177,7 @@ def _validate_compose(compose: Mapping[str, object], errors: list[str]) -> None:
     _validate_environment("api", services, REQUIRED_API_ENV, errors)
     _validate_environment("grafana", services, REQUIRED_GRAFANA_ENV, errors)
     _validate_api_dependencies(services, errors)
+    _validate_ingestion_worker(services, errors)
     _validate_console_dependencies(services, errors)
     _validate_observability_dependencies(services, errors)
     _validate_postgres(services, errors)
@@ -174,8 +192,10 @@ def _validate_service_port(
     service: Mapping[str, object],
     errors: list[str],
 ) -> None:
-    ports = _string_sequence(service.get("ports"), f"{service_name}.ports", errors)
     required_ports = REQUIRED_PORTS[service_name]
+    if required_ports == ():
+        return
+    ports = _string_sequence(service.get("ports"), f"{service_name}.ports", errors)
     if isinstance(required_ports, str):
         required_ports = (required_ports,)
     for required_port in required_ports:
@@ -188,13 +208,15 @@ def _validate_service_image_or_build(
     service: Mapping[str, object],
     errors: list[str],
 ) -> None:
-    if service_name in {"api", "console"}:
+    if service_name in {"api", "console", "ingestion-worker"}:
         build = _mapping(service.get("build"), f"{service_name}.build", errors)
         dockerfile = build.get("dockerfile")
         if not isinstance(dockerfile, str) or not (ROOT / dockerfile).exists():
             errors.append(f"service {service_name} build.dockerfile must exist")
         if build.get("context") != ".":
             errors.append(f"service {service_name} build.context must be repo root")
+        if service_name == "ingestion-worker" and dockerfile != "infra/docker/api.Dockerfile":
+            errors.append("service ingestion-worker must use the API Dockerfile")
         return
 
     image = service.get("image")
@@ -240,6 +262,22 @@ def _validate_api_dependencies(services: Mapping[str, object], errors: list[str]
     missing = REQUIRED_API_DEPENDS_ON - depends_on
     if missing:
         errors.append("service api depends_on missing: " + ", ".join(sorted(missing)))
+
+
+def _validate_ingestion_worker(services: Mapping[str, object], errors: list[str]) -> None:
+    worker = _mapping(services.get("ingestion-worker"), "service ingestion-worker", errors)
+    command = _string_sequence(worker.get("command"), "ingestion-worker.command", errors)
+    if command != ("python", "-m", "hallu_defense.worker"):
+        errors.append("service ingestion-worker command must be python -m hallu_defense.worker")
+    depends_on = set(
+        _string_sequence(worker.get("depends_on"), "ingestion-worker.depends_on", errors)
+    )
+    missing = REQUIRED_WORKER_DEPENDS_ON - depends_on
+    if missing:
+        errors.append(
+            "service ingestion-worker depends_on missing: " + ", ".join(sorted(missing))
+        )
+    _validate_environment("ingestion-worker", services, REQUIRED_WORKER_ENV, errors)
 
 
 def _validate_console_dependencies(services: Mapping[str, object], errors: list[str]) -> None:

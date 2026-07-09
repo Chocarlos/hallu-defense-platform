@@ -46,7 +46,14 @@
     "postgres": {
       "profile": "active",
       "persistent": true,
-      "data_classes": ["audit_ledger", "verification_runs", "approval_records"],
+      "data_classes": [
+        "audit_ledger",
+        "verification_runs",
+        "approval_records",
+        "evidence_indexes",
+        "eval_reports",
+        "short_lived_cache"
+      ],
       "backup": {
         "enabled": true,
         "frequency": "daily",
@@ -62,7 +69,10 @@
         "classes": {
           "audit_ledger": { "days": 365 },
           "verification_runs": { "days": 180 },
-          "approval_records": { "days": 365 }
+          "approval_records": { "days": 365 },
+          "evidence_indexes": { "days": 90 },
+          "eval_reports": { "days": 365 },
+          "short_lived_cache": { "days": 1 }
         }
       }
     },

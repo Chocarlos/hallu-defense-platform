@@ -96,6 +96,7 @@ describe("hallu-defense MCP server API contract", () => {
       expect.arrayContaining([
         "verify_claims",
         "ingest_documents",
+        "get_ingestion_status",
         "retrieve_evidence",
         "validate_tool_call",
         "validate_tool_output",

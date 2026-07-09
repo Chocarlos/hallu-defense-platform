@@ -26,6 +26,8 @@ from hallu_defense.services.ingestion_jobs import (
     _COMPLETE_JOB_SQL,
     _FAIL_JOB_SQL,
     _INSERT_JOB_SQL,
+    _REQUEUE_STALE_RUNNING_SQL,
+    _SELECT_JOB_SQL,
 )
 from hallu_defense.services.postgres import RecordingSqlProvider
 
@@ -165,6 +167,26 @@ def test_claim_batch_returns_empty_list_when_nothing_is_claimable() -> None:
     assert claimed == []
 
 
+def test_get_uses_tenant_scoped_lookup_and_parses_row() -> None:
+    provider = RecordingSqlProvider(fetch_all_rows=[_row(status=IngestionJobStatus.QUEUED.value)])
+    queue, _ = _queue(provider=provider)
+
+    job = queue.get(job_id="ing_abc", tenant_id="tenant-a")
+
+    assert job is not None
+    assert job.job_id == "ing_abc"
+    assert job.tenant_id == "tenant-a"
+    assert provider.calls == [
+        ("fetch_all", _SELECT_JOB_SQL, ("ing_abc", "tenant-a")),
+    ]
+
+
+def test_get_returns_none_for_missing_tenant_scoped_job() -> None:
+    queue, _ = _queue(provider=RecordingSqlProvider(fetch_all_rows=()))
+
+    assert queue.get(job_id="ing_missing", tenant_id="tenant-a") is None
+
+
 def test_claim_batch_rejects_non_positive_batch_size() -> None:
     queue, _ = _queue()
 
@@ -243,6 +265,41 @@ def test_fail_dead_letters_when_max_attempts_reached() -> None:
     assert job.status is IngestionJobStatus.DEAD
     assert job.attempts == 5
     assert job.locked_by is None
+
+
+def test_requeue_stale_running_uses_skip_locked_and_dead_letter_guard() -> None:
+    locked_before = FIXED_NOW - timedelta(minutes=5)
+    provider = RecordingSqlProvider(
+        returning_rows=[_row(status=IngestionJobStatus.FAILED.value, attempts=1, locked_by=None)]
+    )
+    queue, _ = _queue(provider=provider, max_attempts=5)
+
+    jobs = queue.requeue_stale_running(
+        locked_before=locked_before,
+        batch_size=2,
+    )
+
+    assert "FOR UPDATE SKIP LOCKED" in _REQUEUE_STALE_RUNNING_SQL
+    assert "CASE WHEN attempts + 1 >= %s THEN %s ELSE %s END" in _REQUEUE_STALE_RUNNING_SQL
+    assert jobs[0].status is IngestionJobStatus.FAILED
+    assert provider.calls == [
+        (
+            "execute_returning",
+            _REQUEUE_STALE_RUNNING_SQL,
+            (
+                "running",
+                locked_before,
+                2,
+                5,
+                "dead",
+                "failed",
+                5,
+                FIXED_NOW,
+                "worker_lock_expired",
+                FIXED_NOW,
+            ),
+        )
+    ]
 
 
 def test_fail_raises_when_guard_rejects_zero_rows() -> None:

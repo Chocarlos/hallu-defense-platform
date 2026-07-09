@@ -1,0 +1,116 @@
+global:
+  imagePullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+oidc:
+  issuer: https://auth.example.invalid/realms/hallu-defense
+  audience: hallu-defense-api
+  jwksPath: /run/hallu-defense/keycloak-jwks.json
+
+cors:
+  allowOrigins:
+    - https://console.example.invalid
+
+vault:
+  address: http://vault:8200
+  mount: secret
+  tokenEnv: HALLU_DEFENSE_RUNTIME_VAULT_TOKEN
+
+api:
+  replicas: 1
+  image:
+    repository: hallu-defense-api
+    tag: ci
+  service:
+    port: 8000
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8000"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+console:
+  replicas: 1
+  image:
+    repository: hallu-defense-console
+    tag: ci
+  apiBaseUrl: https://api.example.invalid
+  service:
+    port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+worker:
+  enabled: true
+  replicas: 1
+  image:
+    repository: hallu-defense-api
+    tag: ci
+  command:
+    - python
+    - -m
+    - hallu_defense.worker
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+migrations:
+  enabled: true
+  image:
+    repository: hallu-defense-api
+    tag: ci
+  command:
+    - python
+    - scripts/dev/apply_postgres_migrations.py
+
+kindDependencies:
+  enabled: true
+  pgvector:
+    enabled: true
+    image: pgvector/pgvector:pg16
+    storage: 1Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  opensearch:
+    enabled: true
+    image: opensearchproject/opensearch:2.15.0
+    storage: 2Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+
+secrets:
+  keycloakJwks: ""
+  vaultToken: ""
+  postgresDsn: ""
+  postgresUser: ""
+  postgresPassword: ""
+  postgresDatabase: ""
+  metricsBearerToken: ""
+  opensearchInitialAdminPassword: ""

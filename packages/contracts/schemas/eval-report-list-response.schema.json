@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-report-list-response.schema.json",
+  "title": "EvalReportListResponse",
+  "type": "object",
+  "required": ["trace_id", "reports"],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "reports": {
+      "type": "array",
+      "items": { "$ref": "eval-report.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

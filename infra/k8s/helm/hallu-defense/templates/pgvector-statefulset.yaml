@@ -1,0 +1,97 @@
+{{- if and .Values.kindDependencies.enabled .Values.kindDependencies.pgvector.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-pgvector
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pgvector
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: pgvector
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-pgvector
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pgvector
+spec:
+  serviceName: {{ include "hallu-defense.fullname" . }}-pgvector
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pgvector
+  template:
+    metadata:
+      labels:
+        {{- include "hallu-defense.labels" . | nindent 8 }}
+        app.kubernetes.io/component: pgvector
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pgvector
+          image: {{ .Values.kindDependencies.pgvector.image | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: {{ include "hallu-defense.fullname" . }}-postgres
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - $(POSTGRES_USER)
+                - -d
+                - $(POSTGRES_DB)
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - $(POSTGRES_USER)
+                - -d
+                - $(POSTGRES_DB)
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.kindDependencies.pgvector.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.kindDependencies.pgvector.storage }}
+{{- end }}

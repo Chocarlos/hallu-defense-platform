@@ -55,6 +55,13 @@ export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export type ApprovalDecision = "approve" | "reject";
 
+export type DocumentIngestionJobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "dead";
+
 export interface SourceSpan {
   readonly message_id: string;
   readonly start_char: number;
@@ -169,6 +176,25 @@ export interface DocumentIngestionResponse {
   readonly indexed_count: number;
   readonly evidence_ids: readonly string[];
   readonly warnings: readonly string[];
+  readonly job_id?: string | null;
+  readonly job_status?: DocumentIngestionJobStatus | null;
+}
+
+export interface DocumentIngestionStatusRequest {
+  readonly job_id: string;
+}
+
+export interface DocumentIngestionStatusResponse {
+  readonly trace_id: string;
+  readonly tenant_id: string;
+  readonly job_id: string;
+  readonly corpus_id?: string | null;
+  readonly job_type: "ingest" | "reindex_corpus";
+  readonly job_status: DocumentIngestionJobStatus;
+  readonly attempts: number;
+  readonly available_at: string;
+  readonly created_at: string;
+  readonly updated_at: string;
 }
 
 export interface CorpusGrant {
@@ -505,4 +531,47 @@ export interface EvalScenarioHistoryEntry {
 
 export interface EvalScenarioHistoryReport {
   readonly runs: readonly EvalScenarioHistoryEntry[];
+}
+
+export interface EvalReportMetrics {
+  readonly scenario_count: number;
+  readonly pass_rate: number;
+  readonly p95_latency_ms: number;
+  readonly groundedness?: number | null;
+  readonly faithfulness?: number | null;
+}
+
+export interface EvalReport {
+  readonly report_id: string;
+  readonly tenant_id: string;
+  readonly suite: string;
+  readonly run_id: string;
+  readonly source: string;
+  readonly metrics: EvalReportMetrics;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly published_by: string;
+  readonly published_at: string;
+}
+
+export interface EvalReportPublishRequest {
+  readonly suite: string;
+  readonly run_id: string;
+  readonly source?: string;
+  readonly metrics: EvalReportMetrics;
+  readonly payload?: Readonly<Record<string, unknown>>;
+}
+
+export interface EvalReportPublishResponse {
+  readonly trace_id: string;
+  readonly report: EvalReport;
+}
+
+export interface EvalReportListRequest {
+  readonly suite?: string | null;
+  readonly limit?: number;
+}
+
+export interface EvalReportListResponse {
+  readonly trace_id: string;
+  readonly reports: readonly EvalReport[];
 }

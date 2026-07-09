@@ -23,6 +23,7 @@ from hallu_defense.services.auth import (
     AUTH_CLAIMS_MODE_SIGNED_HEADERS,
     AUTH_CLAIMS_MODE_UNSIGNED_HEADERS,
     AUDITOR_ROLE,
+    EVAL_PUBLISHER_ROLE,
     AuthenticationError,
     AuthorizationError,
     METRICS_READER_ROLE,
@@ -53,7 +54,26 @@ from hallu_defense.services.corpus_grants import (
     PsycopgCorpusGrantSqlConnection,
     create_corpus_grant_registry,
 )
+from hallu_defense.services.eval_reports import (
+    EvalReportConfigurationError,
+    EvalReportError,
+    EvalReportRepository,
+    EvalReportStorageError,
+    JsonlEvalReportStorage,
+    MemoryEvalReportStorage,
+    PostgresEvalReportStorage,
+    create_eval_report_repository,
+)
 from hallu_defense.services.ingestion import DocumentIngestionService
+from hallu_defense.services.ingestion_jobs import (
+    IngestionJob,
+    IngestionJobError,
+    IngestionJobStatus,
+    IngestionJobTransitionError,
+    IngestionJobType,
+    PostgresIngestionJobQueue,
+    create_ingestion_job_queue,
+)
 from hallu_defense.services.metrics import PrometheusMetrics
 from hallu_defense.services.nli import (
     NliAdjudication,
@@ -76,6 +96,12 @@ from hallu_defense.services.policy import PolicyEngine
 from hallu_defense.services.rag_access import (
     RagAccessDeniedError,
     RagAccessPolicy,
+)
+from hallu_defense.services.rag_backfill import (
+    PgVectorRagBackfillSource,
+    RagBackfillError,
+    RagCorpusReindexer,
+    ReindexCorpusResult,
 )
 from hallu_defense.services.providers import (
     MockModelProvider,
@@ -142,6 +168,7 @@ __all__ = [
     "AUTH_CLAIMS_MODE_SIGNED_HEADERS",
     "AUTH_CLAIMS_MODE_UNSIGNED_HEADERS",
     "AUDITOR_ROLE",
+    "EVAL_PUBLISHER_ROLE",
     "AuthenticationError",
     "AuthorizationError",
     "ApprovalDecisionIdentityError",
@@ -171,7 +198,18 @@ __all__ = [
     "PsycopgCorpusGrantSqlConnection",
     "DeterministicHashEmbedder",
     "DocumentIngestionService",
+    "EvalReportConfigurationError",
+    "EvalReportError",
+    "EvalReportRepository",
+    "EvalReportStorageError",
     "HybridRetriever",
+    "IngestionJob",
+    "IngestionJobError",
+    "IngestionJobStatus",
+    "IngestionJobTransitionError",
+    "IngestionJobType",
+    "JsonlEvalReportStorage",
+    "MemoryEvalReportStorage",
     "OpaPolicyEvaluator",
     "OidcJwtValidationError",
     "OidcJwtValidator",
@@ -188,6 +226,9 @@ __all__ = [
     "OpenSearchRagIndexBackend",
     "OpenSearchTemplateInstallResult",
     "PgVectorRagIndexBackend",
+    "PgVectorRagBackfillSource",
+    "PostgresIngestionJobQueue",
+    "PostgresEvalReportStorage",
     "Principal",
     "PrometheusMetrics",
     "PolicyEngine",
@@ -200,9 +241,12 @@ __all__ = [
     "ProviderResponse",
     "ProviderResponseError",
     "ResponseRepairer",
+    "ReindexCorpusResult",
     "RAG_WRITER_ROLE",
     "RagAccessDeniedError",
     "RagAccessPolicy",
+    "RagBackfillError",
+    "RagCorpusReindexer",
     "RagChunk",
     "RagIndexBackend",
     "RagIndexConfigurationError",
@@ -238,6 +282,8 @@ __all__ = [
     "create_audit_ledger",
     "create_approval_queue",
     "create_corpus_grant_registry",
+    "create_eval_report_repository",
+    "create_ingestion_job_queue",
     "build_sandbox_execution_backend",
     "fetch_json_url",
     "load_jwks",

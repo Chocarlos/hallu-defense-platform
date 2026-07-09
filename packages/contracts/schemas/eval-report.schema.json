@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-report.schema.json",
+  "title": "EvalReport",
+  "type": "object",
+  "required": [
+    "report_id",
+    "tenant_id",
+    "suite",
+    "run_id",
+    "source",
+    "metrics",
+    "payload",
+    "published_by",
+    "published_at"
+  ],
+  "properties": {
+    "report_id": { "type": "string", "pattern": "^evr_[A-Za-z0-9_-]+$" },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "suite": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "run_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "source": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "metrics": { "$ref": "eval-report-metrics.schema.json" },
+    "payload": { "type": "object", "additionalProperties": true },
+    "published_by": { "type": "string", "minLength": 1 },
+    "published_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

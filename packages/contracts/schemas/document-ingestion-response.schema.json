@@ -27,6 +27,11 @@
     "warnings": {
       "type": "array",
       "items": { "type": "string" }
+    },
+    "job_id": { "type": ["string", "null"], "minLength": 1 },
+    "job_status": {
+      "type": ["string", "null"],
+      "enum": ["queued", "running", "succeeded", "failed", "dead", null]
     }
   },
   "additionalProperties": false

@@ -1,0 +1,7 @@
+{
+  "scenario_count": 21,
+  "pass_rate": 1.0,
+  "p95_latency_ms": 4.79,
+  "groundedness": 0.98,
+  "faithfulness": 0.99
+}

@@ -14,6 +14,8 @@ services:
       HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
       HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200
       HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence
+      HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@postgres:5432/hallu_defense
+      HALLU_DEFENSE_INGESTION_MODE: sync
     ports:
       - "8000:8000"
     volumes:
@@ -22,6 +24,29 @@ services:
       - otel-collector
       - postgres
       - redis
+      - opensearch
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    command: ["python", "-m", "hallu_defense.worker"]
+    environment:
+      HALLU_DEFENSE_ENV: local
+      HALLU_DEFENSE_AUTH_REQUIRED: "false"
+      HALLU_DEFENSE_ALLOWED_WORKSPACE: /workspace
+      HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
+      HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200
+      HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence
+      HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@postgres:5432/hallu_defense
+      HALLU_DEFENSE_INGESTION_MODE: async
+      HALLU_DEFENSE_INGESTION_WORKER_ID: compose-ingestion-worker
+      HALLU_DEFENSE_INGESTION_WORKER_POLL_SECONDS: "2"
+      HALLU_DEFENSE_INGESTION_WORKER_BATCH_SIZE: "10"
+    volumes:
+      - .:/workspace:ro
+    depends_on:
+      - postgres
       - opensearch
 
   console:

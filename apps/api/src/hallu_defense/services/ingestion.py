@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from hallu_defense.domain.models import (
+    DocumentInput,
     DocumentIngestionRequest,
     DocumentIngestionResponse,
 )
@@ -25,7 +28,27 @@ class DocumentIngestionService:
         trace_id: str,
         principal_roles: frozenset[str] = frozenset(),
     ) -> DocumentIngestionResponse:
-        documents = [
+        documents = self.prepare_documents(
+            request,
+            tenant_id=tenant_id,
+            principal_roles=principal_roles,
+        )
+        return self.ingest_prepared(
+            documents,
+            corpus_id=request.corpus_id,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            document_count=len(request.documents),
+        )
+
+    def prepare_documents(
+        self,
+        request: DocumentIngestionRequest,
+        *,
+        tenant_id: str,
+        principal_roles: frozenset[str] = frozenset(),
+    ) -> list[DocumentInput]:
+        return [
             self._access_policy.stamp_document_metadata(
                 document,
                 tenant_id=tenant_id,
@@ -34,7 +57,17 @@ class DocumentIngestionService:
             )
             for document in request.documents
         ]
-        result = self._retriever.index_documents(tenant_id=tenant_id, documents=documents)
+
+    def ingest_prepared(
+        self,
+        documents: Sequence[DocumentInput],
+        *,
+        corpus_id: str,
+        tenant_id: str,
+        trace_id: str,
+        document_count: int | None = None,
+    ) -> DocumentIngestionResponse:
+        result = self._retriever.index_documents(tenant_id=tenant_id, documents=list(documents))
         warnings: list[str] = []
         if result.backend == "local":
             warnings.append(
@@ -43,9 +76,9 @@ class DocumentIngestionService:
         return DocumentIngestionResponse(
             trace_id=trace_id,
             tenant_id=tenant_id,
-            corpus_id=request.corpus_id,
+            corpus_id=corpus_id,
             backend=result.backend,
-            document_count=len(request.documents),
+            document_count=document_count if document_count is not None else len(documents),
             indexed_count=result.indexed_count,
             evidence_ids=result.evidence_ids,
             warnings=warnings,

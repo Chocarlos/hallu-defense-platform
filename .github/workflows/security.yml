@@ -30,11 +30,14 @@ jobs:
       - run: python scripts/ci/check_backup_retention_config.py
       - run: python scripts/ci/check_rag_persistence_config.py
       - run: python scripts/dev/bootstrap_opensearch_template.py --dry-run
+      - run: python scripts/ci/check_eval_ingestion_config.py
       - run: python scripts/ci/check_ingestion_pipeline_config.py
       - run: python scripts/ci/python_dependency_audit.py
       - run: python scripts/ci/check_sandbox_isolation_config.py
       - run: python scripts/ci/check_container_scan_config.py
       - run: python scripts/ci/check_observability_config.py
+      - run: python scripts/ci/check_prod_profile_config.py
+      - run: python scripts/ci/check_helm_chart.py
       - run: npm audit --omit dev
       - name: Build API image
         run: docker build -f infra/docker/api.Dockerfile -t hallu-defense-api:ci .
