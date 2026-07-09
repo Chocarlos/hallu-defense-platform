@@ -39,7 +39,7 @@ export default defineConfig({
       timeout: 60_000,
       env: {
         HALLU_DEFENSE_ENV: "local",
-        HALLU_DEFENSE_ALLOWED_WORKSPACE: repoRoot,
+        HALLU_DEFENSE_ALLOWED_WORKSPACE: e2eStateDir,
         HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: "jsonl",
         HALLU_DEFENSE_APPROVAL_QUEUE_PATH: path.join(e2eStateDir, "approval-queue.jsonl"),
         HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: "jsonl",
