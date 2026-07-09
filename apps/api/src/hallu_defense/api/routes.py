@@ -26,6 +26,7 @@ from hallu_defense.api.dependencies import (
     sandbox_runner,
     telemetry,
     tool_safety,
+    tool_validation_rate_limiter,
 )
 from hallu_defense.domain.models import (
     ApprovalDecisionRequest,
@@ -361,21 +362,36 @@ def validate_tool_input(
     context: RequestContext = Depends(require_endpoint_roles("POST /tools/validate-input")),
 ) -> ToolValidationResponse:
     result = tool_safety.validate_input(request)
+    if result.approval_required and (
+        request.approval_id is not None or request.approval_execution_token is not None
+    ):
+        try:
+            approval = approval_queue.consume_execution_grant(context.tenant_id, request)
+        except ApprovalNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ApprovalExecutionGrantError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return ToolValidationResponse(
+            allowed=True,
+            action=VerdictAction.ALLOW,
+            reason="Tool call was authorized by an approved execution grant.",
+            approval_required=False,
+            approval_id=approval.approval_id,
+        )
+
+    if not tool_validation_rate_limiter.allow(
+        tenant_id=context.tenant_id,
+        subject_id=context.principal.subject_id,
+        tool_name=request.tool_name,
+    ):
+        return ToolValidationResponse(
+            allowed=False,
+            action=VerdictAction.BLOCK,
+            reason="Tool validation rate limit exceeded.",
+            approval_required=False,
+        )
+
     if result.approval_required:
-        if request.approval_id is not None or request.approval_execution_token is not None:
-            try:
-                approval = approval_queue.consume_execution_grant(context.tenant_id, request)
-            except ApprovalNotFoundError as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-            except ApprovalExecutionGrantError as exc:
-                raise HTTPException(status_code=403, detail=str(exc)) from exc
-            return ToolValidationResponse(
-                allowed=True,
-                action=VerdictAction.ALLOW,
-                reason="Tool call was authorized by an approved execution grant.",
-                approval_required=False,
-                approval_id=approval.approval_id,
-            )
         approval = approval_queue.request_approval(
             tenant_id=context.tenant_id,
             trace_id=context.trace_id,

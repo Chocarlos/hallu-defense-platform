@@ -30,6 +30,10 @@ class CorsConfigurationError(ValueError):
     pass
 
 
+class RateLimitConfigurationError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -87,6 +91,8 @@ class Settings:
     approval_queue_backend: str = "memory"
     approval_queue_path: Path = Path("var/approvals/approval-queue.jsonl")
     approval_execution_grant_ttl_seconds: int = 900
+    tool_validation_rate_limit_max_requests: int = 120
+    tool_validation_rate_limit_window_seconds: int = 60
     corpus_grants_backend: str = "memory"
     corpus_grants_path: Path = Path("var/rag/corpus-grants.jsonl")
     corpus_grants_table_name: str = "rag_corpus_grants"
@@ -176,6 +182,12 @@ def load_settings() -> Settings:
         approval_execution_grant_ttl_seconds=int(
             os.getenv("HALLU_DEFENSE_APPROVAL_EXECUTION_GRANT_TTL_SECONDS", "900")
         ),
+        tool_validation_rate_limit_max_requests=int(
+            os.getenv("HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_MAX_REQUESTS", "120")
+        ),
+        tool_validation_rate_limit_window_seconds=int(
+            os.getenv("HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS", "60")
+        ),
         corpus_grants_backend=os.getenv("HALLU_DEFENSE_CORPUS_GRANTS_BACKEND", "memory")
         .strip()
         .lower(),
@@ -192,6 +204,7 @@ def load_settings() -> Settings:
     )
     validate_auth_settings(settings)
     validate_cors_settings(settings)
+    validate_rate_limit_settings(settings)
     return settings
 
 
@@ -236,6 +249,16 @@ def validate_cors_settings(settings: Settings) -> None:
 
     if errors:
         raise CorsConfigurationError("\n".join(errors))
+
+
+def validate_rate_limit_settings(settings: Settings) -> None:
+    errors: list[str] = []
+    if settings.tool_validation_rate_limit_max_requests <= 0:
+        errors.append("HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_MAX_REQUESTS must be positive.")
+    if settings.tool_validation_rate_limit_window_seconds <= 0:
+        errors.append("HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS must be positive.")
+    if errors:
+        raise RateLimitConfigurationError("\n".join(errors))
 
 
 def validate_auth_settings(settings: Settings) -> None:

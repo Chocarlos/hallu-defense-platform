@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from hallu_defense.config import AuthConfigurationError, Settings, validate_auth_settings
+from hallu_defense.config import (
+    AuthConfigurationError,
+    RateLimitConfigurationError,
+    Settings,
+    validate_auth_settings,
+    validate_rate_limit_settings,
+)
 from scripts.ci.check_auth_config import (
     AuthConfigError,
     load_current_config,
@@ -106,6 +112,16 @@ def test_auth_settings_accept_signed_claims_in_staging() -> None:
     )
 
     validate_auth_settings(settings)
+
+
+def test_rate_limit_settings_reject_non_positive_values() -> None:
+    settings = _settings(
+        tool_validation_rate_limit_max_requests=0,
+        tool_validation_rate_limit_window_seconds=0,
+    )
+
+    with pytest.raises(RateLimitConfigurationError, match="RATE_LIMIT_MAX_REQUESTS"):
+        validate_rate_limit_settings(settings)
 
 
 def test_auth_policy_validates_enterprise_defaults() -> None:

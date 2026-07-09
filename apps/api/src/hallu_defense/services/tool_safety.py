@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+import time
+from collections import deque
+from collections.abc import Callable, Mapping
 
 from hallu_defense.domain.models import (
     RiskLevel,
@@ -18,6 +20,36 @@ PHONE_VALUE_RE = re.compile(
     r"(?<!\w)(?:\+?1[\s.-]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})[\s.-][2-9]\d{2}[\s.-]\d{4}(?!\w)"
 )
 PHONE_DIGITS_RE = re.compile(r"\D")
+
+
+class ToolValidationRateLimiter:
+    def __init__(
+        self,
+        *,
+        max_requests: int,
+        window_seconds: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if max_requests <= 0:
+            raise ValueError("max_requests must be positive.")
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be positive.")
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
+        self._clock = clock
+        self._events: dict[tuple[str, str, str], deque[float]] = {}
+
+    def allow(self, *, tenant_id: str, subject_id: str, tool_name: str) -> bool:
+        key = (tenant_id, subject_id, tool_name.strip().lower())
+        now = self._clock()
+        cutoff = now - self._window_seconds
+        events = self._events.setdefault(key, deque())
+        while events and events[0] <= cutoff:
+            events.popleft()
+        if len(events) >= self._max_requests:
+            return False
+        events.append(now)
+        return True
 
 
 class ToolSafetyService:

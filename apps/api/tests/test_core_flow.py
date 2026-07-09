@@ -33,7 +33,7 @@ from hallu_defense.services.content_security import ContentSecurityScanner
 from hallu_defense.services.policy import PolicyEngine
 from hallu_defense.services.retrieval import HybridRetriever
 from hallu_defense.services.sandbox import SandboxError, SandboxRunner
-from hallu_defense.services.tool_safety import ToolSafetyService
+from hallu_defense.services.tool_safety import ToolSafetyService, ToolValidationRateLimiter
 from hallu_defense.services.verifier import ClaimVerifier
 
 
@@ -1093,6 +1093,67 @@ def test_tool_input_requires_approval_for_high_risk_tool() -> None:
     assert result.allowed is False
     assert result.approval_required is True
     assert result.action == "require_human_review"
+
+
+def test_tool_validation_rate_limiter_scopes_and_expires() -> None:
+    current_time = 100.0
+
+    def clock() -> float:
+        return current_time
+
+    limiter = ToolValidationRateLimiter(max_requests=1, window_seconds=10, clock=clock)
+
+    assert limiter.allow(tenant_id="tenant-a", subject_id="agent-1", tool_name="lookup") is True
+    assert limiter.allow(tenant_id="tenant-a", subject_id="agent-1", tool_name="lookup") is False
+    assert limiter.allow(tenant_id="tenant-a", subject_id="agent-2", tool_name="lookup") is True
+    assert limiter.allow(tenant_id="tenant-b", subject_id="agent-1", tool_name="lookup") is True
+    assert limiter.allow(tenant_id="tenant-a", subject_id="agent-1", tool_name="summarize") is True
+
+    current_time = 111.0
+    assert limiter.allow(tenant_id="tenant-a", subject_id="agent-1", tool_name="lookup") is True
+
+
+def test_tool_input_rate_limit_blocks_repeated_approval_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    limiter = ToolValidationRateLimiter(max_requests=1, window_seconds=60, clock=lambda: 100.0)
+    monkeypatch.setattr(routes, "tool_validation_rate_limiter", limiter)
+    tenant_id = "tool-rate-limit-tenant"
+    payload = {
+        "tool_name": "delete_repository",
+        "input": {"repo": "core"},
+        "schema": {"type": "object", "required": ["repo"]},
+        "risk_level": "high",
+        "approval_required": False,
+        "caller_context": {"subject": "agent-rate-limit"},
+    }
+
+    first_response = client.post(
+        "/tools/validate-input",
+        json=payload,
+        headers={
+            "x-tenant-id": tenant_id,
+            "x-subject-id": "agent-rate-limit",
+            "x-trace-id": "tr_tool_rate_limit_first",
+        },
+    )
+    assert first_response.status_code == 200
+    assert first_response.json()["approval_id"].startswith("apr_")
+
+    second_response = client.post(
+        "/tools/validate-input",
+        json=payload,
+        headers={
+            "x-tenant-id": tenant_id,
+            "x-subject-id": "agent-rate-limit",
+            "x-trace-id": "tr_tool_rate_limit_second",
+        },
+    )
+    assert second_response.status_code == 200
+    blocked = second_response.json()
+    assert blocked["allowed"] is False
+    assert blocked["approval_required"] is False
+    assert blocked["approval_id"] is None
+    assert blocked["action"] == "block"
+    assert blocked["reason"] == "Tool validation rate limit exceeded."
 
 
 def test_high_risk_tool_validation_creates_tenant_scoped_approval() -> None:

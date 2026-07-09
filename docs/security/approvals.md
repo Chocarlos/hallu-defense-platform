@@ -12,7 +12,17 @@ configuration at startup. Use:
 HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND=jsonl
 HALLU_DEFENSE_APPROVAL_QUEUE_PATH=var/approvals/approval-queue.jsonl
 HALLU_DEFENSE_APPROVAL_EXECUTION_GRANT_TTL_SECONDS=900
+HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_MAX_REQUESTS=120
+HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS=60
 ```
+
+## Tool Validation Rate Limit
+
+`POST /tools/validate-input` applies an in-memory fixed-window rate limit before
+creating new approval requests or allowing low-risk calls. The limit is scoped by
+tenant, authenticated subject, and tool name, so one tenant or agent cannot consume
+another tenant's budget. Approved execution grants bypass this limiter because they
+have already been reviewed, are fingerprint-bound, and are consumed once.
 
 ## Minimization
 
