@@ -31,5 +31,11 @@
     "approval_decisions_always_require_reviewer": true,
     "signed_claims_require_timestamp": true,
     "signed_claims_replay_window_seconds_max": 300
+  },
+  "metrics_scrape_auth": {
+    "bearer_token_alternative_allowed": true,
+    "bearer_token_secret_reference_env": "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME",
+    "constant_time_comparison_required": true,
+    "fail_closed_when_unconfigured": true
   }
 }

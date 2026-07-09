@@ -68,6 +68,7 @@ REQUIRED_KEYCLOAK_REALM_ROLES = {
 }
 KEYCLOAK_REALM_NAME = "hallu-defense"
 KEYCLOAK_API_CLIENT_ID = "hallu-defense-api"
+OTEL_FILE_EXPORTER_PATH = "/otel-output/spans.jsonl"
 REQUIRED_API_ENV = {
     "HALLU_DEFENSE_ENV": "local",
     "HALLU_DEFENSE_AUTH_REQUIRED": "false",
@@ -89,7 +90,10 @@ REQUIRED_COMPOSE_VOLUME_MOUNTS = {
     "api": ".:/workspace:ro",
     "prometheus": "./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
     "grafana": "./infra/grafana/provisioning:/etc/grafana/provisioning:ro",
-    "otel-collector": "./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro",
+    "otel-collector": (
+        "./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro",
+        "./var/otel:/otel-output",
+    ),
     "postgres": "./infra/rag/pgvector:/docker-entrypoint-initdb.d:ro",
     "opensearch": "opensearch-data:/usr/share/opensearch/data",
     "minio": "minio-data:/data",
@@ -206,12 +210,15 @@ def _validate_service_volume(
     service: Mapping[str, object],
     errors: list[str],
 ) -> None:
-    required_mount = REQUIRED_COMPOSE_VOLUME_MOUNTS.get(service_name)
-    if required_mount is None:
+    required_mounts = REQUIRED_COMPOSE_VOLUME_MOUNTS.get(service_name)
+    if required_mounts is None:
         return
+    if isinstance(required_mounts, str):
+        required_mounts = (required_mounts,)
     volumes = _string_sequence(service.get("volumes"), f"{service_name}.volumes", errors)
-    if required_mount not in volumes:
-        errors.append(f"service {service_name} missing volume mount {required_mount}")
+    for required_mount in required_mounts:
+        if required_mount not in volumes:
+            errors.append(f"service {service_name} missing volume mount {required_mount}")
 
 
 def _validate_environment(
@@ -429,6 +436,7 @@ def _validate_otel(otel: Mapping[str, object], errors: list[str]) -> None:
     exporters = _mapping(otel.get("exporters"), "otel exporters", errors)
     if "debug" not in exporters:
         errors.append("OTel config must include debug exporter for local runtime")
+    _validate_otel_file_exporter(exporters, errors)
     service = _mapping(otel.get("service"), "otel service", errors)
     pipelines = _mapping(service.get("pipelines"), "otel service.pipelines", errors)
     traces = _mapping(pipelines.get("traces"), "otel traces pipeline", errors)
@@ -436,8 +444,24 @@ def _validate_otel(otel: Mapping[str, object], errors: list[str]) -> None:
         errors.append("OTel traces pipeline must receive otlp")
     if "batch" not in _string_sequence(traces.get("processors"), "otel traces processors", errors):
         errors.append("OTel traces pipeline must use batch processor")
-    if "debug" not in _string_sequence(traces.get("exporters"), "otel traces exporters", errors):
+    traces_exporters = _string_sequence(traces.get("exporters"), "otel traces exporters", errors)
+    if "debug" not in traces_exporters:
         errors.append("OTel traces pipeline must export debug locally")
+    if "file" not in traces_exporters:
+        errors.append("OTel traces pipeline must export to the file sink")
+
+
+def _validate_otel_file_exporter(exporters: Mapping[str, object], errors: list[str]) -> None:
+    file_exporter = _mapping(exporters.get("file"), "otel exporters.file", errors)
+    if file_exporter.get("path") != OTEL_FILE_EXPORTER_PATH:
+        errors.append(f"OTel file exporter path must be {OTEL_FILE_EXPORTER_PATH}")
+    if file_exporter.get("format") != "json":
+        errors.append("OTel file exporter format must be json")
+    rotation = _mapping(file_exporter.get("rotation"), "otel exporters.file.rotation", errors)
+    for key in ("max_megabytes", "max_days", "max_backups"):
+        value = rotation.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            errors.append(f"OTel file exporter rotation.{key} must be a positive integer")
 
 
 def _validate_grafana_provisioning(

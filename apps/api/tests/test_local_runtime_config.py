@@ -147,6 +147,72 @@ def test_local_runtime_config_rejects_broken_otel_pipeline() -> None:
         validate_local_runtime_config(**inputs)
 
 
+def test_local_runtime_config_rejects_otel_pipeline_missing_file_exporter() -> None:
+    inputs = _current_inputs()
+    otel = copy.deepcopy(inputs["otel"])
+    assert isinstance(otel, dict)
+    service = otel["service"]
+    assert isinstance(service, dict)
+    pipelines = service["pipelines"]
+    assert isinstance(pipelines, dict)
+    traces = pipelines["traces"]
+    assert isinstance(traces, dict)
+    traces["exporters"] = ["debug"]
+    inputs["otel"] = otel
+
+    with pytest.raises(LocalRuntimeConfigError, match="file sink"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_otel_file_exporter_wrong_path() -> None:
+    inputs = _current_inputs()
+    otel = copy.deepcopy(inputs["otel"])
+    assert isinstance(otel, dict)
+    exporters = otel["exporters"]
+    assert isinstance(exporters, dict)
+    file_exporter = exporters["file"]
+    assert isinstance(file_exporter, dict)
+    file_exporter["path"] = "/tmp/spans.jsonl"
+    inputs["otel"] = otel
+
+    with pytest.raises(LocalRuntimeConfigError, match="/otel-output/spans.jsonl"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_otel_file_exporter_missing_rotation() -> None:
+    inputs = _current_inputs()
+    otel = copy.deepcopy(inputs["otel"])
+    assert isinstance(otel, dict)
+    exporters = otel["exporters"]
+    assert isinstance(exporters, dict)
+    file_exporter = exporters["file"]
+    assert isinstance(file_exporter, dict)
+    rotation = file_exporter["rotation"]
+    assert isinstance(rotation, dict)
+    rotation.pop("max_megabytes")
+    inputs["otel"] = otel
+
+    with pytest.raises(LocalRuntimeConfigError, match="rotation.max_megabytes"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_missing_otel_output_volume_mount() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    otel_collector = services["otel-collector"]
+    assert isinstance(otel_collector, dict)
+    volumes = otel_collector["volumes"]
+    assert isinstance(volumes, list)
+    volumes.remove("./var/otel:/otel-output")
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="otel-output"):
+        validate_local_runtime_config(**inputs)
+
+
 def test_local_runtime_config_rejects_broken_grafana_provisioning() -> None:
     inputs = _current_inputs()
     inputs["grafana_datasource_text"] = str(inputs["grafana_datasource_text"]).replace(

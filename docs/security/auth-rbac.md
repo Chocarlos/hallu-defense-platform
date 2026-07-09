@@ -155,12 +155,47 @@ Production and staging must set:
 ```text
 HALLU_DEFENSE_AUTH_REQUIRED=true
 HALLU_DEFENSE_AUTH_CLAIMS_MODE=oidc_jwt
+HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-bearer-token
 ```
 
 `load_settings()` rejects production-like environments that leave auth optional
 or trust unsigned claim headers. The runtime also permits `signed_headers` as a
 fail-closed trusted-gateway mode, but the enterprise auth policy baseline
 requires `oidc_jwt`.
+
+## Authenticated `/metrics` Scrape Path
+
+`GET /metrics` accepts either an authenticated `metrics_reader` principal through
+the normal OIDC/RBAC flow or a static Prometheus scrape token:
+
+```text
+Authorization: Bearer <metrics scrape token>
+HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-bearer-token
+```
+
+The static token value is loaded through `SecretManager` using the configured
+secret name and compared with `hmac.compare_digest` for constant-time equality.
+A match grants a synthetic `metrics_reader` principal for `GET /metrics` only.
+Every other route keeps using the existing request-context and endpoint-role
+matrix; the metrics bearer token does not grant audit, verification, approval,
+RAG, policy, or sandbox access.
+
+The bearer-token path fails closed:
+
+- If the secret name is unset in local/dev/test/CI, the bearer-token shortcut is
+  disabled and `/metrics` falls back to the existing auth/RBAC behavior.
+- If the secret cannot be loaded, the bearer-token shortcut does not grant
+  access.
+- Production and staging reject startup unless
+  `HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME` is configured and the secret
+  backend is not `env`.
+- When `HALLU_DEFENSE_AUTH_REQUIRED=true`, callers without either a matching
+  scrape token or `metrics_reader` role receive `401`/`403`; there is no
+  default-allow production scrape mode.
+
+`infra/prometheus/prometheus.prod.yml` uses Prometheus
+`authorization.credentials_file`, so the deployed scrape token is mounted as a
+file and is not committed in Prometheus config or exposed as a process argument.
 
 ## RAG Corpus Grants And Metadata ABAC
 

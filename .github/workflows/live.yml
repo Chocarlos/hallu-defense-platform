@@ -12,10 +12,9 @@ name: live
 # Every job tears its stack down with `docker compose down -v` under
 # `if: always()` so a failed smoke never leaks containers or volumes.
 #
-# Extensible by design: future batches append further live jobs here
-# (e.g. observability-live, opensearch-live, pgvector-rag-live)
-# following the same start -> wait-for-readiness -> gated-smoke -> teardown
-# shape. ci.yml and security.yml are intentionally left untouched.
+# Extensible by design: live jobs here follow the same
+# start -> wait-for-readiness -> gated-smoke -> teardown shape. ci.yml and
+# security.yml keep live smokes out of default CI.
 
 on:
   workflow_dispatch:
@@ -150,6 +149,77 @@ jobs:
           HALLU_DEFENSE_LIVE_VAULT_MOUNT: secret
           HALLU_DEFENSE_LIVE_VAULT_TOKEN_ENV: HALLU_DEFENSE_LOCAL_VAULT_DEV_ROOT_TOKEN
         run: python scripts/dev/live_vault_secrets_smoke.py
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
+
+  observability-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+      - name: Start observability stack
+        run: docker compose up -d --build grafana
+      - name: Wait for API readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/health > /dev/null 2>&1; then
+              echo "api is ready"
+              exit 0
+            fi
+            echo "waiting for api (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "api did not become ready in time" >&2
+          docker compose logs api
+          exit 1
+      - name: Wait for Prometheus readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:9090/-/ready > /dev/null 2>&1; then
+              echo "prometheus is ready"
+              exit 0
+            fi
+            echo "waiting for prometheus (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "prometheus did not become ready in time" >&2
+          docker compose logs prometheus
+          exit 1
+      - name: Wait for Grafana readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:3001/api/health > /dev/null 2>&1; then
+              echo "grafana is ready"
+              exit 0
+            fi
+            echo "waiting for grafana (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "grafana did not become ready in time" >&2
+          docker compose logs grafana
+          exit 1
+      - name: Run OTEL export live check
+        env:
+          HALLU_DEFENSE_LIVE_OTEL_EXPORT_CHECK_ENABLED: "true"
+          HALLU_DEFENSE_LIVE_OTEL_EXPORT_CHECK_API_BASE_URL: http://localhost:8000
+          HALLU_DEFENSE_LIVE_OTEL_EXPORT_CHECK_SPANS_PATH: var/otel/spans.jsonl
+        run: python scripts/dev/live_otel_export_check.py
+      - name: Run observability live smoke
+        env:
+          HALLU_DEFENSE_LIVE_OBSERVABILITY_SMOKE_ENABLED: "true"
+          HALLU_DEFENSE_LIVE_OBSERVABILITY_API_URL: http://localhost:8000
+          HALLU_DEFENSE_LIVE_OBSERVABILITY_PROMETHEUS_URL: http://localhost:9090
+          HALLU_DEFENSE_LIVE_OBSERVABILITY_GRAFANA_URL: http://localhost:3001
+          GRAFANA_ADMIN_USER: admin
+          GRAFANA_ADMIN_PASSWORD: change-me
+        run: python scripts/dev/live_observability_smoke.py
       - name: Teardown
         if: always()
         run: docker compose down -v

@@ -7,9 +7,11 @@ import pytest
 
 from hallu_defense.config import (
     AuthConfigurationError,
+    MetricsAuthConfigurationError,
     RateLimitConfigurationError,
     Settings,
     validate_auth_settings,
+    validate_metrics_auth_settings,
     validate_rate_limit_settings,
 )
 from scripts.ci.check_auth_config import (
@@ -114,6 +116,47 @@ def test_auth_settings_accept_signed_claims_in_staging() -> None:
     validate_auth_settings(settings)
 
 
+def test_metrics_auth_settings_reject_blank_secret_name() -> None:
+    settings = _settings(metrics_bearer_token_secret_name="   ")
+
+    with pytest.raises(MetricsAuthConfigurationError, match="must not be blank"):
+        validate_metrics_auth_settings(settings)
+
+
+def test_metrics_auth_settings_reject_production_without_secret_name() -> None:
+    settings = _settings(environment="production", secrets_backend="vault")
+
+    with pytest.raises(MetricsAuthConfigurationError, match="METRICS_BEARER_TOKEN_SECRET_NAME"):
+        validate_metrics_auth_settings(settings)
+
+
+def test_metrics_auth_settings_reject_env_backend_in_production() -> None:
+    settings = _settings(
+        environment="production",
+        secrets_backend="env",
+        metrics_bearer_token_secret_name="observability/metrics-bearer-token",
+    )
+
+    with pytest.raises(MetricsAuthConfigurationError, match="env secrets"):
+        validate_metrics_auth_settings(settings)
+
+
+def test_metrics_auth_settings_accept_unset_secret_name_outside_production() -> None:
+    settings = _settings(metrics_bearer_token_secret_name=None)
+
+    validate_metrics_auth_settings(settings)
+
+
+def test_metrics_auth_settings_accept_vault_backend_in_production() -> None:
+    settings = _settings(
+        environment="production",
+        secrets_backend="vault",
+        metrics_bearer_token_secret_name="observability/metrics-bearer-token",
+    )
+
+    validate_metrics_auth_settings(settings)
+
+
 def test_rate_limit_settings_reject_non_positive_values() -> None:
     settings = _settings(
         tool_validation_rate_limit_max_requests=0,
@@ -136,6 +179,32 @@ def test_auth_policy_validates_enterprise_defaults() -> None:
     assert production["allow_unsigned_claim_headers"] is False
     assert production["tenant_source"] == "verified_jwt_claim"
     assert production["jwks_source"] == ["path", "url", "discovery"]
+
+
+def test_auth_policy_validates_metrics_scrape_auth_baseline() -> None:
+    policy = load_policy()
+
+    validate_policy(policy)
+
+    metrics_scrape_auth = policy["metrics_scrape_auth"]
+    assert isinstance(metrics_scrape_auth, dict)
+    assert metrics_scrape_auth["bearer_token_alternative_allowed"] is True
+    assert (
+        metrics_scrape_auth["bearer_token_secret_reference_env"]
+        == "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME"
+    )
+    assert metrics_scrape_auth["constant_time_comparison_required"] is True
+    assert metrics_scrape_auth["fail_closed_when_unconfigured"] is True
+
+
+def test_auth_policy_rejects_metrics_scrape_auth_not_fail_closed() -> None:
+    policy = copy.deepcopy(load_policy())
+    metrics_scrape_auth = policy["metrics_scrape_auth"]
+    assert isinstance(metrics_scrape_auth, dict)
+    metrics_scrape_auth["fail_closed_when_unconfigured"] = False
+
+    with pytest.raises(AuthConfigError, match="fail_closed_when_unconfigured"):
+        validate_policy(policy)
 
 
 def test_auth_policy_rejects_non_oidc_production_claims() -> None:

@@ -12,10 +12,17 @@ processors:
 exporters:
   debug:
     verbosity: basic
+  file:
+    path: /otel-output/spans.jsonl
+    format: json
+    rotation:
+      max_megabytes: 10
+      max_days: 3
+      max_backups: 5
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, file]
