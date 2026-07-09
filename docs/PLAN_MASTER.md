@@ -138,3 +138,17 @@ Every final decision must be explainable from claims, evidence, verdicts, policy
 - OIDC/RBAC/ABAC integration.
 - Vault-compatible secret manager integration.
 - Versioned backup/restore and retention policy docs with CI validation.
+
+### M6 Enterprise Runtime Reality
+
+Goal: promote the enterprise capabilities from static-config / local-JSONL evidence to real distributed runtime, delivered as 7 delegable vertical batches. Each batch follows full-slice discipline (implementation + focused tests with injected fakes + docs + TRACEABILITY_MATRIX rows + WORKLOG entry + validation evidence). No item passes beyond `tested`.
+
+- B1 PostgreSQL core: shared pool (services/postgres.py, SqlConnectionProvider / PooledPostgresProvider over psycopg-pool), Postgres audit ledger (bounded export, no replay-all) and approval queue (decide-once / consume-once via WHERE+RETURNING), repeatable migrations (schema_migrations + idempotent applier). New PY-018/019/020.
+- B2 Live CI lane + Keycloak OIDC: .github/workflows/live.yml (dispatch + push master + weekly cron), Keycloak service with committed realm export, client_credentials + --api OIDC smokes. New SEC-014, CI-022.
+- B3 Sandbox Docker isolation: SandboxExecutionBackend abstraction (host extraction + DockerContainerBackend), sandbox.Dockerfile non-root, isolation-flag gate. New SBOX-016/017, CI-023.
+- B4 Live observability + scrape auth: OTEL file-sink export assertion, Prometheus/Grafana live smokes, authenticated /metrics (constant-time bearer via SecretManager). New OBS-004/005/006, CI-024.
+- B5 Evals runtime: versioned enforced thresholds with anti-weakening floor, reproducible verifier calibration + drift gate, eval publish/list persistence + Prometheus gauges. New EVAL-003/004/005, API-022/023, CTR-026, CI-025/026.
+- B6 Durable ingestion worker: PostgreSQL outbox (FOR UPDATE SKIP LOCKED), async mode (default sync unchanged), idempotent backfill/reindex. New RAG-008/009, API-024, CTR-027, CI-027.
+- B7 Production profile + backup/restore + K8s: docker-compose.prod.yml overlay (fail-closed), Vault + MinIO wired, real retention/backup/restore drill + tenant deletion, Helm chart validated on kind. New FND-013/014, SEC-015/016, CI-028/029.
+
+Confirmed scope decisions (Carlos): sandbox = Docker container per run; live OIDC = local Keycloak in Compose; production = Compose prod-profile first, K8s/Helm (kind) last; calibration = versioned thresholds that block CI + reproducible confidence curves. Execution: each batch delegated as a bounded assignment; diff inspected and revalidated from master before integration. Detailed assignments: docs/development/fable-enterprise-batch-2.md.

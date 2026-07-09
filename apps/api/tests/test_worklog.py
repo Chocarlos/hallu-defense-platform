@@ -64,7 +64,7 @@ def test_worklog_validator_accepts_committed_document() -> None:
     entries = validate_worklog(WORKLOG_PATH.read_text(encoding="utf-8"))
 
     assert len(entries) >= 80
-    assert entries[-1].title == "Docker evidence traceability refresh"
+    assert entries[-1].title == "M6 Enterprise runtime reality roadmap registered"
 
 
 def test_worklog_validator_rejects_malformed_heading() -> None:
