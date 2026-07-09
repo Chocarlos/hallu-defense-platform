@@ -5704,3 +5704,54 @@ Remaining risks:
   migrations against a real database require Docker/CI and are not runnable on
   this local Windows host, so they remain live-pending.
 - Nothing advances beyond `tested`; no traceability row is marked `accepted`.
+
+## 2026-07-09 - Batch 2 - Live CI lane and Keycloak OIDC
+
+Slice selected:
+
+- Documented the Batch 2 slice: a local Keycloak service with an importable
+  realm, an OIDC client_credentials smoke, and a live CI lane (`live.yml`).
+- Nothing passes beyond `tested`; live job execution against real services runs
+  in CI/integration.
+
+Implementation:
+
+- `keycloak` service in `docker-compose.yml` (quay.io/keycloak/keycloak:26.3,
+  `start-dev --import-realm`, host port 8081) importing
+  `infra/security/keycloak/realm-hallu-defense.json` (6 roles, a confidential
+  `hallu-defense-api` client_credentials client, and `aud`/`tenant_id`/`roles`
+  mappers, with no PEM material).
+- `scripts/ci/check_local_runtime_config.py` extended with `_validate_keycloak`
+  realm validation, now covering 10 services and 3 volumes.
+- Env-gated `scripts/dev/live_keycloak_oidc_smoke.py`
+  (`HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_SMOKE_ENABLED`) plus offline `--api` tests
+  that verify claims through a TestClient with a fake JWT.
+- `.github/workflows/live.yml` with `postgres-live` and `keycloak-live` jobs
+  (dispatch, push, and cron) that stand up services, run the env-gated smokes,
+  and tear down with `docker compose down -v`.
+- Traceability rows `SEC-014` and `CI-022`, additive Batch 2 updates to
+  `SEC-001`, `CI-015`, and `FND-008`, and the requirement-row-count bump from
+  154 to 156 in `FND-003` and `CI-017`.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  156 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 97 entries.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_traceability_matrix.py apps\api\tests\test_worklog.py -q`:
+  passed.
+- Batch 2 runtime evidence confirmed at integration:
+  `check_local_runtime_config.py` reported 10 services;
+  `test_local_runtime_config.py`: 14 passed; `secret_scan.py`: no obvious
+  secrets found; `docker compose config --quiet` passed with the keycloak
+  service; and an independent live verification minted an RS256
+  client_credentials token from the real Keycloak realm with
+  `aud=hallu-defense-api`, `tenant_id=tenant-a`, 6 roles, and a 2-key JWKS
+  (passed).
+
+Remaining risks:
+
+- The `live.yml` jobs execute on GitHub Actions (ubuntu); the full keycloak
+  `--api` smoke against a running Keycloak is closed by the lead in the
+  integration regression.
+- Nothing advances beyond `tested`; no traceability row is marked `accepted`.

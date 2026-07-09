@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke python-audit container-scan-config security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke python-audit container-scan-config security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -71,6 +71,9 @@ auth-config:
 
 oidc-provider-smoke:
 	$(PY) scripts/ci/oidc_provider_smoke.py
+
+oidc-keycloak-live-smoke:
+	$(PY) scripts/dev/live_keycloak_oidc_smoke.py
 
 secrets-config:
 	$(PY) scripts/ci/check_secrets_config.py

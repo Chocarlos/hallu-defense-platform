@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ if str(ROOT) not in sys.path:
 check_local_runtime_config = importlib.import_module("scripts.ci.check_local_runtime_config")
 CI_WORKFLOW_PATH = check_local_runtime_config.CI_WORKFLOW_PATH
 DOCKER_COMPOSE_PATH = check_local_runtime_config.DOCKER_COMPOSE_PATH
+KEYCLOAK_REALM_PATH = check_local_runtime_config.KEYCLOAK_REALM_PATH
 GRAFANA_DASHBOARD_PROVIDER_PATH = check_local_runtime_config.GRAFANA_DASHBOARD_PROVIDER_PATH
 GRAFANA_DATASOURCE_PATH = check_local_runtime_config.GRAFANA_DATASOURCE_PATH
 LocalRuntimeConfigError = check_local_runtime_config.LocalRuntimeConfigError
@@ -169,3 +171,78 @@ def test_local_runtime_config_requires_makefile_and_ci_wiring() -> None:
 
     with pytest.raises(LocalRuntimeConfigError, match="local-runtime-config"):
         validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_missing_keycloak_service() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    services.pop("keycloak")
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="keycloak"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_keycloak_latest_image() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    keycloak = services["keycloak"]
+    assert isinstance(keycloak, dict)
+    keycloak["image"] = "quay.io/keycloak/keycloak:latest"
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="latest"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_keycloak_command_without_import_realm() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    keycloak = services["keycloak"]
+    assert isinstance(keycloak, dict)
+    keycloak["command"] = ["start-dev"]
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="import-realm"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_keycloak_realm_missing_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    realm = json.loads(KEYCLOAK_REALM_PATH.read_text(encoding="utf-8"))
+    realm["roles"]["realm"] = [
+        role for role in realm["roles"]["realm"] if role["name"] != "eval_publisher"
+    ]
+    mutated = tmp_path / "realm-hallu-defense.json"
+    mutated.write_text(json.dumps(realm), encoding="utf-8")
+    monkeypatch.setattr(check_local_runtime_config, "KEYCLOAK_REALM_PATH", mutated)
+
+    with pytest.raises(LocalRuntimeConfigError, match="eval_publisher"):
+        validate_local_runtime_config(**_current_inputs())
+
+
+def test_local_runtime_config_rejects_keycloak_realm_with_embedded_pem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    realm = json.loads(KEYCLOAK_REALM_PATH.read_text(encoding="utf-8"))
+    # Build the PEM header from fragments so the test source never itself
+    # matches the secret_scan private-key pattern.
+    realm["description"] = "-----" + "BEGIN"
+    mutated = tmp_path / "realm-hallu-defense.json"
+    mutated.write_text(json.dumps(realm), encoding="utf-8")
+    monkeypatch.setattr(check_local_runtime_config, "KEYCLOAK_REALM_PATH", mutated)
+
+    with pytest.raises(LocalRuntimeConfigError, match="PEM"):
+        validate_local_runtime_config(**_current_inputs())

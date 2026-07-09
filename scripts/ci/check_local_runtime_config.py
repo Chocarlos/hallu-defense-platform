@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKER_COMPOSE_PATH = ROOT / "docker-compose.yml"
+KEYCLOAK_REALM_PATH = ROOT / "infra" / "security" / "keycloak" / "realm-hallu-defense.json"
 PROMETHEUS_CONFIG_PATH = ROOT / "infra" / "prometheus" / "prometheus.yml"
 OTEL_CONFIG_PATH = ROOT / "infra" / "otel" / "otel-collector-config.yaml"
 GRAFANA_DATASOURCE_PATH = (
@@ -28,6 +30,7 @@ REQUIRED_SERVICES = {
     "opensearch",
     "redis",
     "minio",
+    "keycloak",
 }
 REQUIRED_VOLUMES = {"postgres-data", "opensearch-data", "minio-data"}
 REQUIRED_PORTS = {
@@ -40,6 +43,7 @@ REQUIRED_PORTS = {
     "opensearch": ("9200:9200", "9600:9600"),
     "redis": "6379:6379",
     "minio": ("9000:9000", "9001:9001"),
+    "keycloak": "8081:8080",
 }
 PINNED_IMAGE_PREFIXES = {
     "prometheus": "prom/prometheus:v",
@@ -49,7 +53,18 @@ PINNED_IMAGE_PREFIXES = {
     "opensearch": "opensearchproject/opensearch:",
     "redis": "redis:",
     "minio": "minio/minio:RELEASE.",
+    "keycloak": "quay.io/keycloak/keycloak:",
 }
+REQUIRED_KEYCLOAK_REALM_ROLES = {
+    "verifier",
+    "auditor",
+    "approval_reviewer",
+    "rag_writer",
+    "metrics_reader",
+    "eval_publisher",
+}
+KEYCLOAK_REALM_NAME = "hallu-defense"
+KEYCLOAK_API_CLIENT_ID = "hallu-defense-api"
 REQUIRED_API_ENV = {
     "HALLU_DEFENSE_ENV": "local",
     "HALLU_DEFENSE_AUTH_REQUIRED": "false",
@@ -75,6 +90,7 @@ REQUIRED_COMPOSE_VOLUME_MOUNTS = {
     "postgres": "./infra/rag/pgvector:/docker-entrypoint-initdb.d:ro",
     "opensearch": "opensearch-data:/usr/share/opensearch/data",
     "minio": "minio-data:/data",
+    "keycloak": "./infra/security/keycloak:/opt/keycloak/data/import:ro",
 }
 
 
@@ -142,6 +158,7 @@ def _validate_compose(compose: Mapping[str, object], errors: list[str]) -> None:
     _validate_postgres(services, errors)
     _validate_opensearch(services, errors)
     _validate_minio(services, errors)
+    _validate_keycloak(compose, errors)
 
 
 def _validate_service_port(
@@ -273,6 +290,80 @@ def _validate_minio(services: Mapping[str, object], errors: list[str]) -> None:
     for key in ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"):
         if not isinstance(env.get(key), str) or not str(env[key]).strip():
             errors.append(f"service minio environment {key} must be non-empty")
+
+
+def _validate_keycloak(compose: Mapping[str, object], errors: list[str]) -> None:
+    services = _mapping(compose.get("services"), "docker-compose.yml services", errors)
+    keycloak = _mapping(services.get("keycloak"), "service keycloak", errors)
+    command = keycloak.get("command")
+    if isinstance(command, str):
+        tokens: tuple[str, ...] = tuple(command.split())
+    else:
+        tokens = _string_sequence(command, "keycloak.command", errors)
+    if "--import-realm" not in tokens:
+        errors.append("service keycloak command must include --import-realm")
+    _validate_keycloak_realm(errors)
+
+
+def _validate_keycloak_realm(errors: list[str]) -> None:
+    try:
+        text = KEYCLOAK_REALM_PATH.read_text(encoding="utf-8")
+    except OSError:
+        errors.append(f"Keycloak realm export {KEYCLOAK_REALM_PATH.name} must exist")
+        return
+    if "-----BEGIN" in text:
+        errors.append("Keycloak realm export must not embed a PEM private key")
+    try:
+        realm = json.loads(text)
+    except json.JSONDecodeError:
+        errors.append("Keycloak realm export must be valid JSON")
+        return
+    if not isinstance(realm, Mapping):
+        errors.append("Keycloak realm export must be a JSON object")
+        return
+    if realm.get("realm") != KEYCLOAK_REALM_NAME:
+        errors.append(f"Keycloak realm export must define realm {KEYCLOAK_REALM_NAME}")
+    _validate_keycloak_realm_roles(realm, errors)
+    _validate_keycloak_realm_client(realm, errors)
+
+
+def _validate_keycloak_realm_roles(realm: Mapping[str, object], errors: list[str]) -> None:
+    roles_section = realm.get("roles")
+    realm_roles: Sequence[object] = ()
+    if isinstance(roles_section, Mapping):
+        candidate = roles_section.get("realm")
+        if isinstance(candidate, Sequence) and not isinstance(candidate, str):
+            realm_roles = candidate
+    role_names: set[str] = set()
+    for role in realm_roles:
+        if isinstance(role, Mapping):
+            name = role.get("name")
+            if isinstance(name, str):
+                role_names.add(name)
+    missing = REQUIRED_KEYCLOAK_REALM_ROLES - role_names
+    if missing:
+        errors.append(
+            "Keycloak realm export missing realm roles: " + ", ".join(sorted(missing))
+        )
+
+
+def _validate_keycloak_realm_client(realm: Mapping[str, object], errors: list[str]) -> None:
+    clients = realm.get("clients")
+    client_list: Sequence[object] = ()
+    if isinstance(clients, Sequence) and not isinstance(clients, str):
+        client_list = clients
+    api_client: Mapping[str, object] | None = None
+    for client in client_list:
+        if isinstance(client, Mapping) and client.get("clientId") == KEYCLOAK_API_CLIENT_ID:
+            api_client = client
+            break
+    if api_client is None:
+        errors.append(f"Keycloak realm export missing client {KEYCLOAK_API_CLIENT_ID}")
+        return
+    if api_client.get("serviceAccountsEnabled") is not True:
+        errors.append(f"Keycloak client {KEYCLOAK_API_CLIENT_ID} must enable service accounts")
+    if api_client.get("publicClient") is not False:
+        errors.append(f"Keycloak client {KEYCLOAK_API_CLIENT_ID} must be a confidential client")
 
 
 def _validate_prometheus(prometheus: Mapping[str, object], errors: list[str]) -> None:
