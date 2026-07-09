@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+import json
+import threading
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+import pytest
+
+from scripts.dev import live_postgres_persistence_smoke as smoke
+
+# A short placeholder password (never a real secret) proves DSN redaction: it
+# must never survive into any emitted result. Kept < 16 chars so the secret
+# scanner does not flag this test file.
+_SMOKE_DSN = "postgresql://hallu:hunter2pw@localhost:5432/hallu_defense"
+_REDACTED_DSN = "postgresql://hallu:***@localhost:5432/hallu_defense"
+
+
+def test_skips_by_default_without_exposing_dsn_secret() -> None:
+    result = smoke.run_from_env({smoke.DSN_ENV: _SMOKE_DSN})
+
+    assert result["status"] == "skipped"
+    assert result["schema_ready"] is False
+    assert result["tenant_isolation"] is False
+    assert result["grant_race_single_success"] is False
+    assert result["dsn"] == _REDACTED_DSN
+    assert "hunter2pw" not in json.dumps(result)
+
+
+def test_enabled_path_runs_offline_with_injected_fake_connection() -> None:
+    connection = RecordingPersistenceConnection()
+
+    result = smoke.run_from_env(
+        {smoke.ENABLED_ENV: "true", smoke.DSN_ENV: _SMOKE_DSN},
+        connection=connection,
+        run_id="unit",
+    )
+
+    assert result == {
+        "status": "passed",
+        "dsn": _REDACTED_DSN,
+        "schema_ready": True,
+        "tenant_isolation": True,
+        "grant_race_single_success": True,
+    }
+    assert "hunter2pw" not in json.dumps(result)
+
+
+def test_enabled_path_enforces_tenant_scoped_audit_reads() -> None:
+    connection = RecordingPersistenceConnection()
+
+    smoke.run_from_env(
+        {smoke.ENABLED_ENV: "true", smoke.DSN_ENV: _SMOKE_DSN},
+        connection=connection,
+        run_id="unit",
+    )
+
+    tenant_a, tenant_b = smoke._smoke_tenants("unit")
+    run_selects = [
+        parameters
+        for method, statement, parameters in connection.calls
+        if method == "fetch_all" and statement.startswith("SELECT payload FROM audit_runs")
+    ]
+    # Every audit-run read is scoped to a single tenant via WHERE tenant_id = %s,
+    # and both smoke tenants are read back independently (isolation is enforced by
+    # the query, not by the fake).
+    selected_tenants = {parameters[0] for parameters in run_selects}
+    assert selected_tenants == {tenant_a, tenant_b}
+    assert all("WHERE tenant_id = %s" in statement for statement in connection.audit_run_selects)
+
+
+def test_enabled_path_grant_race_uses_the_atomic_consume_guard() -> None:
+    connection = RecordingPersistenceConnection()
+
+    smoke.run_from_env(
+        {smoke.ENABLED_ENV: "true", smoke.DSN_ENV: _SMOKE_DSN},
+        connection=connection,
+        run_id="unit",
+    )
+
+    consume_updates = [
+        statement
+        for method, statement, _parameters in connection.calls
+        if method == "execute_returning"
+        and statement.startswith("UPDATE approval_execution_grants SET consumed_at")
+    ]
+    # Both racing workers hit the guarded single-use UPDATE; the fake serialized
+    # them so exactly one won (asserted via the passed result above).
+    assert len(consume_updates) == smoke.GRANT_RACE_WORKERS
+    assert all("consumed_at IS NULL" in statement for statement in consume_updates)
+    assert connection.grant_consume_wins == 1
+
+
+def test_main_prints_skip_json_and_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = smoke.main(env={smoke.DSN_ENV: _SMOKE_DSN})
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "skipped"
+    assert payload["dsn"] == _REDACTED_DSN
+    assert "hunter2pw" not in json.dumps(payload)
+
+
+def test_main_reports_failure_when_migrations_cannot_apply(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = smoke.main(
+        env={smoke.ENABLED_ENV: "true", smoke.DSN_ENV: _SMOKE_DSN},
+        connection=_MigrationFailingConnection(),
+    )
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["schema_ready"] is False
+    assert isinstance(payload["error"], str) and payload["error"]
+    assert "hunter2pw" not in json.dumps(payload)
+
+
+# --- Offline fakes ------------------------------------------------------------
+
+
+@dataclass
+class _GrantRow:
+    tenant_id: str
+    approval_id: str
+    fingerprint: str
+    expires_at: datetime
+    consumed_at: datetime | None
+
+
+class RecordingPersistenceConnection:
+    """Stateful in-memory stand-in for the shared SqlConnectionProvider.
+
+    It emulates just enough PostgreSQL semantics -- tenant-scoped audit reads,
+    the pending-guarded decide UPDATE, and the single-use consume UPDATE -- to
+    drive the smoke end-to-end without a database. It is thread-safe so the grant
+    race exercises a genuine winner/loser split under a lock.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, tuple[object, ...]]] = []
+        self.audit_run_selects: list[str] = []
+        self.grant_consume_wins = 0
+        self._lock = threading.Lock()
+        self._audit_runs: list[tuple[str, dict[str, object]]] = []
+        self._audit_events: list[tuple[str, dict[str, object]]] = []
+        self._records: dict[tuple[str, str], dict[str, object]] = {}
+        self._grants: dict[str, _GrantRow] = {}
+
+    def execute(self, statement: str, parameters: Sequence[object] = ()) -> None:
+        params = tuple(parameters)
+        with self._lock:
+            self.calls.append(("execute", statement, params))
+            if statement.startswith("INSERT INTO audit_runs"):
+                self._audit_runs.append((_as_str(params[0]), _load_payload(params[2])))
+            elif statement.startswith("INSERT INTO audit_events"):
+                self._audit_events.append((_as_str(params[0]), _load_payload(params[3])))
+            elif statement.startswith("INSERT INTO approval_records"):
+                key = (_as_str(params[0]), _as_str(params[1]))
+                self._records[key] = _load_payload(params[4])
+            elif statement.startswith("INSERT INTO approval_execution_grants"):
+                self._grants[_as_str(params[0])] = _GrantRow(
+                    tenant_id=_as_str(params[2]),
+                    approval_id=_as_str(params[1]),
+                    fingerprint=_as_str(params[3]),
+                    expires_at=_as_datetime(params[4]),
+                    consumed_at=None,
+                )
+            elif statement.startswith("DELETE FROM"):
+                self._delete_scoped(params)
+            # Anything else (migration DDL, schema_migrations INSERT) is a no-op:
+            # the fake simulates "migrations applied cleanly".
+
+    def fetch_all(
+        self,
+        statement: str,
+        parameters: Sequence[object] = (),
+    ) -> Sequence[Mapping[str, object]]:
+        params = tuple(parameters)
+        with self._lock:
+            self.calls.append(("fetch_all", statement, params))
+            if statement.startswith("SELECT version FROM schema_migrations"):
+                return []
+            if statement.startswith("SELECT payload FROM audit_runs"):
+                self.audit_run_selects.append(statement)
+                tenant = _as_str(params[0])
+                return [{"payload": payload} for owner, payload in self._audit_runs if owner == tenant]
+            if statement.startswith("SELECT payload FROM audit_events"):
+                tenant = _as_str(params[0])
+                return [
+                    {"payload": payload} for owner, payload in self._audit_events if owner == tenant
+                ]
+            if statement.startswith("SELECT payload FROM approval_records"):
+                record = self._records.get((_as_str(params[0]), _as_str(params[1])))
+                return [{"payload": record}] if record is not None else []
+            if statement.startswith("SELECT consumed_at, expires_at FROM approval_execution_grants"):
+                grant = self._grants.get(_as_str(params[0]))
+                if grant is None or grant.tenant_id != _as_str(params[1]):
+                    return []
+                return [{"consumed_at": grant.consumed_at, "expires_at": grant.expires_at}]
+        raise AssertionError(f"Unexpected fetch_all statement: {statement}")
+
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object] = (),
+    ) -> Sequence[Mapping[str, object]]:
+        params = tuple(parameters)
+        with self._lock:
+            self.calls.append(("execute_returning", statement, params))
+            if statement.startswith("UPDATE approval_records SET status"):
+                key = (_as_str(params[3]), _as_str(params[4]))
+                record = self._records.get(key)
+                if record is None or record.get("status") != "pending":
+                    return []
+                self._records[key] = _load_payload(params[2])
+                return [{"approval_id": params[3]}]
+            if statement.startswith("UPDATE approval_execution_grants SET consumed_at"):
+                grant = self._grants.get(_as_str(params[0]))
+                now = datetime.now(timezone.utc)
+                if (
+                    grant is not None
+                    and grant.tenant_id == _as_str(params[1])
+                    and grant.consumed_at is None
+                    and grant.expires_at > now
+                    and grant.fingerprint == _as_str(params[2])
+                ):
+                    grant.consumed_at = now
+                    self.grant_consume_wins += 1
+                    return [{"approval_id": grant.approval_id}]
+                return []
+        raise AssertionError(f"Unexpected execute_returning statement: {statement}")
+
+    def _delete_scoped(self, parameters: tuple[object, ...]) -> None:
+        tenants = set(_as_str_list(parameters[0]))
+        self._audit_runs = [row for row in self._audit_runs if row[0] not in tenants]
+        self._audit_events = [row for row in self._audit_events if row[0] not in tenants]
+        self._records = {key: value for key, value in self._records.items() if key[1] not in tenants}
+        self._grants = {
+            token: grant for token, grant in self._grants.items() if grant.tenant_id not in tenants
+        }
+
+
+class _MigrationFailingConnection:
+    """Connection whose migration DDL always fails, to exercise main()'s failure."""
+
+    def execute(self, statement: str, parameters: Sequence[object] = ()) -> None:
+        raise RuntimeError("simulated migration failure")
+
+    def fetch_all(
+        self,
+        statement: str,
+        parameters: Sequence[object] = (),
+    ) -> Sequence[Mapping[str, object]]:
+        return []
+
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object] = (),
+    ) -> Sequence[Mapping[str, object]]:
+        return []
+
+
+def _load_payload(value: object) -> dict[str, object]:
+    decoded = json.loads(_as_str(value))
+    assert isinstance(decoded, dict)
+    return decoded
+
+
+def _as_str(value: object) -> str:
+    assert isinstance(value, str)
+    return value
+
+
+def _as_datetime(value: object) -> datetime:
+    assert isinstance(value, datetime)
+    return value
+
+
+def _as_str_list(value: object) -> Sequence[str]:
+    assert isinstance(value, Sequence) and not isinstance(value, str)
+    assert all(isinstance(item, str) for item in value)
+    return [item for item in value if isinstance(item, str)]

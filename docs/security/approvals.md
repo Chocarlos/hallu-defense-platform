@@ -1,9 +1,11 @@
 # Approval Queue
 
-The API approval workflow supports two queue backends:
+The API approval workflow supports three queue backends:
 
 - `memory`: local/test-only process memory for fast development.
 - `jsonl`: append-only JSON Lines storage for approval request and decision snapshots.
+- `postgres` (alias `postgresql`): durable relational storage whose single-use guards
+  are enforced by the database, for multi-worker deployments.
 
 Production and staging must not use `memory`; `create_approval_queue()` rejects that
 configuration at startup. Use:
@@ -49,6 +51,36 @@ mismatched-tool grants fail closed.
 
 Corrupt records, unsupported record types, or malformed payloads fail closed at
 startup. That prevents the API from serving a partially trusted approval state.
+
+## PostgreSQL Backend
+
+The `postgres` backend stores approvals in `approval_records` and execution grants in
+`approval_execution_grants`. The redacted `ApprovalRecord` snapshot is persisted as
+`jsonb`, so the same minimization applies as with `jsonl`: sensitive-looking keys are
+`[REDACTED]` and only the token hash (never the raw execution token) is written.
+
+`create_approval_queue(settings, sql_provider=...)` selects this backend and fails
+closed when `approval_queue_backend` is `postgres`/`postgresql` but no
+`SqlConnectionProvider` is injected. The provider is the audited SQL seam from
+`hallu_defense.services.postgres`; the approval queue never imports a driver directly.
+
+Two invariants are enforced by the database as single-statement guards, so concurrent
+API workers cannot double-decide or double-spend, even without an application lock:
+
+- **decide-once:** `UPDATE approval_records SET status=…, decided_at=…, payload=…::jsonb
+  WHERE approval_id=… AND tenant_id=… AND status='pending' RETURNING approval_id`. Zero
+  rows returned means the approval was already decided (HTTP 409 equivalent) and raises
+  `ApprovalAlreadyDecidedError`. The reviewer-identity and not-found checks keep the same
+  taxonomy as the JSONL backend.
+- **consume-once:** `UPDATE approval_execution_grants SET consumed_at=now()
+  WHERE token_hash=… AND tenant_id=… AND tool_call_fingerprint=… AND consumed_at IS NULL
+  AND expires_at > now() RETURNING approval_id`. Zero rows means the grant cannot be
+  spent; a disambiguation `SELECT` maps the reason to the existing errors — consumed,
+  expired, or invalid/mismatched (HTTP 403 equivalent).
+
+The token hash is `sha256(token)` exactly as with the other backends, and the tool-call
+fingerprint binds each grant to its sanitized envelope, so a valid grant authorizes one
+matching tool call once and only once.
 
 ## Reviewer Identity
 

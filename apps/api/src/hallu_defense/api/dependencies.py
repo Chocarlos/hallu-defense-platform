@@ -48,6 +48,7 @@ from hallu_defense.services.auth import (
     Principal,
     principal_from_headers,
 )
+from hallu_defense.services.postgres import build_postgres_provider
 from hallu_defense.services.secrets import SecretAccessError, SecretConfigurationError, SecretNotFoundError
 from hallu_defense.services.oidc import (
     OidcJwksKeyNotFoundError,
@@ -99,8 +100,14 @@ secret_manager = create_secret_manager(settings)
 model_provider = create_model_provider(settings, secret_manager)
 nli_adjudicator = create_nli_adjudicator(settings, model_provider)
 rag_index_backend = create_rag_index_backend(settings)
-audit_ledger = create_audit_ledger(settings)
-approval_queue = create_approval_queue(settings)
+_POSTGRES_BACKENDS = {"postgres", "postgresql"}
+_needs_pg = (
+    settings.audit_ledger_backend.strip().lower() in _POSTGRES_BACKENDS
+    or settings.approval_queue_backend.strip().lower() in _POSTGRES_BACKENDS
+)
+_sql_provider = build_postgres_provider(settings) if _needs_pg else None
+audit_ledger = create_audit_ledger(settings, sql_provider=_sql_provider)
+approval_queue = create_approval_queue(settings, sql_provider=_sql_provider)
 corpus_grant_registry = create_corpus_grant_registry(settings)
 claim_extractor = ClaimExtractor()
 claim_classifier = ClaimClassifier()

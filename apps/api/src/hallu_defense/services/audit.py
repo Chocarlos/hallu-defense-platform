@@ -5,10 +5,14 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
+from typing import Protocol, TypeVar
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from hallu_defense.config import Settings
 from hallu_defense.domain.models import AuditEvent, VerificationRun
+from hallu_defense.services.postgres import SqlConnectionProvider
 
 SENSITIVE_KEYWORDS = (
     "api_key",
@@ -32,6 +36,28 @@ SENSITIVE_VALUE_PATTERNS = (
     ),
 )
 
+# Default upper bound on records returned by export()/export_events() across all
+# backends. The real Settings field ``audit_export_max_records`` is added by the
+# integration writer; ``create_audit_ledger`` reads it with getattr so this module
+# type-checks and behaves identically before that field lands.
+DEFAULT_EXPORT_MAX_RECORDS = 1000
+
+# Postgres schema is frozen by the migrations. Table/column names are literal
+# constants (never derived from user input), so the statements are safe to build
+# without runtime identifier validation.
+AUDIT_RUNS_TABLE = "audit_runs"
+AUDIT_EVENTS_TABLE = "audit_events"
+_INSERT_RUN_SQL = (
+    "INSERT INTO audit_runs (tenant_id, trace_id, payload, created_at) "
+    "VALUES (%s, %s, %s::jsonb, %s)"
+)
+_INSERT_EVENT_SQL = (
+    "INSERT INTO audit_events (tenant_id, trace_id, event_id, payload, created_at) "
+    "VALUES (%s, %s, %s, %s::jsonb, %s)"
+)
+
+_RecordT = TypeVar("_RecordT")
+
 
 class AuditLedgerError(RuntimeError):
     pass
@@ -45,9 +71,177 @@ class AuditLedgerStorageError(AuditLedgerError):
     pass
 
 
+class AuditLedgerStorage(Protocol):
+    """Persistence seam for the audit ledger.
+
+    Implementations receive verification runs and audit events that have already
+    been redacted by :class:`AuditLedger`; they must never re-derive or log the
+    original payloads. ``load_*`` returns at most ``limit`` of the most recent
+    records for the requested tenant/trace filter, in chronological order.
+    """
+
+    def append_run(self, run: VerificationRun) -> None:
+        ...
+
+    def append_event(self, event: AuditEvent) -> None:
+        ...
+
+    def load_runs(
+        self,
+        *,
+        tenant_id: str | None,
+        trace_id: str | None,
+        limit: int,
+    ) -> list[VerificationRun]:
+        ...
+
+    def load_events(
+        self,
+        *,
+        tenant_id: str | None,
+        trace_id: str | None,
+        limit: int,
+    ) -> list[AuditEvent]:
+        ...
+
+
+class PostgresAuditLedgerStorage:
+    """AuditLedgerStorage backed by the shared SqlConnectionProvider seam.
+
+    Runs and events are written as already-redacted JSONB payloads. Reads are
+    indexed on (tenant_id, created_at)/(tenant_id, trace_id) and bounded by the
+    export cap via ``ORDER BY created_at DESC, id DESC LIMIT %s`` (the bigserial
+    id is a deterministic tiebreaker for equal timestamps); the most recent N
+    rows are then returned in chronological (ascending) order so postgres
+    exports match the memory/jsonl backends.
+    """
+
+    def __init__(self, *, connection: SqlConnectionProvider) -> None:
+        self._connection = connection
+
+    def append_run(self, run: VerificationRun) -> None:
+        self._connection.execute(
+            _INSERT_RUN_SQL,
+            [run.tenant_id, run.trace_id, _dump_payload(run), run.created_at],
+        )
+
+    def append_event(self, event: AuditEvent) -> None:
+        self._connection.execute(
+            _INSERT_EVENT_SQL,
+            [
+                event.tenant_id,
+                event.trace_id,
+                event.event_id,
+                _dump_payload(event),
+                event.created_at,
+            ],
+        )
+
+    def load_runs(
+        self,
+        *,
+        tenant_id: str | None,
+        trace_id: str | None,
+        limit: int,
+    ) -> list[VerificationRun]:
+        statement, parameters = self._select_statement(
+            AUDIT_RUNS_TABLE, tenant_id=tenant_id, trace_id=trace_id, limit=limit
+        )
+        rows = self._connection.fetch_all(statement, parameters)
+        runs: list[VerificationRun] = []
+        for row_number, row in enumerate(rows, start=1):
+            payload = self._payload_object(row, row_number)
+            try:
+                runs.append(VerificationRun.model_validate(payload))
+            except ValidationError as exc:
+                raise AuditLedgerStorageError(
+                    f"Postgres audit ledger run row {row_number} payload is invalid"
+                ) from exc
+        runs.reverse()
+        return runs
+
+    def load_events(
+        self,
+        *,
+        tenant_id: str | None,
+        trace_id: str | None,
+        limit: int,
+    ) -> list[AuditEvent]:
+        statement, parameters = self._select_statement(
+            AUDIT_EVENTS_TABLE, tenant_id=tenant_id, trace_id=trace_id, limit=limit
+        )
+        rows = self._connection.fetch_all(statement, parameters)
+        events: list[AuditEvent] = []
+        for row_number, row in enumerate(rows, start=1):
+            payload = self._payload_object(row, row_number)
+            try:
+                events.append(AuditEvent.model_validate(payload))
+            except ValidationError as exc:
+                raise AuditLedgerStorageError(
+                    f"Postgres audit ledger event row {row_number} payload is invalid"
+                ) from exc
+        events.reverse()
+        return events
+
+    def _select_statement(
+        self,
+        table: str,
+        *,
+        tenant_id: str | None,
+        trace_id: str | None,
+        limit: int,
+    ) -> tuple[str, list[object]]:
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if tenant_id is not None:
+            conditions.append("tenant_id = %s")
+            parameters.append(tenant_id)
+        if trace_id is not None:
+            conditions.append("trace_id = %s")
+            parameters.append(trace_id)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        parameters.append(limit)
+        statement = (
+            f"SELECT payload FROM {table}{where} "
+            "ORDER BY created_at DESC, id DESC LIMIT %s"
+        )
+        return statement, parameters
+
+    def _payload_object(
+        self,
+        row: Mapping[str, object],
+        row_number: int,
+    ) -> Mapping[str, object]:
+        payload = row.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise AuditLedgerStorageError(
+                    f"Postgres audit ledger row {row_number} payload is not valid JSON"
+                ) from exc
+        if not isinstance(payload, Mapping):
+            raise AuditLedgerStorageError(
+                f"Postgres audit ledger row {row_number} payload must be an object"
+            )
+        return payload
+
+
 class AuditLedger:
-    def __init__(self, storage_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        storage_path: Path | None = None,
+        *,
+        storage: AuditLedgerStorage | None = None,
+        export_max_records: int = DEFAULT_EXPORT_MAX_RECORDS,
+    ) -> None:
+        if storage_path is not None and storage is not None:
+            raise AuditLedgerConfigurationError(
+                "Configure either storage_path or storage, not both."
+            )
         self._storage_path = storage_path
+        self._storage = storage
+        self._export_max_records = export_max_records
         self._runs: list[VerificationRun] = []
         self._events: list[AuditEvent] = []
         self._lock = Lock()
@@ -56,6 +250,9 @@ class AuditLedger:
 
     def append(self, run: VerificationRun) -> None:
         stored_run = _redact_verification_run(run)
+        if self._storage is not None:
+            self._storage.append_run(stored_run)
+            return
         with self._lock:
             self._runs.append(stored_run)
             self._append_record_locked("verification_run", stored_run)
@@ -84,32 +281,47 @@ class AuditLedger:
             metadata=metadata or {},
         )
         stored_event = _redact_audit_event(event)
+        if self._storage is not None:
+            self._storage.append_event(stored_event)
+            return stored_event
         with self._lock:
             self._events.append(stored_event)
             self._append_record_locked("audit_event", stored_event)
         return stored_event
 
     def export(self, tenant_id: str | None = None, trace_id: str | None = None) -> list[VerificationRun]:
+        if self._storage is not None:
+            return self._storage.load_runs(
+                tenant_id=tenant_id,
+                trace_id=trace_id,
+                limit=self._export_max_records,
+            )
         with self._lock:
             runs = list(self._runs)
         if tenant_id is not None:
             runs = [run for run in runs if run.tenant_id == tenant_id]
         if trace_id is not None:
             runs = [run for run in runs if run.trace_id == trace_id]
-        return runs
+        return _apply_export_cap(runs, self._export_max_records)
 
     def export_events(
         self,
         tenant_id: str | None = None,
         trace_id: str | None = None,
     ) -> list[AuditEvent]:
+        if self._storage is not None:
+            return self._storage.load_events(
+                tenant_id=tenant_id,
+                trace_id=trace_id,
+                limit=self._export_max_records,
+            )
         with self._lock:
             events = list(self._events)
         if tenant_id is not None:
             events = [event for event in events if event.tenant_id == tenant_id]
         if trace_id is not None:
             events = [event for event in events if event.trace_id == trace_id]
-        return events
+        return _apply_export_cap(events, self._export_max_records)
 
     def _load_from_storage(self) -> None:
         if self._storage_path is None or not self._storage_path.exists():
@@ -163,19 +375,46 @@ class AuditLedger:
             handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
 
 
-def create_audit_ledger(settings: Settings) -> AuditLedger:
+def create_audit_ledger(
+    settings: Settings,
+    *,
+    sql_provider: SqlConnectionProvider | None = None,
+) -> AuditLedger:
     backend = settings.audit_ledger_backend.strip().lower()
+    export_max_records = int(
+        getattr(settings, "audit_export_max_records", DEFAULT_EXPORT_MAX_RECORDS)
+    )
     if backend == "memory":
         if settings.environment.lower() in {"production", "staging"}:
             raise AuditLedgerConfigurationError(
                 "Production and staging must configure a persistent audit ledger backend."
             )
-        return AuditLedger()
+        return AuditLedger(export_max_records=export_max_records)
     if backend == "jsonl":
-        return AuditLedger(storage_path=settings.audit_ledger_path)
+        return AuditLedger(storage_path=settings.audit_ledger_path,
+                           export_max_records=export_max_records)
+    if backend in {"postgres", "postgresql"}:
+        if sql_provider is None:
+            raise AuditLedgerConfigurationError(
+                "Postgres audit ledger backend requires an injected SqlConnectionProvider."
+            )
+        return AuditLedger(
+            storage=PostgresAuditLedgerStorage(connection=sql_provider),
+            export_max_records=export_max_records,
+        )
     raise AuditLedgerConfigurationError(
         f"Unsupported audit ledger backend: {settings.audit_ledger_backend}"
     )
+
+
+def _apply_export_cap(records: list[_RecordT], limit: int) -> list[_RecordT]:
+    if len(records) <= limit:
+        return records
+    return records[len(records) - limit :]
+
+
+def _dump_payload(record: VerificationRun | AuditEvent) -> str:
+    return json.dumps(record.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
 
 def _redact_verification_run(run: VerificationRun) -> VerificationRun:
