@@ -34,7 +34,7 @@ def validate_corpus_grants_config(
     _require(
         env_example_text,
         {
-            "HALLU_DEFENSE_POSTGRES_DSN=postgresql://postgres@postgres:5432/hallu_defense",
+            "HALLU_DEFENSE_POSTGRES_DSN=postgresql://hallu:hallu@postgres:5432/hallu_defense",
             "HALLU_DEFENSE_CORPUS_GRANTS_BACKEND=memory",
             "HALLU_DEFENSE_CORPUS_GRANTS_PATH=var/rag/corpus-grants.jsonl",
             "HALLU_DEFENSE_CORPUS_GRANTS_TABLE_NAME=rag_corpus_grants",
@@ -58,7 +58,7 @@ def validate_corpus_grants_config(
             "HALLU_DEFENSE_CORPUS_GRANTS_BACKEND=jsonl",
             "HALLU_DEFENSE_CORPUS_GRANTS_PATH=var/rag/corpus-grants.jsonl",
             "HALLU_DEFENSE_CORPUS_GRANTS_BACKEND=postgres",
-            "HALLU_DEFENSE_POSTGRES_DSN=postgresql://postgres@postgres:5432/hallu_defense",
+            "HALLU_DEFENSE_POSTGRES_DSN=postgresql://hallu:hallu@postgres:5432/hallu_defense",
             "HALLU_DEFENSE_CORPUS_GRANTS_TABLE_NAME=rag_corpus_grants",
             "Production and staging reject the `memory` backend",
             "PsycopgCorpusGrantSqlConnection",

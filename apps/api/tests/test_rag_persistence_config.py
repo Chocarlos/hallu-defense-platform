@@ -7,6 +7,8 @@ import pytest
 from scripts.ci.check_rag_persistence_config import (
     LIVE_OPENSEARCH_RAG_SMOKE_SCRIPT,
     LIVE_OPENSEARCH_RAG_SMOKE_TARGET,
+    LIVE_PGVECTOR_RAG_SMOKE_SCRIPT,
+    LIVE_PGVECTOR_RAG_SMOKE_TARGET,
     RagPersistenceConfigError,
     load_current_config,
     validate_rag_persistence_config,
@@ -247,6 +249,101 @@ def test_rag_persistence_config_rejects_live_smoke_in_security_check() -> None:
 def test_rag_persistence_config_rejects_live_smoke_in_default_ci() -> None:
     config = list(load_current_config())
     config[6] = config[6] + f"\n      - run: python {LIVE_OPENSEARCH_RAG_SMOKE_SCRIPT}\n"
+
+    with pytest.raises(RagPersistenceConfigError, match="CI workflow"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_requires_live_pgvector_smoke_makefile_target() -> None:
+    config = list(load_current_config())
+    config[5] = config[5].replace(
+        f"{LIVE_PGVECTOR_RAG_SMOKE_TARGET}:",
+        f"{LIVE_PGVECTOR_RAG_SMOKE_TARGET}-disabled:",
+    )
+
+    with pytest.raises(RagPersistenceConfigError, match="live pgvector RAG smoke target"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_requires_live_pgvector_smoke_script_path_in_makefile() -> None:
+    config = list(load_current_config())
+    config[5] = config[5].replace(
+        LIVE_PGVECTOR_RAG_SMOKE_SCRIPT,
+        "scripts/dev/not_the_live_pgvector_rag_smoke.py",
+    )
+
+    with pytest.raises(RagPersistenceConfigError, match="live_pgvector_rag_smoke.py"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_requires_live_pgvector_smoke_docs_markers() -> None:
+    config = list(load_current_config())
+    config[4] = config[4].replace("HALLU_DEFENSE_LIVE_PGVECTOR_RAG_SMOKE_ENABLED=true", "")
+    config[4] = config[4].replace("current smoke run", "smoke run")
+
+    with pytest.raises(RagPersistenceConfigError, match="RAG docs missing"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_rejects_live_pgvector_smoke_in_security_check() -> None:
+    config = list(load_current_config())
+    config[5] = config[5].replace(
+        "security-check:\n",
+        f"security-check:\n\t$(PY) {LIVE_PGVECTOR_RAG_SMOKE_SCRIPT}\n",
+    )
+
+    with pytest.raises(RagPersistenceConfigError, match="security-check"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_rejects_live_pgvector_smoke_in_default_ci() -> None:
+    config = list(load_current_config())
+    config[6] = config[6] + f"\n      - run: python {LIVE_PGVECTOR_RAG_SMOKE_SCRIPT}\n"
 
     with pytest.raises(RagPersistenceConfigError, match="CI workflow"):
         validate_rag_persistence_config(
