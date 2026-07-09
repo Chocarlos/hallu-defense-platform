@@ -1,5 +1,42 @@
 # Worklog
 
+## 2026-07-08 - Console policy and sandbox browser e2e
+
+Slice selected:
+
+- Close the remaining browser-interaction evidence gap for the existing
+  console policy explanation (`TS-007`) and sandbox evidence (`TS-008`) panels.
+
+Implementation:
+
+- Added `apps/console/e2e/operations.spec.ts` with two Playwright flows against
+  the production Next console and real FastAPI e2e server:
+  - policy evaluation submits `secret_detected` attributes through the browser
+    and asserts the blocked action, `secret_leakage_blocks_output` matched
+    rule, and policy explanation render in the panel;
+  - sandbox evidence runs `python --version` through the browser and asserts
+    `SUPPORTED`, the `deny` artifact summary, command text, and exit code.
+- Changed the Playwright API server configuration to use `var/e2e` as
+  `HALLU_DEFENSE_ALLOWED_WORKSPACE`, so sandbox inspection artifacts generated
+  by e2e runs stay inside ignored test state instead of creating root-level
+  `reports/` files.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `TS-007`, `TS-008`, and `CI-004`.
+
+Validation:
+
+- `npm run test:e2e`: 7 passed.
+- `npm --workspace @hallu-defense/console run typecheck`: passed.
+- `npm --workspace @hallu-defense/console run test`: 1 file, 6 tests passed.
+
+Remaining risks:
+
+- Policy evaluation remains Python-backed by default until the OPA-backed path
+  is enabled and exercised in deployment.
+- Sandbox isolation hardening beyond the existing local runner remains tracked
+  under the broader SBOX risks.
+- Remote GitHub Actions evidence for the expanded 7-test browser suite is still
+  pending.
+
 ## 2026-07-08 - TS-004 approval queue browser e2e and TS-005 verification replay
 
 Slice selected:
