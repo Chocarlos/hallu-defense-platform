@@ -29,6 +29,8 @@ jobs:
         run: python scripts/ci/check_traceability_matrix.py
       - name: Check worklog
         run: python scripts/ci/check_worklog.py
+      - name: Check eval thresholds config
+        run: python scripts/ci/check_eval_thresholds_config.py
       - name: Install OPA
         uses: open-policy-agent/setup-opa@v2.4.0
         with:
@@ -56,6 +58,8 @@ jobs:
         run: python scripts/ci/check_rag_persistence_config.py
       - name: Dry-run OpenSearch template bootstrap
         run: python scripts/dev/bootstrap_opensearch_template.py --dry-run
+      - name: Check ingestion pipeline config
+        run: python scripts/ci/check_ingestion_pipeline_config.py
       - name: Audit Python dependencies
         run: python scripts/ci/python_dependency_audit.py
       - name: Check Grafana dashboards
