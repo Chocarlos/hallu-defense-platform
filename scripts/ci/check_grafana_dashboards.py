@@ -25,6 +25,9 @@ REQUIRED_METRICS = {
     "hallu_approval_decisions_total",
     "hallu_sandbox_runs_total",
     "hallu_sandbox_run_duration_seconds_bucket",
+    "hallu_eval_pass_rate",
+    "hallu_eval_p95_latency_ms",
+    "hallu_eval_scenario_count",
 }
 REQUIRED_PANEL_TITLES = {
     "HTTP Request Rate",
@@ -38,6 +41,7 @@ REQUIRED_PANEL_TITLES = {
     "Approval Decisions",
     "Sandbox Runs",
     "Sandbox P95 Latency",
+    "Eval Runtime",
 }
 FORBIDDEN_QUERY_TERMS = {
     "tenant_id",

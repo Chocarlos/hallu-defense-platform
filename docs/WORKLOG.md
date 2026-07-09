@@ -6095,3 +6095,74 @@ Remaining risks:
 - Eval report persistence/API publish-list and async ingestion runtime remain
   pending in their own reviewed slices.
 - No row is marked `accepted`.
+
+## 2026-07-09 - Enterprise runtime integration sweep
+
+Slice selected:
+
+- Integrated the remaining runtime work delivered by closed agents into one
+  audited sweep because the later workers wrote into the shared checkout instead
+  of isolated worktrees.
+- Scope covers Batch 5 eval report persistence/API/metrics, Batch 6 async
+  ingestion worker/backfill, and Batch 7 production profile, lifecycle,
+  backup/restore, and Helm/kind scaffolding.
+- Preserved the mixed pre-audit state in stash
+  `leader-hold-mixed-b5-b6-b7-runtime-before-audit` before validation.
+
+Implementation:
+
+- Added eval report storage backends, migration `005_eval_reports.sql`,
+  publish/list routes, RBAC, audit event, Prometheus gauges, contracts, SDK,
+  JSON schemas, OpenAPI, Grafana panel, live publish smoke, and config gate.
+- Added async ingestion mode, tenant-scoped job status, worker module,
+  retry/dead-letter metrics, Compose `ingestion-worker`, status contracts,
+  SDK/MCP wiring, idempotent backfill CLI/docs, live worker smoke, and expanded
+  local runtime/config gates.
+- Added retention/deletion and backup/restore drill scaffolding with fakes,
+  production Compose overlay, Keycloak JWKS export, prod e2e smoke, Helm chart,
+  kind smoke, deployment docs, and gates.
+- Adjusted Helm to enable the worker by default now that Batch 6 runtime is
+  integrated, and removed stale B5/B6 unresolved-dependency text.
+
+Validation:
+
+- `.venv\Scripts\python.exe -m ruff check apps/api/src apps/api/tests scripts evals`:
+  all checks passed.
+- `.venv\Scripts\python.exe -m mypy apps/api/src`: success, no issues in 44
+  source files.
+- `.venv\Scripts\python.exe -m pytest apps\api\tests -q`: 633 passed, 1
+  skipped, with the existing Starlette/httpx warning.
+- Focused runtime groups passed before the full suite: eval reports/auth/
+  contracts 44 passed; ingestion runtime/jobs/backfill/local-runtime 57 passed;
+  lifecycle/backup/prod/Helm smokes 33 passed.
+- `npm run typecheck --workspaces --if-present`: all workspaces passed.
+- `npm run test`: SDK 11 passed, agent-adapters 5 passed, MCP 6 passed,
+  console 6 passed.
+- `scripts/ci/check_json_schemas.py`: 65 schemas, valid examples, invalid
+  examples, and TypeScript interfaces validated.
+- `scripts/ci/check_openapi.py`: OpenAPI artifact is up to date after
+  `scripts/ci/export_openapi.py`.
+- `scripts/ci/check_eval_ingestion_config.py`,
+  `scripts/ci/check_ingestion_pipeline_config.py`,
+  `scripts/ci/check_backup_retention_config.py`,
+  `scripts/ci/check_prod_profile_config.py`,
+  `scripts/ci/check_helm_chart.py`, `scripts/ci/check_local_runtime_config.py`,
+  and `scripts/ci/check_grafana_dashboards.py`: all passed. Docker Compose and
+  Helm template phases skipped because those tools are unavailable in this
+  shell.
+- `scripts/dev/publish_eval_reports.py --live-smoke`,
+  `scripts/dev/live_ingestion_worker_smoke.py`,
+  `scripts/dev/live_prod_profile_e2e.py`, and
+  `scripts/dev/live_kind_helm_smoke.py`: all skipped cleanly by default env
+  gates.
+- `scripts/ci/secret_scan.py`: no obvious secrets found.
+- `git diff --check`: no whitespace errors.
+
+Remaining risks:
+
+- Enabled live Docker Compose, production profile, backup/restore, and kind
+  Helm runs were not executed locally because Docker, Helm, kind, and kubectl
+  are unavailable in this shell.
+- Production profile e2e still requires a real deployed API and OIDC token when
+  enabled.
+- No row is marked `accepted`.

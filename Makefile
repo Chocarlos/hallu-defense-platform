@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config verifier-calibration-generate verifier-calibration-check dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config python-audit container-scan-config observability-config otel-export-live-smoke observability-live-smoke security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config eval-ingestion-config eval-report-publish-smoke verifier-calibration-generate verifier-calibration-check dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config retention-execution backup-restore-drill prod-profile-config prod-profile-e2e keycloak-jwks-export helm-chart-check kind-helm-live-smoke rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config ingestion-worker-live-smoke python-audit container-scan-config observability-config otel-export-live-smoke observability-live-smoke security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -69,6 +69,12 @@ evals-scenarios:
 eval-thresholds-config:
 	$(PY) scripts/ci/check_eval_thresholds_config.py
 
+eval-ingestion-config:
+	$(PY) scripts/ci/check_eval_ingestion_config.py
+
+eval-report-publish-smoke:
+	$(PY) scripts/dev/publish_eval_reports.py --live-smoke
+
 verifier-calibration-generate:
 	$(PY) scripts/dev/generate_verifier_calibration.py
 
@@ -114,6 +120,27 @@ corpus-grants-config:
 backup-retention-config:
 	$(PY) scripts/ci/check_backup_retention_config.py
 
+retention-execution:
+	$(PY) scripts/dev/run_retention_execution.py
+
+backup-restore-drill:
+	$(PY) scripts/dev/backup_restore_drill.py
+
+prod-profile-config:
+	$(PY) scripts/ci/check_prod_profile_config.py
+
+prod-profile-e2e:
+	$(PY) scripts/dev/live_prod_profile_e2e.py
+
+keycloak-jwks-export:
+	$(PY) scripts/dev/export_keycloak_jwks.py
+
+helm-chart-check:
+	$(PY) scripts/ci/check_helm_chart.py
+
+kind-helm-live-smoke:
+	$(PY) scripts/dev/live_kind_helm_smoke.py
+
 rag-persistence-config:
 	$(PY) scripts/ci/check_rag_persistence_config.py
 	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
@@ -135,6 +162,9 @@ postgres-persistence-live-smoke:
 
 ingestion-pipeline-config:
 	$(PY) scripts/ci/check_ingestion_pipeline_config.py
+
+ingestion-worker-live-smoke:
+	$(PY) scripts/dev/live_ingestion_worker_smoke.py
 
 python-audit:
 	$(PY) scripts/ci/python_dependency_audit.py
@@ -161,8 +191,11 @@ security-check:
 	$(PY) scripts/ci/check_approval_queue_config.py
 	$(PY) scripts/ci/check_corpus_grants_config.py
 	$(PY) scripts/ci/check_backup_retention_config.py
+	$(PY) scripts/ci/check_prod_profile_config.py
+	$(PY) scripts/ci/check_helm_chart.py
 	$(PY) scripts/ci/check_rag_persistence_config.py
 	$(PY) scripts/dev/bootstrap_opensearch_template.py --dry-run
+	$(PY) scripts/ci/check_eval_ingestion_config.py
 	$(PY) scripts/ci/check_verifier_calibration.py
 	$(PY) scripts/ci/check_ingestion_pipeline_config.py
 	$(PY) scripts/ci/python_dependency_audit.py

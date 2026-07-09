@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-report-publish-response.schema.json",
+  "title": "EvalReportPublishResponse",
+  "type": "object",
+  "required": ["trace_id", "report"],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "report": { "$ref": "eval-report.schema.json" }
+  },
+  "additionalProperties": false
+}

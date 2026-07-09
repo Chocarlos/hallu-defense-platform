@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/document-ingestion-status-response.schema.json",
+  "title": "DocumentIngestionStatusResponse",
+  "type": "object",
+  "required": [
+    "trace_id",
+    "tenant_id",
+    "job_id",
+    "corpus_id",
+    "job_type",
+    "job_status",
+    "attempts",
+    "available_at",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "trace_id": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "job_id": { "type": "string", "minLength": 1 },
+    "corpus_id": { "type": ["string", "null"], "minLength": 1 },
+    "job_type": { "type": "string", "enum": ["ingest", "reindex_corpus"] },
+    "job_status": {
+      "type": "string",
+      "enum": ["queued", "running", "succeeded", "failed", "dead"]
+    },
+    "attempts": { "type": "integer", "minimum": 0 },
+    "available_at": { "type": "string", "format": "date-time" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/document-ingestion-status-request.schema.json",
+  "title": "DocumentIngestionStatusRequest",
+  "type": "object",
+  "required": ["job_id"],
+  "properties": {
+    "job_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

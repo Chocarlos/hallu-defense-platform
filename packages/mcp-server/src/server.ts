@@ -9,6 +9,8 @@ import type {
   ClaimVerdict,
   DocumentIngestionRequest,
   DocumentIngestionResponse,
+  DocumentIngestionStatusRequest,
+  DocumentIngestionStatusResponse,
   DocumentInput,
   Evidence,
   EvidenceRetrievalRequest,
@@ -62,6 +64,18 @@ const tools = [
       properties: {
         documents: { type: "array" },
         corpus_id: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "get_ingestion_status",
+    description: "Fetch the tenant-scoped status for an async document ingestion job.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["job_id"],
+      properties: {
+        job_id: { type: "string", minLength: 1 }
       }
     }
   },
@@ -212,6 +226,14 @@ async function callTool(name: string, args: unknown): Promise<unknown> {
       );
       return { structuredContent: result };
     }
+    case "get_ingestion_status": {
+      const result = validateContract<DocumentIngestionStatusResponse>(
+        "document-ingestion-status-response",
+        await client.getDocumentIngestionStatus(requireDocumentIngestionStatusArgs(args)),
+        "get_ingestion_status output"
+      );
+      return { structuredContent: result };
+    }
     case "verify_claims": {
       const payload = requireClaimsVerificationArgs(args);
       const verdicts = validateContractArray<ClaimVerdict>(
@@ -306,6 +328,16 @@ function requireDocumentIngestionArgs(args: unknown): DocumentIngestionRequest {
       "ingest_documents arguments.documents"
     )
   };
+}
+
+function requireDocumentIngestionStatusArgs(args: unknown): DocumentIngestionStatusRequest {
+  const record = requireRecord(args, "get_ingestion_status arguments");
+  assertAllowedKeys(record, ["job_id"], "get_ingestion_status arguments");
+  return validateContract<DocumentIngestionStatusRequest>(
+    "document-ingestion-status-request",
+    record,
+    "get_ingestion_status arguments"
+  );
 }
 
 function createTraceId(): string {

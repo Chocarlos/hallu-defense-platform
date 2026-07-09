@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/eval-report-metrics.schema.json",
+  "title": "EvalReportMetrics",
+  "type": "object",
+  "required": ["scenario_count", "pass_rate", "p95_latency_ms"],
+  "properties": {
+    "scenario_count": { "type": "integer", "minimum": 0 },
+    "pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+    "p95_latency_ms": { "type": "number", "minimum": 0 },
+    "groundedness": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "faithfulness": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+  },
+  "additionalProperties": false
+}

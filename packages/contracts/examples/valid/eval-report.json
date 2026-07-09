@@ -1,0 +1,19 @@
+{
+  "report_id": "evr_contract_01",
+  "tenant_id": "tenant-a",
+  "suite": "scenarios",
+  "run_id": "scenario-20260709-150000",
+  "source": "evals/runners/scenarios.py",
+  "metrics": {
+    "scenario_count": 21,
+    "pass_rate": 1.0,
+    "p95_latency_ms": 4.79,
+    "groundedness": 0.98,
+    "faithfulness": 0.99
+  },
+  "payload": {
+    "report_path": "evals/reports/scenario-metrics.json"
+  },
+  "published_by": "eval-publisher-1",
+  "published_at": "2026-07-09T15:00:00Z"
+}

@@ -9,6 +9,8 @@ export type ContractSchemaName =
   | "claim"
   | "document-ingestion-request"
   | "document-ingestion-response"
+  | "document-ingestion-status-request"
+  | "document-ingestion-status-response"
   | "document-input"
   | "evidence"
   | "evidence-retrieval-request"
@@ -27,6 +29,8 @@ const schemaNames: readonly ContractSchemaName[] = [
   "claim",
   "document-ingestion-request",
   "document-ingestion-response",
+  "document-ingestion-status-request",
+  "document-ingestion-status-response",
   "document-input",
   "evidence",
   "evidence-retrieval-request",

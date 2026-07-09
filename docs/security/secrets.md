@@ -47,10 +47,10 @@ Use `scripts/dev/bootstrap_local_vault.py` to seed the local KV v2 mount with:
 
 The bootstrap script refuses non-loopback Vault addresses by default and prints
 only the seeded secret names. The `auth/trusted-header-signing-key` secret is
-already consumed by signed-header auth. The metrics scrape token and backup
-encryption key are seeded prerequisites for the Batch 4 metrics-auth and Batch 7
-backup-drill runtime slices; they must not be treated as complete until those
-consumers land.
+already consumed by signed-header auth. The metrics scrape token is consumed by
+authenticated `/metrics` scraping. The `backup/encryption-key` secret is consumed
+by `scripts/dev/backup_restore_drill.py` for Fernet encryption of PostgreSQL
+backup drills.
 
 `scripts/dev/live_vault_secrets_smoke.py` is skip-by-default. Set
 `HALLU_DEFENSE_LIVE_VAULT_SECRETS_SMOKE_ENABLED=true` after starting `vault` and

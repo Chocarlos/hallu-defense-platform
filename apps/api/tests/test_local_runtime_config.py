@@ -252,6 +252,21 @@ def test_local_runtime_config_rejects_missing_keycloak_service() -> None:
         validate_local_runtime_config(**inputs)
 
 
+def test_local_runtime_config_rejects_broken_ingestion_worker_command() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    worker = services["ingestion-worker"]
+    assert isinstance(worker, dict)
+    worker["command"] = ["python", "-m", "hallu_defense.main"]
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="ingestion-worker command"):
+        validate_local_runtime_config(**inputs)
+
+
 def test_local_runtime_config_rejects_missing_vault_service() -> None:
     inputs = _current_inputs()
     compose = copy.deepcopy(inputs["compose"])

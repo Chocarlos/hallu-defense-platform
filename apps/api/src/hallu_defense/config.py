@@ -13,6 +13,8 @@ DEFAULT_CORS_ALLOW_ORIGINS: tuple[str, ...] = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 )
+INGESTION_MODE_SYNC = "sync"
+INGESTION_MODE_ASYNC = "async"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,6 +41,10 @@ class SandboxConfigurationError(ValueError):
 
 
 class MetricsAuthConfigurationError(ValueError):
+    pass
+
+
+class IngestionConfigurationError(ValueError):
     pass
 
 
@@ -108,6 +114,8 @@ class Settings:
     audit_ledger_backend: str = "memory"
     audit_ledger_path: Path = Path("var/audit/audit-ledger.jsonl")
     audit_export_max_records: int = 1000
+    eval_reports_backend: str = "memory"
+    eval_reports_path: Path = Path("var/evals/eval-reports.jsonl")
     approval_queue_backend: str = "memory"
     approval_queue_path: Path = Path("var/approvals/approval-queue.jsonl")
     approval_execution_grant_ttl_seconds: int = 900
@@ -116,6 +124,14 @@ class Settings:
     corpus_grants_backend: str = "memory"
     corpus_grants_path: Path = Path("var/rag/corpus-grants.jsonl")
     corpus_grants_table_name: str = "rag_corpus_grants"
+    ingestion_mode: str = INGESTION_MODE_SYNC
+    ingestion_worker_id: str = "ingestion-worker-local"
+    ingestion_worker_poll_seconds: float = 2.0
+    ingestion_worker_batch_size: int = 10
+    ingestion_worker_max_attempts: int = 5
+    ingestion_worker_backoff_base_seconds: float = 30.0
+    ingestion_worker_lock_timeout_seconds: float = 300.0
+    ingestion_backfill_page_size: int = 100
     cors_allow_origins: tuple[str, ...] = DEFAULT_CORS_ALLOW_ORIGINS
 
 
@@ -218,6 +234,12 @@ def load_settings() -> Settings:
         audit_export_max_records=int(
             os.getenv("HALLU_DEFENSE_AUDIT_EXPORT_MAX_RECORDS", "1000")
         ),
+        eval_reports_backend=os.getenv("HALLU_DEFENSE_EVAL_REPORTS_BACKEND", "memory")
+        .strip()
+        .lower(),
+        eval_reports_path=Path(
+            os.getenv("HALLU_DEFENSE_EVAL_REPORTS_PATH", "var/evals/eval-reports.jsonl")
+        ).resolve(),
         approval_queue_backend=os.getenv("HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND", "memory")
         .strip()
         .lower(),
@@ -243,6 +265,31 @@ def load_settings() -> Settings:
             "HALLU_DEFENSE_CORPUS_GRANTS_TABLE_NAME",
             "rag_corpus_grants",
         ),
+        ingestion_mode=os.getenv("HALLU_DEFENSE_INGESTION_MODE", INGESTION_MODE_SYNC)
+        .strip()
+        .lower(),
+        ingestion_worker_id=os.getenv(
+            "HALLU_DEFENSE_INGESTION_WORKER_ID",
+            "ingestion-worker-local",
+        ),
+        ingestion_worker_poll_seconds=float(
+            os.getenv("HALLU_DEFENSE_INGESTION_WORKER_POLL_SECONDS", "2")
+        ),
+        ingestion_worker_batch_size=int(
+            os.getenv("HALLU_DEFENSE_INGESTION_WORKER_BATCH_SIZE", "10")
+        ),
+        ingestion_worker_max_attempts=int(
+            os.getenv("HALLU_DEFENSE_INGESTION_WORKER_MAX_ATTEMPTS", "5")
+        ),
+        ingestion_worker_backoff_base_seconds=float(
+            os.getenv("HALLU_DEFENSE_INGESTION_WORKER_BACKOFF_BASE_SECONDS", "30")
+        ),
+        ingestion_worker_lock_timeout_seconds=float(
+            os.getenv("HALLU_DEFENSE_INGESTION_WORKER_LOCK_TIMEOUT_SECONDS", "300")
+        ),
+        ingestion_backfill_page_size=int(
+            os.getenv("HALLU_DEFENSE_INGESTION_BACKFILL_PAGE_SIZE", "100")
+        ),
         cors_allow_origins=_parse_cors_allow_origins(
             os.getenv("HALLU_DEFENSE_CORS_ALLOW_ORIGINS")
         ),
@@ -252,6 +299,7 @@ def load_settings() -> Settings:
     validate_cors_settings(settings)
     validate_rate_limit_settings(settings)
     validate_sandbox_settings(settings)
+    validate_ingestion_settings(settings)
     return settings
 
 
@@ -332,6 +380,41 @@ def validate_sandbox_settings(settings: Settings) -> None:
 
     if errors:
         raise SandboxConfigurationError("\n".join(errors))
+
+
+def validate_ingestion_settings(settings: Settings) -> None:
+    mode = settings.ingestion_mode.strip().lower()
+    errors: list[str] = []
+
+    if mode not in {INGESTION_MODE_SYNC, INGESTION_MODE_ASYNC}:
+        errors.append("HALLU_DEFENSE_INGESTION_MODE must be sync or async.")
+    if mode == INGESTION_MODE_ASYNC and not (
+        settings.postgres_dsn and settings.postgres_dsn.strip()
+    ):
+        errors.append(
+            "HALLU_DEFENSE_INGESTION_MODE=async requires HALLU_DEFENSE_POSTGRES_DSN."
+        )
+    if not settings.ingestion_worker_id.strip():
+        errors.append("HALLU_DEFENSE_INGESTION_WORKER_ID must not be empty.")
+    if settings.ingestion_worker_poll_seconds <= 0:
+        errors.append("HALLU_DEFENSE_INGESTION_WORKER_POLL_SECONDS must be positive.")
+    if settings.ingestion_worker_batch_size <= 0:
+        errors.append("HALLU_DEFENSE_INGESTION_WORKER_BATCH_SIZE must be positive.")
+    if settings.ingestion_worker_max_attempts <= 0:
+        errors.append("HALLU_DEFENSE_INGESTION_WORKER_MAX_ATTEMPTS must be positive.")
+    if settings.ingestion_worker_backoff_base_seconds <= 0:
+        errors.append(
+            "HALLU_DEFENSE_INGESTION_WORKER_BACKOFF_BASE_SECONDS must be positive."
+        )
+    if settings.ingestion_worker_lock_timeout_seconds <= 0:
+        errors.append(
+            "HALLU_DEFENSE_INGESTION_WORKER_LOCK_TIMEOUT_SECONDS must be positive."
+        )
+    if settings.ingestion_backfill_page_size <= 0:
+        errors.append("HALLU_DEFENSE_INGESTION_BACKFILL_PAGE_SIZE must be positive.")
+
+    if errors:
+        raise IngestionConfigurationError("\n".join(errors))
 
 
 def validate_auth_settings(settings: Settings) -> None:

@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from hallu_defense import __version__
-from hallu_defense.config import AUTH_CLAIMS_MODE_OIDC_JWT, Settings, load_settings
+from hallu_defense.config import (
+    AUTH_CLAIMS_MODE_OIDC_JWT,
+    INGESTION_MODE_ASYNC,
+    Settings,
+    load_settings,
+)
 from hallu_defense.services import (
     ClaimClassifier,
     ClaimExtractor,
@@ -17,6 +22,7 @@ from hallu_defense.services import (
     HybridRetriever,
     OpaPolicyEvaluator,
     PolicyEngine,
+    PostgresIngestionJobQueue,
     PrometheusMetrics,
     RagAccessPolicy,
     ModelProvider,
@@ -33,12 +39,15 @@ from hallu_defense.services import (
     ToolSafetyService,
     VerificationOrchestrator,
     build_sandbox_execution_backend,
+    create_eval_report_repository,
+    create_ingestion_job_queue,
     create_model_provider,
     create_secret_manager,
 )
 from hallu_defense.services.auth import (
     APPROVAL_REVIEWER_ROLE,
     AUDITOR_ROLE,
+    EVAL_PUBLISHER_ROLE,
     METRICS_READER_ROLE,
     POLICY_EVALUATOR_ROLE,
     RAG_WRITER_ROLE,
@@ -75,6 +84,7 @@ ENDPOINT_ROLE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "POST /claims/classify": frozenset({VERIFIER_ROLE}),
     "POST /evidence/retrieve": frozenset({VERIFIER_ROLE}),
     "POST /documents/ingest": frozenset({RAG_WRITER_ROLE}),
+    "POST /documents/ingest/status": frozenset({RAG_WRITER_ROLE}),
     "POST /rag/corpus-grants/upsert": frozenset({RAG_WRITER_ROLE}),
     "POST /rag/corpus-grants/disable": frozenset({RAG_WRITER_ROLE}),
     "POST /rag/corpus-grants/list": frozenset({RAG_WRITER_ROLE, VERIFIER_ROLE}),
@@ -89,6 +99,8 @@ ENDPOINT_ROLE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "POST /approvals/decide": frozenset({APPROVAL_REVIEWER_ROLE}),
     "POST /repo/checks/run": frozenset({SANDBOX_RUNNER_ROLE}),
     "POST /audit/export": frozenset({AUDITOR_ROLE}),
+    "POST /evals/reports/publish": frozenset({EVAL_PUBLISHER_ROLE}),
+    "POST /evals/reports/list": frozenset({AUDITOR_ROLE, VERIFIER_ROLE}),
     "POST /verification/run": frozenset({VERIFIER_ROLE}),
     "POST /verification/replay": frozenset({VERIFIER_ROLE}),
 }
@@ -106,10 +118,18 @@ _POSTGRES_BACKENDS = {"postgres", "postgresql"}
 _needs_pg = (
     settings.audit_ledger_backend.strip().lower() in _POSTGRES_BACKENDS
     or settings.approval_queue_backend.strip().lower() in _POSTGRES_BACKENDS
+    or settings.eval_reports_backend.strip().lower() in _POSTGRES_BACKENDS
+    or settings.ingestion_mode.strip().lower() == INGESTION_MODE_ASYNC
 )
 _sql_provider = build_postgres_provider(settings) if _needs_pg else None
 audit_ledger = create_audit_ledger(settings, sql_provider=_sql_provider)
 approval_queue = create_approval_queue(settings, sql_provider=_sql_provider)
+eval_report_repository = create_eval_report_repository(settings, sql_provider=_sql_provider)
+ingestion_job_queue: PostgresIngestionJobQueue | None = (
+    create_ingestion_job_queue(settings, sql_provider=_sql_provider)
+    if settings.ingestion_mode.strip().lower() == INGESTION_MODE_ASYNC
+    else None
+)
 corpus_grant_registry = create_corpus_grant_registry(settings)
 claim_extractor = ClaimExtractor()
 claim_classifier = ClaimClassifier()

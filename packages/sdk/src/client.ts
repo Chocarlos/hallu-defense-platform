@@ -18,10 +18,16 @@ import type {
   CorpusGrantUpsertRequest,
   DocumentIngestionRequest,
   DocumentIngestionResponse,
+  DocumentIngestionStatusRequest,
+  DocumentIngestionStatusResponse,
   DocumentInput,
   Evidence,
   EvidenceRetrievalRequest,
   EvidenceRetrievalResponse,
+  EvalReportListRequest,
+  EvalReportListResponse,
+  EvalReportPublishRequest,
+  EvalReportPublishResponse,
   PolicyEvaluationRequest,
   PolicyEvaluationResponse,
   RepoChecksRunRequest,
@@ -115,6 +121,12 @@ export class HalluDefenseClient {
     return this.#post<DocumentIngestionResponse>("/documents/ingest", request);
   }
 
+  async getDocumentIngestionStatus(
+    request: DocumentIngestionStatusRequest
+  ): Promise<DocumentIngestionStatusResponse> {
+    return this.#post<DocumentIngestionStatusResponse>("/documents/ingest/status", request);
+  }
+
   async upsertCorpusGrant(request: CorpusGrantUpsertRequest): Promise<CorpusGrantResponse> {
     return this.#post<CorpusGrantResponse>("/rag/corpus-grants/upsert", request);
   }
@@ -169,6 +181,18 @@ export class HalluDefenseClient {
 
   async exportAudit(request: AuditExportRequest = {}): Promise<AuditExportResponse> {
     return this.#post<AuditExportResponse>("/audit/export", request);
+  }
+
+  async publishEvalReport(
+    request: EvalReportPublishRequest
+  ): Promise<EvalReportPublishResponse> {
+    return this.#post<EvalReportPublishResponse>("/evals/reports/publish", request);
+  }
+
+  async listEvalReports(
+    request: EvalReportListRequest = {}
+  ): Promise<EvalReportListResponse> {
+    return this.#post<EvalReportListResponse>("/evals/reports/list", request);
   }
 
   async evaluatePolicy(request: PolicyEvaluationRequest): Promise<PolicyEvaluationResponse> {

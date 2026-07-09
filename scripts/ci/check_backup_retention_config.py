@@ -11,6 +11,10 @@ SECURITY_PATH = ROOT / "SECURITY.md"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
+DATA_LIFECYCLE_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "data_lifecycle.py"
+RETENTION_EXECUTION_PATH = ROOT / "scripts" / "dev" / "run_retention_execution.py"
+BACKUP_RESTORE_DRILL_PATH = ROOT / "scripts" / "dev" / "backup_restore_drill.py"
+API_PYPROJECT_PATH = ROOT / "apps" / "api" / "pyproject.toml"
 
 REQUIRED_COMPONENTS = {
     "eval-reports",
@@ -89,19 +93,46 @@ def validate_supporting_files(
     makefile_text: str,
     ci_workflow_text: str,
     security_workflow_text: str,
+    data_lifecycle_text: str = "",
+    retention_execution_text: str = "",
+    backup_restore_drill_text: str = "",
+    api_pyproject_text: str = "",
 ) -> None:
     errors: list[str] = []
     required_script = "scripts/ci/check_backup_retention_config.py"
-    if "backup-retention-policy.json" not in docs_text or "restore drill" not in docs_text:
-        errors.append("docs/security/backup-restore-retention.md must document policy and restore drill expectations")
+    if (
+        "backup-retention-policy.json" not in docs_text
+        or "restore drill" not in docs_text
+        or "run_retention_execution.py" not in docs_text
+        or "backup_restore_drill.py" not in docs_text
+    ):
+        errors.append(
+            "docs/security/backup-restore-retention.md must document policy, "
+            "retention execution, and restore drill expectations"
+        )
     if "backup/restore and retention policy" not in security_text.lower():
         errors.append("SECURITY.md must mention the backup/restore and retention policy")
     if "backup-retention-config:" not in makefile_text or required_script not in makefile_text:
         errors.append("Makefile must expose backup-retention-config")
+    if (
+        "retention-execution:" not in makefile_text
+        or "scripts/dev/run_retention_execution.py" not in makefile_text
+    ):
+        errors.append("Makefile must expose retention-execution")
+    if (
+        "backup-restore-drill:" not in makefile_text
+        or "scripts/dev/backup_restore_drill.py" not in makefile_text
+    ):
+        errors.append("Makefile must expose backup-restore-drill")
     if required_script not in ci_workflow_text:
         errors.append("CI workflow must run check_backup_retention_config.py")
     if required_script not in security_workflow_text:
         errors.append("security workflow must run check_backup_retention_config.py")
+    _validate_data_lifecycle_runtime(data_lifecycle_text, errors)
+    _validate_retention_execution_script(retention_execution_text, errors)
+    _validate_backup_restore_drill_script(backup_restore_drill_text, errors)
+    if "cryptography" not in api_pyproject_text:
+        errors.append("apps/api/pyproject.toml must include cryptography for Fernet backup encryption")
 
     if errors:
         raise BackupRetentionConfigError("\n".join(errors))
@@ -253,6 +284,67 @@ def _retention_class_minimums(
     return minimums
 
 
+def _validate_data_lifecycle_runtime(text: str, errors: list[str]) -> None:
+    if not text.strip():
+        errors.append("services/data_lifecycle.py must exist")
+        return
+    required_markers = (
+        "POSTGRES_LIFECYCLE_TABLES",
+        "minimum_days",
+        "retention_execution",
+        "tenant_data_deletion",
+        "delete_tenant_data",
+        "tenant_id = %s",
+        "DELETE FROM",
+        "append_event",
+    )
+    for marker in required_markers:
+        if marker not in text:
+            errors.append(f"services/data_lifecycle.py missing {marker!r}")
+
+
+def _validate_retention_execution_script(text: str, errors: list[str]) -> None:
+    if not text.strip():
+        errors.append("scripts/dev/run_retention_execution.py must exist")
+        return
+    required_markers = (
+        "HALLU_DEFENSE_RETENTION_EXECUTION_ENABLED",
+        "HALLU_DEFENSE_TENANT_DATA_DELETION_ENABLED",
+        "--confirm-tenant-id",
+        "execute_retention",
+        "delete_tenant_data",
+        "sys.exit(main())",
+    )
+    for marker in required_markers:
+        if marker not in text:
+            errors.append(f"run_retention_execution.py missing safeguard {marker!r}")
+
+
+def _validate_backup_restore_drill_script(text: str, errors: list[str]) -> None:
+    if not text.strip():
+        errors.append("scripts/dev/backup_restore_drill.py must exist")
+        return
+    required_markers = (
+        "HALLU_DEFENSE_BACKUP_RESTORE_DRILL_ENABLED",
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "pg_dump",
+        "pg_restore",
+        "Fernet",
+        "create_secret_manager",
+        "minio/mc",
+        "backup-drills",
+        "parity",
+        "report_path",
+        "sys.exit(main())",
+    )
+    for marker in required_markers:
+        if marker not in text:
+            errors.append(f"backup_restore_drill.py missing safeguard {marker!r}")
+
+
 def _mapping(value: object, path: str, errors: list[str]) -> Mapping[str, object]:
     if isinstance(value, Mapping):
         return value
@@ -294,6 +386,10 @@ def main() -> None:
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         ci_workflow_text=CI_WORKFLOW_PATH.read_text(encoding="utf-8"),
         security_workflow_text=SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        data_lifecycle_text=DATA_LIFECYCLE_PATH.read_text(encoding="utf-8"),
+        retention_execution_text=RETENTION_EXECUTION_PATH.read_text(encoding="utf-8"),
+        backup_restore_drill_text=BACKUP_RESTORE_DRILL_PATH.read_text(encoding="utf-8"),
+        api_pyproject_text=API_PYPROJECT_PATH.read_text(encoding="utf-8"),
     )
     print(f"Validated backup/restore and retention policy with {_component_count(policy)} component(s).")
 

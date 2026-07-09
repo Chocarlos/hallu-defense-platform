@@ -15,8 +15,10 @@ from hallu_defense.api.dependencies import (
     claim_verifier,
     corpus_grant_registry,
     document_ingestor,
+    eval_report_repository,
     get_settings,
     hybrid_retriever,
+    ingestion_job_queue,
     metrics_collector,
     orchestrator,
     policy_engine,
@@ -51,11 +53,18 @@ from hallu_defense.domain.models import (
     CorpusGrantListResponse,
     CorpusGrantResponse,
     CorpusGrantUpsertRequest,
+    DocumentIngestionJobStatus,
     DocumentIngestionRequest,
     DocumentIngestionResponse,
+    DocumentIngestionStatusRequest,
+    DocumentIngestionStatusResponse,
     EvidenceRetrievalRequest,
     EvidenceRetrievalResponse,
     ErrorResponse,
+    EvalReportListRequest,
+    EvalReportListResponse,
+    EvalReportPublishRequest,
+    EvalReportPublishResponse,
     PolicyEvaluationRequest,
     PolicyEvaluationResponse,
     RepoChecksRunRequest,
@@ -70,6 +79,7 @@ from hallu_defense.domain.models import (
     VerificationRunRequest,
     VerdictAction,
 )
+from hallu_defense.config import INGESTION_MODE_ASYNC
 from hallu_defense.services.approvals import (
     ApprovalAlreadyDecidedError,
     ApprovalExecutionGrantError,
@@ -80,7 +90,13 @@ from hallu_defense.services.corpus_grants import (
     CorpusGrantPaginationError,
     CorpusGrantVersionConflictError,
 )
+from hallu_defense.services.ingestion_jobs import (
+    IngestionJob,
+    IngestionJobError,
+    IngestionJobType,
+)
 from hallu_defense.services.metrics import PROMETHEUS_CONTENT_TYPE
+from hallu_defense.services.postgres import PostgresProviderError
 from hallu_defense.services.rag_access import RagAccessDeniedError
 from hallu_defense.services.rag_index import RagIndexError
 from hallu_defense.services.sandbox import SandboxError
@@ -191,6 +207,8 @@ def ingest_documents(
     context: RequestContext = Depends(require_endpoint_roles("POST /documents/ingest")),
 ) -> DocumentIngestionResponse:
     try:
+        if get_settings().ingestion_mode.strip().lower() == INGESTION_MODE_ASYNC:
+            return _enqueue_document_ingestion(request, context)
         return document_ingestor.ingest(
             request,
             tenant_id=context.tenant_id,
@@ -201,6 +219,104 @@ def ingest_documents(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RagIndexError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post(
+    "/documents/ingest/status",
+    response_model=DocumentIngestionStatusResponse,
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+def document_ingestion_status(
+    request: DocumentIngestionStatusRequest,
+    context: RequestContext = Depends(require_endpoint_roles("POST /documents/ingest/status")),
+) -> DocumentIngestionStatusResponse:
+    if ingestion_job_queue is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Async ingestion outbox is not configured.",
+        )
+    try:
+        job = ingestion_job_queue.get(job_id=request.job_id, tenant_id=context.tenant_id)
+    except (IngestionJobError, PostgresProviderError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ingestion job was not found for this tenant.",
+        )
+    return _job_status_response(job, trace_id=context.trace_id)
+
+
+def _enqueue_document_ingestion(
+    request: DocumentIngestionRequest,
+    context: RequestContext,
+) -> DocumentIngestionResponse:
+    if ingestion_job_queue is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Async ingestion requires the PostgreSQL ingestion outbox.",
+        )
+    prepared_documents = document_ingestor.prepare_documents(
+        request,
+        tenant_id=context.tenant_id,
+        principal_roles=context.principal.roles,
+    )
+    try:
+        job = ingestion_job_queue.enqueue(
+            tenant_id=context.tenant_id,
+            corpus_id=request.corpus_id,
+            trace_id=context.trace_id,
+            job_type=IngestionJobType.INGEST,
+            payload={
+                "corpus_id": request.corpus_id,
+                "documents": [document.model_dump(mode="json") for document in prepared_documents],
+            },
+        )
+    except (IngestionJobError, PostgresProviderError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    audit_ledger.append_event(
+        trace_id=context.trace_id,
+        tenant_id=context.tenant_id,
+        event_type="ingestion_job_enqueued",
+        method="POST",
+        path="/documents/ingest",
+        status_code=200,
+        outcome="queued",
+        metadata={
+            "job_id": job.job_id,
+            "job_type": job.job_type.value,
+            "corpus_id": request.corpus_id,
+            "document_count": len(request.documents),
+        },
+    )
+    metrics_collector.record_ingestion_job(status=job.status.value)
+    return DocumentIngestionResponse(
+        trace_id=context.trace_id,
+        tenant_id=context.tenant_id,
+        corpus_id=request.corpus_id,
+        backend="async",
+        document_count=len(request.documents),
+        indexed_count=0,
+        evidence_ids=[],
+        warnings=["Document ingestion was queued for asynchronous processing."],
+        job_id=job.job_id,
+        job_status=DocumentIngestionJobStatus(job.status.value),
+    )
+
+
+def _job_status_response(job: IngestionJob, *, trace_id: str) -> DocumentIngestionStatusResponse:
+    return DocumentIngestionStatusResponse(
+        trace_id=trace_id,
+        tenant_id=job.tenant_id,
+        job_id=job.job_id,
+        corpus_id=job.corpus_id,
+        job_type=job.job_type.value,
+        job_status=DocumentIngestionJobStatus(job.status.value),
+        attempts=job.attempts,
+        available_at=job.available_at,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
 
 
 @router.post("/rag/corpus-grants/upsert", response_model=CorpusGrantResponse)
@@ -531,6 +647,67 @@ def export_audit(
         events=audit_ledger.export_events(tenant_id=tenant_id, trace_id=request.trace_id)
         if request.include_events
         else [],
+    )
+
+
+@router.post("/evals/reports/publish", response_model=EvalReportPublishResponse)
+def publish_eval_report(
+    request: EvalReportPublishRequest,
+    context: RequestContext = Depends(
+        require_endpoint_roles(
+            "POST /evals/reports/publish",
+            enforce_when_auth_optional=True,
+        )
+    ),
+) -> EvalReportPublishResponse:
+    report = eval_report_repository.publish(
+        tenant_id=context.tenant_id,
+        request=request,
+        published_by=context.principal.subject_id,
+    )
+    metrics_collector.record_eval_report(
+        suite=report.suite,
+        pass_rate=report.metrics.pass_rate,
+        p95_latency_ms=report.metrics.p95_latency_ms,
+        scenario_count=report.metrics.scenario_count,
+        groundedness=report.metrics.groundedness,
+        faithfulness=report.metrics.faithfulness,
+    )
+    audit_ledger.append_event(
+        trace_id=context.trace_id,
+        tenant_id=context.tenant_id,
+        event_type="eval_report_published",
+        method="POST",
+        path="/evals/reports/publish",
+        status_code=200,
+        outcome="success",
+        metadata={
+            "report_id": report.report_id,
+            "suite": report.suite,
+            "run_id": report.run_id,
+            "scenario_count": report.metrics.scenario_count,
+            "published_by": context.principal.subject_id,
+        },
+    )
+    return EvalReportPublishResponse(trace_id=context.trace_id, report=report)
+
+
+@router.post("/evals/reports/list", response_model=EvalReportListResponse)
+def list_eval_reports(
+    request: EvalReportListRequest,
+    context: RequestContext = Depends(
+        require_endpoint_roles(
+            "POST /evals/reports/list",
+            enforce_when_auth_optional=True,
+        )
+    ),
+) -> EvalReportListResponse:
+    return EvalReportListResponse(
+        trace_id=context.trace_id,
+        reports=eval_report_repository.list_for_tenant(
+            tenant_id=context.tenant_id,
+            request=request,
+        ),
     )
 
 

@@ -23,10 +23,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
 from hallu_defense.services.postgres import SqlConnectionProvider
+
+if TYPE_CHECKING:
+    from hallu_defense.config import Settings
 
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_BACKOFF_BASE_SECONDS = 30.0
@@ -87,6 +90,12 @@ _INSERT_JOB_SQL = (
     "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)"
 )
 
+_SELECT_JOB_SQL = (
+    f"SELECT {_JOB_COLUMNS} FROM rag_ingestion_jobs "
+    "WHERE job_id = %s AND tenant_id = %s "
+    "LIMIT 1"
+)
+
 # The CTE selects candidate rows with FOR UPDATE SKIP LOCKED so a concurrent
 # claim from another worker skips locked rows instead of blocking; the outer
 # UPDATE then flips only the rows this call actually won the lock on.
@@ -121,6 +130,23 @@ _FAIL_JOB_SQL = (
     "ELSE %s + (%s * power(2, attempts)) * interval '1 second' END, "
     "locked_by = NULL, locked_at = NULL, last_error = %s, updated_at = %s "
     "WHERE job_id = %s AND tenant_id = %s AND status = %s AND locked_by = %s "
+    f"RETURNING {_JOB_COLUMNS}"
+)
+
+_REQUEUE_STALE_RUNNING_SQL = (
+    "WITH candidates AS ("
+    "SELECT job_id FROM rag_ingestion_jobs "
+    "WHERE status = %s AND locked_at <= %s "
+    "ORDER BY locked_at ASC "
+    "FOR UPDATE SKIP LOCKED "
+    "LIMIT %s"
+    ") "
+    "UPDATE rag_ingestion_jobs SET "
+    "attempts = attempts + 1, "
+    "status = CASE WHEN attempts + 1 >= %s THEN %s ELSE %s END, "
+    "available_at = CASE WHEN attempts + 1 >= %s THEN available_at ELSE %s END, "
+    "locked_by = NULL, locked_at = NULL, last_error = %s, updated_at = %s "
+    "WHERE job_id IN (SELECT job_id FROM candidates) "
     f"RETURNING {_JOB_COLUMNS}"
 )
 
@@ -196,6 +222,15 @@ class PostgresIngestionJobQueue:
         )
         return job
 
+    def get(self, *, job_id: str, tenant_id: str) -> IngestionJob | None:
+        rows = self._connection.fetch_all(_SELECT_JOB_SQL, (job_id, tenant_id))
+        if not rows:
+            return None
+        return self._job_from_row(rows[0])
+
+    def get_for_tenant(self, *, job_id: str, tenant_id: str) -> IngestionJob | None:
+        return self.get(job_id=job_id, tenant_id=tenant_id)
+
     def claim_batch(self, *, worker_id: str, batch_size: int) -> list[IngestionJob]:
         if batch_size < 1:
             raise IngestionJobError("batch_size must be at least 1.")
@@ -208,6 +243,33 @@ class PostgresIngestionJobQueue:
                 IngestionJobStatus.RUNNING.value,
                 worker_id,
                 now,
+                now,
+            ),
+        )
+        return [self._job_from_row(row) for row in rows]
+
+    def requeue_stale_running(
+        self,
+        *,
+        locked_before: datetime,
+        batch_size: int,
+        error: str = "worker_lock_expired",
+    ) -> list[IngestionJob]:
+        if batch_size < 1:
+            raise IngestionJobError("batch_size must be at least 1.")
+        now = self._now()
+        rows = self._connection.execute_returning(
+            _REQUEUE_STALE_RUNNING_SQL,
+            (
+                IngestionJobStatus.RUNNING.value,
+                locked_before,
+                batch_size,
+                self._max_attempts,
+                IngestionJobStatus.DEAD.value,
+                IngestionJobStatus.FAILED.value,
+                self._max_attempts,
+                now,
+                error,
                 now,
             ),
         )
@@ -315,3 +377,19 @@ class PostgresIngestionJobQueue:
             created_at=created_at,
             updated_at=updated_at,
         )
+
+
+def create_ingestion_job_queue(
+    settings: "Settings",
+    *,
+    sql_provider: SqlConnectionProvider | None,
+) -> PostgresIngestionJobQueue:
+    if sql_provider is None:
+        raise IngestionJobError(
+            "Ingestion async mode requires an injected PostgreSQL SqlConnectionProvider."
+        )
+    return PostgresIngestionJobQueue(
+        connection=sql_provider,
+        max_attempts=settings.ingestion_worker_max_attempts,
+        backoff_base_seconds=settings.ingestion_worker_backoff_base_seconds,
+    )

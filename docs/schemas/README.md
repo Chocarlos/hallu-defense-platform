@@ -16,6 +16,8 @@ The current schema set covers the core public contracts plus the request/respons
 - `Evidence`
 - `DocumentIngestionRequest`
 - `DocumentIngestionResponse`
+- `DocumentIngestionStatusRequest`
+- `DocumentIngestionStatusResponse`
 - `EvidenceRetrievalRequest`
 - `EvidenceRetrievalResponse`
 - `ClaimVerdict`
@@ -66,6 +68,7 @@ Valid and invalid contract examples live in `packages/contracts/examples`.
 
 `EvidenceRetrievalRequest` includes optional `metadata_filter` support for exact-match local retrieval filters.
 `ToolValidationResponse` can include an `approval_id` when a high-risk tool call is queued for human review.
+`DocumentIngestionResponse` can include `job_id` and `job_status` when async ingestion mode queues work; `DocumentIngestionStatusRequest` and `DocumentIngestionStatusResponse` cover tenant-scoped status lookup for those jobs.
 `ApprovalDecisionResponse` includes an `ApprovalExecutionGrant` when a high-risk tool call is approved; executors must present the grant on a later input validation call before running the tool.
 `ApprovalDecisionRequest.decided_by` is optional and deprecated for API callers; `/approvals/decide` persists reviewer identity from the authenticated request principal.
 `CorpusGrant` records tenant-scoped reader and writer roles, lifecycle `version`, and optional disabled state for a RAG corpus; `/rag/corpus-grants/upsert` and `/rag/corpus-grants/disable` require a `rag_writer` principal, accept optional `expected_version` optimistic concurrency tokens, return `409` on stale versions, while `/rag/corpus-grants/list`, `/rag/corpus-grants/history`, and `/rag/corpus-grants/history/diff` are readable by `rag_writer` or `verifier` and support cursor pagination. The list endpoint exposes latest state with disabled-grant filtering; the history endpoint exposes append-only revisions in tenant scope; the history diff endpoint exposes per-revision `action`, `previous_version`, changed role sets, and disabled-state changes. Both history endpoints can filter by `actor_id`, `updated_at_from`, and `updated_at_to`.

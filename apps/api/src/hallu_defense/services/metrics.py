@@ -8,6 +8,19 @@ from typing import Final, Protocol, TypeVar
 
 PROMETHEUS_CONTENT_TYPE: Final = "text/plain; version=0.0.4; charset=utf-8"
 HTTP_DURATION_BUCKETS: Final = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+INGESTION_LATENCY_MS_BUCKETS: Final = (
+    10.0,
+    50.0,
+    100.0,
+    250.0,
+    500.0,
+    1000.0,
+    2500.0,
+    5000.0,
+    10000.0,
+    30000.0,
+    60000.0,
+)
 TMetricLabels = TypeVar("TMetricLabels", bound=Hashable)
 TLabelText = TypeVar("TLabelText", bound=Hashable, contravariant=True)
 
@@ -61,6 +74,16 @@ class SandboxRunLabels:
     outcome: str
 
 
+@dataclass(frozen=True)
+class EvalSuiteLabels:
+    suite: str
+
+
+@dataclass(frozen=True)
+class IngestionJobLabels:
+    status: str
+
+
 class PrometheusMetrics:
     def __init__(self, *, service_name: str, service_version: str, environment: str) -> None:
         self._service_name = service_name
@@ -82,6 +105,14 @@ class PrometheusMetrics:
         self._sandbox_run_totals: defaultdict[SandboxRunLabels, int] = defaultdict(int)
         self._sandbox_duration_sums: defaultdict[SandboxRunLabels, float] = defaultdict(float)
         self._sandbox_duration_buckets: defaultdict[tuple[SandboxRunLabels, float], int] = defaultdict(int)
+        self._eval_pass_rate: dict[EvalSuiteLabels, float] = {}
+        self._eval_p95_latency_ms: dict[EvalSuiteLabels, float] = {}
+        self._eval_scenario_count: dict[EvalSuiteLabels, int] = {}
+        self._eval_groundedness: float | None = None
+        self._eval_faithfulness: float | None = None
+        self._ingestion_job_totals: defaultdict[IngestionJobLabels, int] = defaultdict(int)
+        self._ingestion_latency_ms_sums: defaultdict[IngestionJobLabels, float] = defaultdict(float)
+        self._ingestion_latency_ms_buckets: defaultdict[tuple[IngestionJobLabels, float], int] = defaultdict(int)
 
     def record_http_request(
         self,
@@ -169,6 +200,39 @@ class PrometheusMetrics:
                     self._sandbox_duration_buckets[(labels, bucket)] += 1
             self._sandbox_duration_buckets[(labels, float("inf"))] += 1
 
+    def record_eval_report(
+        self,
+        *,
+        suite: str,
+        pass_rate: float,
+        p95_latency_ms: float,
+        scenario_count: int,
+        groundedness: float | None,
+        faithfulness: float | None,
+    ) -> None:
+        labels = EvalSuiteLabels(suite=suite)
+        with self._lock:
+            self._eval_pass_rate[labels] = pass_rate
+            self._eval_p95_latency_ms[labels] = p95_latency_ms
+            self._eval_scenario_count[labels] = scenario_count
+            if groundedness is not None:
+                self._eval_groundedness = groundedness
+            if faithfulness is not None:
+                self._eval_faithfulness = faithfulness
+
+    def record_ingestion_job(self, *, status: str, latency_ms: float | None = None) -> None:
+        labels = IngestionJobLabels(status=status)
+        with self._lock:
+            self._ingestion_job_totals[labels] += 1
+            if latency_ms is None:
+                return
+            safe_latency_ms = max(latency_ms, 0.0)
+            self._ingestion_latency_ms_sums[labels] += safe_latency_ms
+            for bucket in INGESTION_LATENCY_MS_BUCKETS:
+                if safe_latency_ms <= bucket:
+                    self._ingestion_latency_ms_buckets[(labels, bucket)] += 1
+            self._ingestion_latency_ms_buckets[(labels, float("inf"))] += 1
+
     def render(self) -> str:
         with self._lock:
             request_totals = dict(self._request_totals)
@@ -186,6 +250,14 @@ class PrometheusMetrics:
             sandbox_run_totals = dict(self._sandbox_run_totals)
             sandbox_duration_sums = dict(self._sandbox_duration_sums)
             sandbox_duration_buckets = dict(self._sandbox_duration_buckets)
+            eval_pass_rate = dict(self._eval_pass_rate)
+            eval_p95_latency_ms = dict(self._eval_p95_latency_ms)
+            eval_scenario_count = dict(self._eval_scenario_count)
+            eval_groundedness = self._eval_groundedness
+            eval_faithfulness = self._eval_faithfulness
+            ingestion_job_totals = dict(self._ingestion_job_totals)
+            ingestion_latency_ms_sums = dict(self._ingestion_latency_ms_sums)
+            ingestion_latency_ms_buckets = dict(self._ingestion_latency_ms_buckets)
 
         lines = [
             "# HELP hallu_api_build_info API service build and environment metadata.",
@@ -241,6 +313,20 @@ class PrometheusMetrics:
             sandbox_run_totals,
             sandbox_duration_sums,
             sandbox_duration_buckets,
+        )
+        self._append_eval_metrics(
+            lines,
+            pass_rate=eval_pass_rate,
+            p95_latency_ms=eval_p95_latency_ms,
+            scenario_count=eval_scenario_count,
+            groundedness=eval_groundedness,
+            faithfulness=eval_faithfulness,
+        )
+        self._append_ingestion_metrics(
+            lines,
+            ingestion_job_totals,
+            ingestion_latency_ms_sums,
+            ingestion_latency_ms_buckets,
         )
 
         return "\n".join(lines) + "\n"
@@ -384,6 +470,117 @@ class PrometheusMetrics:
             counts=totals,
         )
 
+    def _append_eval_metrics(
+        self,
+        lines: list[str],
+        *,
+        pass_rate: dict[EvalSuiteLabels, float],
+        p95_latency_ms: dict[EvalSuiteLabels, float],
+        scenario_count: dict[EvalSuiteLabels, int],
+        groundedness: float | None,
+        faithfulness: float | None,
+    ) -> None:
+        lines.extend(
+            [
+                "# HELP hallu_eval_pass_rate Latest published eval pass rate by suite.",
+                "# TYPE hallu_eval_pass_rate gauge",
+            ]
+        )
+        for labels, value in sorted(
+            pass_rate.items(),
+            key=lambda item: _eval_suite_sort_key(item[0]),
+        ):
+            lines.append(
+                "hallu_eval_pass_rate"
+                f"{_eval_suite_label_text(labels)} {_format_float(value)}"
+            )
+        lines.extend(
+            [
+                "# HELP hallu_eval_p95_latency_ms "
+                "Latest published eval p95 latency by suite in milliseconds.",
+                "# TYPE hallu_eval_p95_latency_ms gauge",
+            ]
+        )
+        for labels, value in sorted(
+            p95_latency_ms.items(),
+            key=lambda item: _eval_suite_sort_key(item[0]),
+        ):
+            lines.append(
+                "hallu_eval_p95_latency_ms"
+                f"{_eval_suite_label_text(labels)} {_format_float(value)}"
+            )
+        lines.extend(
+            [
+                "# HELP hallu_eval_scenario_count Latest published eval scenario count by suite.",
+                "# TYPE hallu_eval_scenario_count gauge",
+            ]
+        )
+        for labels, value in sorted(
+            scenario_count.items(),
+            key=lambda item: _eval_suite_sort_key(item[0]),
+        ):
+            lines.append(
+                "hallu_eval_scenario_count"
+                f"{_eval_suite_label_text(labels)} {value}"
+            )
+        lines.extend(
+            [
+                "# HELP hallu_eval_groundedness Latest published eval groundedness score.",
+                "# TYPE hallu_eval_groundedness gauge",
+            ]
+        )
+        if groundedness is not None:
+            lines.append(f"hallu_eval_groundedness {_format_float(groundedness)}")
+        lines.extend(
+            [
+                "# HELP hallu_eval_faithfulness Latest published eval faithfulness score.",
+                "# TYPE hallu_eval_faithfulness gauge",
+            ]
+        )
+        if faithfulness is not None:
+            lines.append(f"hallu_eval_faithfulness {_format_float(faithfulness)}")
+
+    def _append_ingestion_metrics(
+        self,
+        lines: list[str],
+        totals: dict[IngestionJobLabels, int],
+        latency_sums: dict[IngestionJobLabels, float],
+        latency_buckets: dict[tuple[IngestionJobLabels, float], int],
+    ) -> None:
+        lines.extend(
+            [
+                "# HELP hallu_ingestion_jobs_total Total ingestion jobs observed by status.",
+                "# TYPE hallu_ingestion_jobs_total counter",
+            ]
+        )
+        for labels, count in sorted(totals.items(), key=lambda item: _ingestion_job_sort_key(item[0])):
+            lines.append(
+                "hallu_ingestion_jobs_total"
+                f"{_ingestion_job_label_text(labels)} {count}"
+            )
+        lines.extend(
+            [
+                "# HELP hallu_ingestion_job_latency_ms Ingestion job processing latency in milliseconds.",
+                "# TYPE hallu_ingestion_job_latency_ms histogram",
+            ]
+        )
+        for labels in sorted(latency_sums, key=_ingestion_job_sort_key):
+            for bucket in (*INGESTION_LATENCY_MS_BUCKETS, float("inf")):
+                bucket_count = latency_buckets.get((labels, bucket), 0)
+                le = "+Inf" if bucket == float("inf") else _format_float(bucket)
+                lines.append(
+                    "hallu_ingestion_job_latency_ms_bucket"
+                    f"{_ingestion_job_label_text(labels, ('le', le))} {bucket_count}"
+                )
+            lines.append(
+                "hallu_ingestion_job_latency_ms_sum"
+                f"{_ingestion_job_label_text(labels)} {_format_float(latency_sums.get(labels, 0.0))}"
+            )
+            lines.append(
+                "hallu_ingestion_job_latency_ms_count"
+                f"{_ingestion_job_label_text(labels)} {totals.get(labels, 0)}"
+            )
+
     def _append_histogram(
         self,
         lines: list[str],
@@ -463,6 +660,10 @@ def _sandbox_run_label_text(labels: SandboxRunLabels, *extra: tuple[str, str]) -
     )
 
 
+def _eval_suite_label_text(labels: EvalSuiteLabels, *extra: tuple[str, str]) -> str:
+    return _label_text(("suite", labels.suite), *extra)
+
+
 def _label_text(*labels: tuple[str, str]) -> str:
     return "{" + ",".join(f'{name}="{_escape_label_value(value)}"' for name, value in labels) + "}"
 
@@ -501,3 +702,15 @@ def _approval_decision_sort_key(labels: ApprovalDecisionLabels) -> tuple[str, st
 
 def _sandbox_run_sort_key(labels: SandboxRunLabels) -> tuple[str, str, str]:
     return labels.verdict, labels.network_policy, labels.outcome
+
+
+def _eval_suite_sort_key(labels: EvalSuiteLabels) -> tuple[str]:
+    return (labels.suite,)
+
+
+def _ingestion_job_label_text(labels: IngestionJobLabels, *extra: tuple[str, str]) -> str:
+    return _label_text(("status", labels.status), *extra)
+
+
+def _ingestion_job_sort_key(labels: IngestionJobLabels) -> tuple[str]:
+    return (labels.status,)
