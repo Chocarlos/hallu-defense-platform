@@ -5611,3 +5611,44 @@ Remaining risks:
 - This refresh does not add local Trivy scanning, live OIDC provider smoke,
   live collector span-content assertions, browser-level Grafana dashboard
   rendering, runtime backup jobs, or live RAG query behavior.
+
+## 2026-07-09 - M6 Enterprise runtime reality roadmap registered
+
+Slice selected:
+
+- Register the M6 `Enterprise Runtime Reality` roadmap (`docs/PLAN_MASTER.md`
+  milestone + `docs/development/fable-enterprise-batch-2.md`) before Batch 1
+  starts.
+- This step is docs-only. It explicitly does NOT touch runtime code and does NOT
+  add any `docs/TRACEABILITY_MATRIX.md` rows; matrix rows land per batch during
+  implementation.
+
+Implementation:
+
+- Added milestone `### M6 Enterprise Runtime Reality` to `docs/PLAN_MASTER.md`
+  after M5, with the 7 delegable vertical batches (B1..B7) and the confirmed
+  scope decisions.
+- Created `docs/development/fable-enterprise-batch-2.md` mirroring the existing
+  `fable-enterprise-batch.md`: 10 global design decisions plus one section per
+  batch (Objective, Slices, Evidence, Matrix, Risks, Dependencies), the
+  recommended sequence, and the integration criterion.
+- Updated `apps/api/tests/test_worklog.py` so the pinned latest-entry assertion
+  points at this entry (the parser treats the bottom entry as latest); no gate
+  or test was weakened.
+
+Validation:
+
+- `.venv\Scripts\python -m ruff check scripts apps`: all checks passed.
+- `.venv\Scripts\python scripts\ci\check_foundation_docs.py`: validated
+  foundation docs with 7 ADR file(s).
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 95 entries.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_worklog.py apps\api\tests\test_foundation_docs.py -q`:
+  12 passed.
+- `git diff --check`: no whitespace errors (Windows CRLF warnings only).
+
+Remaining risks:
+
+- The 7 batches (B1..B7) are not implemented yet; this step only registers the
+  roadmap and adds no runtime behavior.
+- The live smokes described in each batch require Docker / CI and are not
+  runnable in the current local Windows environment.
