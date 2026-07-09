@@ -1,5 +1,32 @@
 # Worklog
 
+## 2026-07-08 - Traceability evidence hygiene for retrieval contracts
+
+Slice selected:
+
+- Remove stale traceability risks where the implementation and gates already
+  prove the current contract state.
+
+Implementation:
+
+- Updated `CTR-013` to reflect that `EvidenceRetrievalRequest` and
+  `EvidenceRetrievalResponse` both exist across TypeScript, JSON Schema,
+  examples, SDK, MCP validation, and Pydantic/API usage.
+- Refreshed `CTR-022` with the current JSON Schema coverage count.
+- Refreshed `CI-018` with the current worklog gate count.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\check_json_schemas.py`: 57 JSON schemas,
+  57 valid examples, 57 invalid examples, and 57 TypeScript interfaces.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: 91 entries.
+
+Remaining risks:
+
+- These updates close stale evidence gaps only; live persistent retrieval,
+  semantic schema equivalence, and historical semantic completeness remain
+  tracked under their broader rows.
+
 ## 2026-07-08 - Console policy and sandbox browser e2e
 
 Slice selected:
