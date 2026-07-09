@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config python-audit container-scan-config security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config python-audit container-scan-config security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -89,6 +89,12 @@ oidc-keycloak-live-smoke:
 
 secrets-config:
 	$(PY) scripts/ci/check_secrets_config.py
+
+vault-bootstrap:
+	$(PY) scripts/dev/bootstrap_local_vault.py
+
+vault-live-smoke:
+	$(PY) scripts/dev/live_vault_secrets_smoke.py
 
 audit-ledger-config:
 	$(PY) scripts/ci/check_audit_ledger_config.py

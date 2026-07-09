@@ -5923,3 +5923,64 @@ Remaining risks:
 - Async API, worker, backfill/reindex, and their live smoke remain pending
   because their agents hit the Claude session limit.
 - No row is marked `accepted`.
+
+## 2026-07-09 - Batch 7 - Vault local runtime
+
+Slice selected:
+
+- Implemented the safe Batch 7 Vault-local slice in the isolated worktree
+  `.codex-leader-worktrees/leader-c-b7-prod`.
+- Did not implement production overlay, live prod e2e, retention execution,
+  backup/restore drill, or Helm/kind in this slice because Batch 4 metrics auth,
+  Batch 5 runtime eval persistence, and Batch 6 async/worker pieces are still
+  incomplete.
+
+Implementation:
+
+- Added a local `vault` service to `docker-compose.yml` using
+  `hashicorp/vault:1.17` in dev mode on port 8200.
+- Added `scripts/dev/bootstrap_local_vault.py`, which seeds KV v2 paths
+  `observability/metrics-scrape-token`,
+  `auth/trusted-header-signing-key`, and `backup/encryption-key` while refusing
+  non-loopback Vault writes by default and never printing secret values.
+- Added `scripts/dev/live_vault_secrets_smoke.py`, an env-gated smoke that
+  exercises `VaultSecretManager` / `create_secret_manager` and verifies the
+  three seeded secret names with redacted output.
+- Extended `check_local_runtime_config.py` and `check_secrets_config.py` plus
+  focused negative tests so Vault image pinning, dev-mode command, env wiring,
+  bootstrap script, smoke script, Makefile targets, and live workflow wiring
+  are gated.
+- Added `vault-bootstrap` and `vault-live-smoke` Makefile targets and a
+  `vault-live` job in `.github/workflows/live.yml`.
+- Documented the local-only Vault model and updated traceability for `FND-008`,
+  `SEC-010`, and `CI-021`.
+
+Validation:
+
+- `..\..\.venv\Scripts\python.exe -m pytest apps\api\tests\test_bootstrap_local_vault.py apps\api\tests\test_live_vault_secrets_smoke.py apps\api\tests\test_secrets_config.py apps\api\tests\test_local_runtime_config.py -q`:
+  32 passed.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_secrets_config.py`:
+  validated Vault-compatible secrets configuration.
+- `..\..\.venv\Scripts\python.exe scripts\ci\check_local_runtime_config.py`:
+  validated local runtime Compose configuration for 11 services and 3 volumes.
+- `..\..\.venv\Scripts\python.exe -m ruff check scripts\dev\bootstrap_local_vault.py scripts\dev\live_vault_secrets_smoke.py scripts\ci\check_secrets_config.py scripts\ci\check_local_runtime_config.py apps\api\tests\test_bootstrap_local_vault.py apps\api\tests\test_live_vault_secrets_smoke.py apps\api\tests\test_secrets_config.py apps\api\tests\test_local_runtime_config.py`:
+  all checks passed.
+- `..\..\.venv\Scripts\python.exe scripts\dev\live_vault_secrets_smoke.py`:
+  skipped cleanly because `HALLU_DEFENSE_LIVE_VAULT_SECRETS_SMOKE_ENABLED` was
+  not enabled.
+- `..\..\.venv\Scripts\python.exe scripts\ci\secret_scan.py`: no obvious
+  secrets found.
+- `Get-Command docker -ErrorAction SilentlyContinue`: no Docker executable was
+  available on PATH, so `docker compose config --quiet` and the enabled live
+  Vault smoke were not run locally.
+
+Remaining risks:
+
+- Enabled Vault runtime validation remains CI/live-pending because Docker is
+  unavailable in this shell.
+- The metrics scrape token and backup encryption key are seeded prerequisites
+  only; the actual `/metrics` bearer enforcement and backup/restore drill
+  consumers are still pending in later B4/B7 slices.
+- Production profile, lifecycle deletion, backup/restore drill, Helm chart, and
+  kind smoke remain unimplemented in this worktree.
+- No row is marked `accepted`.
