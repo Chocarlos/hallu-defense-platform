@@ -65,7 +65,7 @@ def validate_approval_queue_config(
     )
     _require(
         api_dependencies_text,
-        {"create_approval_queue(settings)"},
+        {"create_approval_queue(settings"},
         "API dependencies",
         errors,
     )

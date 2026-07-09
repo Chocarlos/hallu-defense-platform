@@ -84,10 +84,14 @@ class Settings:
     opensearch_endpoint: str = "http://localhost:9200"
     opensearch_index_name: str = "hallu_evidence"
     postgres_dsn: str | None = None
+    postgres_pool_min_size: int = 1
+    postgres_pool_max_size: int = 8
+    postgres_pool_timeout_seconds: float = 10.0
     pgvector_table_name: str = "rag_evidence_chunks"
     rag_embedding_dimension: int = 16
     audit_ledger_backend: str = "memory"
     audit_ledger_path: Path = Path("var/audit/audit-ledger.jsonl")
+    audit_export_max_records: int = 1000
     approval_queue_backend: str = "memory"
     approval_queue_path: Path = Path("var/approvals/approval-queue.jsonl")
     approval_execution_grant_ttl_seconds: int = 900
@@ -167,12 +171,20 @@ def load_settings() -> Settings:
         opensearch_endpoint=os.getenv("HALLU_DEFENSE_OPENSEARCH_ENDPOINT", "http://localhost:9200"),
         opensearch_index_name=os.getenv("HALLU_DEFENSE_OPENSEARCH_INDEX_NAME", "hallu_evidence"),
         postgres_dsn=os.getenv("HALLU_DEFENSE_POSTGRES_DSN") or None,
+        postgres_pool_min_size=int(os.getenv("HALLU_DEFENSE_POSTGRES_POOL_MIN_SIZE", "1")),
+        postgres_pool_max_size=int(os.getenv("HALLU_DEFENSE_POSTGRES_POOL_MAX_SIZE", "8")),
+        postgres_pool_timeout_seconds=float(
+            os.getenv("HALLU_DEFENSE_POSTGRES_POOL_TIMEOUT_SECONDS", "10")
+        ),
         pgvector_table_name=os.getenv("HALLU_DEFENSE_PGVECTOR_TABLE_NAME", "rag_evidence_chunks"),
         rag_embedding_dimension=int(os.getenv("HALLU_DEFENSE_RAG_EMBEDDING_DIMENSION", "16")),
         audit_ledger_backend=os.getenv("HALLU_DEFENSE_AUDIT_LEDGER_BACKEND", "memory").strip().lower(),
         audit_ledger_path=Path(
             os.getenv("HALLU_DEFENSE_AUDIT_LEDGER_PATH", "var/audit/audit-ledger.jsonl")
         ).resolve(),
+        audit_export_max_records=int(
+            os.getenv("HALLU_DEFENSE_AUDIT_EXPORT_MAX_RECORDS", "1000")
+        ),
         approval_queue_backend=os.getenv("HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND", "memory")
         .strip()
         .lower(),

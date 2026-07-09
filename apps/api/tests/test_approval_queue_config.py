@@ -87,7 +87,9 @@ def test_approval_queue_config_requires_production_memory_rejection() -> None:
 
 def test_approval_queue_config_requires_factory_wiring() -> None:
     config = list(load_current_config())
-    config[3] = config[3].replace("create_approval_queue(settings)", "ApprovalQueue()")
+    config[3] = config[3].replace(
+        "create_approval_queue(settings, sql_provider=_sql_provider)", "ApprovalQueue()"
+    )
 
     with pytest.raises(ApprovalQueueConfigError, match="API dependencies"):
         validate_approval_queue_config(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from hallu_defense.domain.models import (
     ApprovalDecision,
     ApprovalDecisionRequest,
     ApprovalListRequest,
+    ApprovalRecord,
     ApprovalStatus,
     RiskLevel,
     ToolCallEnvelope,
@@ -25,8 +27,10 @@ from hallu_defense.services.approvals import (
     ApprovalQueue,
     ApprovalQueueConfigurationError,
     ApprovalQueueStorageError,
+    PostgresApprovalQueueStorage,
     create_approval_queue,
 )
+from hallu_defense.services.postgres import RecordingSqlProvider
 
 
 def test_jsonl_approval_queue_persists_and_reloads_pending_records_by_tenant(
@@ -420,3 +424,302 @@ def _tool_call_with_grant(
         approval_id=approval_id,
         approval_execution_token=execution_token,
     )
+
+
+# --- PostgreSQL backend -------------------------------------------------------
+
+_DECIDE_ONCE_SQL = (
+    "UPDATE approval_records SET status=%s, decided_at=%s, payload=%s::jsonb "
+    "WHERE approval_id=%s AND tenant_id=%s AND status='pending' RETURNING approval_id"
+)
+_CONSUME_GRANT_ONCE_SQL = (
+    "UPDATE approval_execution_grants SET consumed_at=now() "
+    "WHERE token_hash=%s AND tenant_id=%s AND tool_call_fingerprint=%s "
+    "AND consumed_at IS NULL AND expires_at > now() RETURNING approval_id"
+)
+_SELECT_GRANT_SQL = (
+    "SELECT consumed_at, expires_at FROM approval_execution_grants "
+    "WHERE token_hash=%s AND tenant_id=%s"
+)
+_INSERT_RECORD_SQL = (
+    "INSERT INTO approval_records "
+    "(approval_id, tenant_id, trace_id, status, payload, created_at) "
+    "VALUES (%s, %s, %s, %s, %s::jsonb, %s)"
+)
+
+
+def _postgres_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        environment="production",
+        policy_version="test",
+        auth_required=True,
+        allowed_workspace=tmp_path,
+        max_command_seconds=5,
+        max_output_chars=1000,
+        approval_queue_backend="postgres",
+    )
+
+
+def _record(
+    *,
+    approval_id: str = "apr_pg",
+    tenant_id: str = "tenant-a",
+    status: ApprovalStatus = ApprovalStatus.PENDING,
+    decided_by: str | None = None,
+    decided_at: datetime | None = None,
+) -> ApprovalRecord:
+    return ApprovalRecord(
+        approval_id=approval_id,
+        tenant_id=tenant_id,
+        trace_id="tr_pg",
+        tool_call=_tool_call(),
+        status=status,
+        risk_level=RiskLevel.HIGH,
+        reason="High-risk action.",
+        decided_by=decided_by,
+        decided_at=decided_at,
+    )
+
+
+def test_postgres_storage_decide_once_uses_guarded_sql_and_succeeds() -> None:
+    provider = RecordingSqlProvider(returning_rows=[{"approval_id": "apr_pg"}])
+    storage = PostgresApprovalQueueStorage(connection=provider)
+    decided_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    decided = _record(
+        status=ApprovalStatus.APPROVED,
+        decided_by="reviewer",
+        decided_at=decided_at,
+    )
+
+    storage.decide_once(decided=decided)
+
+    expected_payload = json.dumps(
+        decided.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    assert provider.calls == [
+        (
+            "execute_returning",
+            _DECIDE_ONCE_SQL,
+            ("approved", decided_at, expected_payload, "apr_pg", "tenant-a"),
+        )
+    ]
+
+
+def test_postgres_storage_decide_once_raises_when_no_row_updated() -> None:
+    # 0 rows from the pending-guarded UPDATE means a concurrent decision won.
+    provider = RecordingSqlProvider(returning_rows=())
+    storage = PostgresApprovalQueueStorage(connection=provider)
+    decided = _record(
+        status=ApprovalStatus.APPROVED,
+        decided_by="reviewer",
+        decided_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ApprovalAlreadyDecidedError):
+        storage.decide_once(decided=decided)
+
+
+def test_postgres_storage_consume_grant_once_uses_guarded_sql_and_returns_id() -> None:
+    provider = RecordingSqlProvider(returning_rows=[{"approval_id": "apr_pg"}])
+    storage = PostgresApprovalQueueStorage(connection=provider)
+
+    approval_id = storage.consume_grant_once(
+        tenant_id="tenant-a",
+        token_hash="hash-abc",
+        tool_call_fingerprint="fp-xyz",
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert approval_id == "apr_pg"
+    assert provider.calls == [
+        (
+            "execute_returning",
+            _CONSUME_GRANT_ONCE_SQL,
+            ("hash-abc", "tenant-a", "fp-xyz"),
+        )
+    ]
+
+
+def test_postgres_storage_consume_grant_once_raises_consumed_on_zero_rows() -> None:
+    provider = RecordingSqlProvider(
+        returning_rows=(),
+        fetch_all_rows=[
+            {
+                "consumed_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "expires_at": datetime(2030, 1, 1, tzinfo=timezone.utc),
+            }
+        ],
+    )
+    storage = PostgresApprovalQueueStorage(connection=provider)
+
+    with pytest.raises(ApprovalExecutionGrantConsumedError):
+        storage.consume_grant_once(
+            tenant_id="tenant-a",
+            token_hash="h",
+            tool_call_fingerprint="f",
+            now=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+    assert provider.calls[-1] == ("fetch_all", _SELECT_GRANT_SQL, ("h", "tenant-a"))
+
+
+def test_postgres_storage_consume_grant_once_raises_expired_on_zero_rows() -> None:
+    provider = RecordingSqlProvider(
+        returning_rows=(),
+        fetch_all_rows=[
+            {
+                "consumed_at": None,
+                "expires_at": datetime(2020, 1, 1, tzinfo=timezone.utc),
+            }
+        ],
+    )
+    storage = PostgresApprovalQueueStorage(connection=provider)
+
+    with pytest.raises(ApprovalExecutionGrantExpiredError):
+        storage.consume_grant_once(
+            tenant_id="tenant-a",
+            token_hash="h",
+            tool_call_fingerprint="f",
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_postgres_storage_consume_grant_once_raises_invalid_when_absent() -> None:
+    provider = RecordingSqlProvider(returning_rows=(), fetch_all_rows=())
+    storage = PostgresApprovalQueueStorage(connection=provider)
+
+    with pytest.raises(ApprovalExecutionGrantError, match="invalid"):
+        storage.consume_grant_once(
+            tenant_id="tenant-a",
+            token_hash="h",
+            tool_call_fingerprint="f",
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_postgres_storage_consume_grant_once_raises_mismatch_when_fingerprint_differs() -> None:
+    # Grant exists, is unconsumed and unexpired, yet the atomic guard returned
+    # 0 rows -> the fingerprint did not match this tool call.
+    provider = RecordingSqlProvider(
+        returning_rows=(),
+        fetch_all_rows=[
+            {"consumed_at": None, "expires_at": datetime(2030, 1, 1, tzinfo=timezone.utc)}
+        ],
+    )
+    storage = PostgresApprovalQueueStorage(connection=provider)
+
+    with pytest.raises(ApprovalExecutionGrantError, match="does not match"):
+        storage.consume_grant_once(
+            tenant_id="tenant-a",
+            token_hash="h",
+            tool_call_fingerprint="f",
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_create_approval_queue_postgres_requires_sql_provider(tmp_path: Path) -> None:
+    with pytest.raises(ApprovalQueueConfigurationError, match="SqlConnectionProvider"):
+        create_approval_queue(_postgres_settings(tmp_path))
+
+
+def test_approval_queue_rejects_storage_path_and_storage_together(tmp_path: Path) -> None:
+    with pytest.raises(ApprovalQueueConfigurationError, match="either"):
+        ApprovalQueue(
+            storage_path=tmp_path / "approval-queue.jsonl",
+            storage=PostgresApprovalQueueStorage(connection=RecordingSqlProvider()),
+        )
+
+
+def test_postgres_queue_request_approval_redacts_and_uses_insert_sql(tmp_path: Path) -> None:
+    provider = RecordingSqlProvider()
+    queue = create_approval_queue(_postgres_settings(tmp_path), sql_provider=provider)
+
+    approval = queue.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_pg",
+        tool_call=ToolCallEnvelope(
+            tool_name="delete_repository",
+            input={"repo": "core", "api_key": "topsecret", "nested": {"password": "topsecret"}},
+            tool_schema={"type": "object", "properties": {"token": {"const": "topsecret"}}},
+            risk_level=RiskLevel.HIGH,
+            approval_required=True,
+            caller_context={"subject": "agent", "token": "topsecret"},
+        ),
+        reason="High-risk action.",
+    )
+
+    assert provider.calls[0][0] == "execute"
+    assert provider.calls[0][1] == _INSERT_RECORD_SQL
+    # Redaction parity with JSONL: secrets never reach the database parameters.
+    for _method, _statement, parameters in provider.calls:
+        assert all("topsecret" not in str(parameter) for parameter in parameters)
+    assert approval.tool_call.input["api_key"] == REDACTED
+    assert approval.tool_call.caller_context["token"] == REDACTED
+
+
+def test_postgres_queue_decide_with_grant_issues_grant_end_to_end(tmp_path: Path) -> None:
+    pending = _record()
+    provider = RecordingSqlProvider(
+        fetch_all_rows=[{"payload": pending.model_dump(mode="json")}],
+        returning_rows=[{"approval_id": pending.approval_id}],
+    )
+    queue = create_approval_queue(_postgres_settings(tmp_path), sql_provider=provider)
+
+    result = queue.decide_with_grant(
+        "tenant-a",
+        ApprovalDecisionRequest(
+            approval_id=pending.approval_id,
+            decision=ApprovalDecision.APPROVE,
+            decided_by="reviewer",
+        ),
+    )
+
+    assert result.approval.status == ApprovalStatus.APPROVED
+    assert result.execution_grant is not None
+    # get_record (SELECT), decide_once (guarded UPDATE ... RETURNING), insert_grant (INSERT).
+    assert [call[0] for call in provider.calls] == ["fetch_all", "execute_returning", "execute"]
+    assert provider.calls[1][1] == _DECIDE_ONCE_SQL
+    # The opaque execution grant value is never persisted raw; only its hash is stored.
+    issued = result.execution_grant.execution_token
+    for _method, _statement, parameters in provider.calls:
+        assert all(issued not in str(parameter) for parameter in parameters)
+
+
+def test_postgres_queue_consume_execution_grant_succeeds_end_to_end(tmp_path: Path) -> None:
+    approved = _record(status=ApprovalStatus.APPROVED, decided_by="reviewer")
+    provider = RecordingSqlProvider(
+        fetch_all_rows=[{"payload": approved.model_dump(mode="json")}],
+        returning_rows=[{"approval_id": approved.approval_id}],
+    )
+    queue = create_approval_queue(_postgres_settings(tmp_path), sql_provider=provider)
+
+    record = queue.consume_execution_grant(
+        "tenant-a",
+        _tool_call_with_grant(
+            approval_id=approved.approval_id,
+            execution_token="tok_" + "x" * 24,
+        ),
+    )
+
+    assert record.approval_id == approved.approval_id
+    # get_record (SELECT) then the atomic consume-once UPDATE ... RETURNING.
+    assert [call[0] for call in provider.calls] == ["fetch_all", "execute_returning"]
+    assert provider.calls[1][1] == _CONSUME_GRANT_ONCE_SQL
+    # The raw execution token is hashed before it reaches the database.
+    for _method, _statement, parameters in provider.calls:
+        assert all("tok_" not in str(parameter) for parameter in parameters)
+
+
+def test_postgres_queue_decide_with_grant_rejects_unknown_approval(tmp_path: Path) -> None:
+    provider = RecordingSqlProvider(fetch_all_rows=())
+    queue = create_approval_queue(_postgres_settings(tmp_path), sql_provider=provider)
+
+    with pytest.raises(ApprovalNotFoundError):
+        queue.decide_with_grant(
+            "tenant-a",
+            ApprovalDecisionRequest(
+                approval_id="apr_missing",
+                decision=ApprovalDecision.APPROVE,
+                decided_by="reviewer",
+            ),
+        )

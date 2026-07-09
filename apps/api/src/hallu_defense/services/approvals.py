@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -25,6 +25,7 @@ from hallu_defense.domain.models import (
     ApprovalStatus,
     ToolCallEnvelope,
 )
+from hallu_defense.services.postgres import SqlConnectionProvider
 
 SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|secret|token|password)", re.I)
 REDACTED = "[REDACTED]"
@@ -82,15 +83,248 @@ class ApprovalExecutionGrantState:
     consumed_at: datetime | None = None
 
 
+# --- PostgreSQL backend -------------------------------------------------------
+#
+# The decide-once and consume-once guards below are the security core of the
+# durable backend: each is a single UPDATE ... RETURNING statement whose WHERE
+# clause is the invariant. The database, not the process, enforces "at most one"
+# so concurrent API workers cannot double-decide an approval or double-spend an
+# execution grant. Never replace these with a read-then-write that drops the
+# guard.
+_INSERT_RECORD_SQL = (
+    "INSERT INTO approval_records "
+    "(approval_id, tenant_id, trace_id, status, payload, created_at) "
+    "VALUES (%s, %s, %s, %s, %s::jsonb, %s)"
+)
+_LIST_RECORDS_SQL = (
+    "SELECT payload FROM approval_records WHERE tenant_id=%s ORDER BY created_at ASC"
+)
+_GET_RECORD_SQL = "SELECT payload FROM approval_records WHERE approval_id=%s AND tenant_id=%s"
+_DECIDE_ONCE_SQL = (
+    "UPDATE approval_records SET status=%s, decided_at=%s, payload=%s::jsonb "
+    "WHERE approval_id=%s AND tenant_id=%s AND status='pending' RETURNING approval_id"
+)
+_INSERT_GRANT_SQL = (
+    "INSERT INTO approval_execution_grants "
+    "(token_hash, approval_id, tenant_id, tool_call_fingerprint, expires_at, consumed_at, "
+    "created_at) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+)
+_CONSUME_GRANT_ONCE_SQL = (
+    "UPDATE approval_execution_grants SET consumed_at=now() "
+    "WHERE token_hash=%s AND tenant_id=%s AND tool_call_fingerprint=%s "
+    "AND consumed_at IS NULL AND expires_at > now() RETURNING approval_id"
+)
+_SELECT_GRANT_SQL = (
+    "SELECT consumed_at, expires_at FROM approval_execution_grants "
+    "WHERE token_hash=%s AND tenant_id=%s"
+)
+
+
+class ApprovalQueueStorage(Protocol):
+    """Durable persistence seam for :class:`ApprovalQueue`.
+
+    Implementations own persistence plus the two atomic guards; the queue keeps
+    every policy/redaction/fingerprint decision. ``decide_once`` and
+    ``consume_grant_once`` MUST be atomic single-use operations.
+    """
+
+    def insert_record(self, record: ApprovalRecord) -> None:
+        ...
+
+    def list_records(self, tenant_id: str) -> list[ApprovalRecord]:
+        ...
+
+    def get_record(self, tenant_id: str, approval_id: str) -> ApprovalRecord | None:
+        ...
+
+    def decide_once(self, *, decided: ApprovalRecord) -> None:
+        """Persist ``decided`` iff the record is still pending, else raise."""
+        ...
+
+    def insert_grant(self, state: ApprovalExecutionGrantState) -> None:
+        ...
+
+    def consume_grant_once(
+        self,
+        *,
+        tenant_id: str,
+        token_hash: str,
+        tool_call_fingerprint: str,
+        now: datetime,
+    ) -> str:
+        """Consume the matching grant once; raise the specific error otherwise."""
+        ...
+
+
+class PostgresApprovalQueueStorage:
+    """Atomic PostgreSQL storage backend for the approval queue.
+
+    The redacted ``ApprovalRecord`` snapshot is the source of truth, stored as
+    ``jsonb`` via ``model_dump(mode="json")`` exactly like the JSONL backend, so
+    secrets are never written raw. ``decide_once`` and ``consume_grant_once`` use
+    ``UPDATE ... RETURNING`` guards to enforce single-use under concurrency.
+    """
+
+    def __init__(
+        self,
+        *,
+        connection: SqlConnectionProvider,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._connection = connection
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def insert_record(self, record: ApprovalRecord) -> None:
+        self._connection.execute(
+            _INSERT_RECORD_SQL,
+            (
+                record.approval_id,
+                record.tenant_id,
+                record.trace_id,
+                record.status.value,
+                self._payload(record),
+                record.created_at,
+            ),
+        )
+
+    def list_records(self, tenant_id: str) -> list[ApprovalRecord]:
+        rows = self._connection.fetch_all(_LIST_RECORDS_SQL, (tenant_id,))
+        return [self._record_from_row(row, index) for index, row in enumerate(rows, start=1)]
+
+    def get_record(self, tenant_id: str, approval_id: str) -> ApprovalRecord | None:
+        rows = self._connection.fetch_all(_GET_RECORD_SQL, (approval_id, tenant_id))
+        if not rows:
+            return None
+        return self._record_from_row(rows[0], 1)
+
+    def decide_once(self, *, decided: ApprovalRecord) -> None:
+        rows = self._connection.execute_returning(
+            _DECIDE_ONCE_SQL,
+            (
+                decided.status.value,
+                decided.decided_at,
+                self._payload(decided),
+                decided.approval_id,
+                decided.tenant_id,
+            ),
+        )
+        if not rows:
+            raise ApprovalAlreadyDecidedError("Approval has already been decided.")
+
+    def insert_grant(self, state: ApprovalExecutionGrantState) -> None:
+        self._connection.execute(
+            _INSERT_GRANT_SQL,
+            (
+                state.token_hash,
+                state.approval_id,
+                state.tenant_id,
+                state.tool_call_fingerprint,
+                state.expires_at,
+                state.consumed_at,
+                self._now(),
+            ),
+        )
+
+    def consume_grant_once(
+        self,
+        *,
+        tenant_id: str,
+        token_hash: str,
+        tool_call_fingerprint: str,
+        now: datetime,
+    ) -> str:
+        rows = self._connection.execute_returning(
+            _CONSUME_GRANT_ONCE_SQL,
+            (token_hash, tenant_id, tool_call_fingerprint),
+        )
+        if rows:
+            approval_id = rows[0].get("approval_id")
+            if not isinstance(approval_id, str) or not approval_id:
+                raise ApprovalQueueStorageError(
+                    "Approval execution grant consume returned an invalid approval_id."
+                )
+            return approval_id
+        # 0 rows: the atomic guard rejected the grant. Disambiguate against the
+        # JSONL taxonomy without ever un-guarding the write above.
+        grant_rows = self._connection.fetch_all(_SELECT_GRANT_SQL, (token_hash, tenant_id))
+        if not grant_rows:
+            raise ApprovalExecutionGrantError("Approval execution grant is invalid.")
+        grant = grant_rows[0]
+        if self._coerce_optional_datetime(grant.get("consumed_at")) is not None:
+            raise ApprovalExecutionGrantConsumedError(
+                "Approval execution grant has already been consumed."
+            )
+        expires_at = self._coerce_optional_datetime(grant.get("expires_at"))
+        if expires_at is not None and expires_at <= now:
+            raise ApprovalExecutionGrantExpiredError("Approval execution grant has expired.")
+        raise ApprovalExecutionGrantError(
+            "Approval execution grant does not match this tool call."
+        )
+
+    def _payload(self, record: ApprovalRecord) -> str:
+        return json.dumps(
+            record.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _record_from_row(self, row: Mapping[str, object], row_number: int) -> ApprovalRecord:
+        payload = row.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ApprovalQueueStorageError(
+                    f"Postgres approval record {row_number} payload is not valid JSON"
+                ) from exc
+        if not isinstance(payload, Mapping):
+            raise ApprovalQueueStorageError(
+                f"Postgres approval record {row_number} payload must be an object"
+            )
+        try:
+            return ApprovalRecord.model_validate(payload)
+        except ValidationError as exc:
+            raise ApprovalQueueStorageError(
+                f"Postgres approval record {row_number} payload is invalid"
+            ) from exc
+
+    def _coerce_optional_datetime(self, value: object) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        raise ApprovalQueueStorageError("Approval execution grant timestamp is invalid.")
+
+    def _now(self) -> datetime:
+        current = self._clock()
+        if current.tzinfo is None:
+            return current.replace(tzinfo=timezone.utc)
+        return current.astimezone(timezone.utc)
+
+
 class ApprovalQueue:
     def __init__(
         self,
         storage_path: Path | None = None,
         *,
+        storage: ApprovalQueueStorage | None = None,
         execution_grant_ttl_seconds: int = 900,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if storage_path is not None and storage is not None:
+            raise ApprovalQueueConfigurationError(
+                "Configure either storage_path or storage, not both."
+            )
         self._storage_path = storage_path
+        self._storage = storage
         self._execution_grant_ttl = timedelta(seconds=execution_grant_ttl_seconds)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
@@ -118,14 +352,20 @@ class ApprovalQueue:
             reason=reason,
             requested_by=requested_by,
         )
+        if self._storage is not None:
+            self._storage.insert_record(record)
+            return record
         with self._lock:
             self._append_record_locked(record)
             self._records[record.approval_id] = record
         return record
 
     def list_for_tenant(self, tenant_id: str, request: ApprovalListRequest) -> list[ApprovalRecord]:
-        with self._lock:
-            records = list(self._records.values())
+        if self._storage is not None:
+            records = self._storage.list_records(tenant_id)
+        else:
+            with self._lock:
+                records = list(self._records.values())
         filtered = [
             record
             for record in records
@@ -143,6 +383,8 @@ class ApprovalQueue:
         tenant_id: str,
         request: ApprovalDecisionRequest,
     ) -> ApprovalDecisionResult:
+        if self._storage is not None:
+            return self._decide_with_grant_via_storage(tenant_id, request)
         with self._lock:
             record = self._records.get(request.approval_id)
             if record is None or record.tenant_id != tenant_id:
@@ -183,6 +425,8 @@ class ApprovalQueue:
     ) -> ApprovalRecord:
         if not tool_call.approval_id or not tool_call.approval_execution_token:
             raise ApprovalExecutionGrantError("Approval execution grant is required.")
+        if self._storage is not None:
+            return self._consume_execution_grant_via_storage(tenant_id, tool_call)
         with self._lock:
             record = self._records.get(tool_call.approval_id)
             if record is None or record.tenant_id != tenant_id:
@@ -213,6 +457,63 @@ class ApprovalQueue:
             self._append_grant_state_locked(consumed_state)
             self._grants[tool_call.approval_id] = consumed_state
             return record
+
+    def _decide_with_grant_via_storage(
+        self,
+        tenant_id: str,
+        request: ApprovalDecisionRequest,
+    ) -> ApprovalDecisionResult:
+        assert self._storage is not None
+        record = self._storage.get_record(tenant_id, request.approval_id)
+        if record is None or record.tenant_id != tenant_id:
+            raise ApprovalNotFoundError("Approval was not found for this tenant.")
+        if record.status != ApprovalStatus.PENDING:
+            raise ApprovalAlreadyDecidedError("Approval has already been decided.")
+        if not request.decided_by:
+            raise ApprovalDecisionIdentityError("Approval decision requires reviewer identity.")
+
+        status = (
+            ApprovalStatus.APPROVED
+            if request.decision == ApprovalDecision.APPROVE
+            else ApprovalStatus.REJECTED
+        )
+        decided = self._sanitize_record(
+            record.model_copy(
+                update={
+                    "status": status,
+                    "decided_by": request.decided_by,
+                    "decision_reason": request.reason,
+                    "decided_at": self._now(),
+                }
+            )
+        )
+        # Atomic decide-once: 0 rows means a concurrent caller already decided it.
+        self._storage.decide_once(decided=decided)
+        execution_grant: ApprovalExecutionGrant | None = None
+        if status == ApprovalStatus.APPROVED:
+            grant_state, execution_grant = self._create_execution_grant(record)
+            self._storage.insert_grant(grant_state)
+        return ApprovalDecisionResult(approval=decided, execution_grant=execution_grant)
+
+    def _consume_execution_grant_via_storage(
+        self,
+        tenant_id: str,
+        tool_call: ToolCallEnvelope,
+    ) -> ApprovalRecord:
+        assert self._storage is not None
+        record = self._storage.get_record(tenant_id, tool_call.approval_id or "")
+        if record is None or record.tenant_id != tenant_id:
+            raise ApprovalNotFoundError("Approval was not found for this tenant.")
+        if record.status != ApprovalStatus.APPROVED:
+            raise ApprovalExecutionGrantError("Approval has not been approved.")
+        # Atomic consume-once; storage raises the specific taxonomy error on 0 rows.
+        self._storage.consume_grant_once(
+            tenant_id=tenant_id,
+            token_hash=self._hash_execution_token(tool_call.approval_execution_token or ""),
+            tool_call_fingerprint=self._tool_call_fingerprint(tool_call),
+            now=self._now(),
+        )
+        return record
 
     def _load_from_storage(self) -> None:
         if self._storage_path is None or not self._storage_path.exists():
@@ -403,7 +704,11 @@ class ApprovalQueue:
         return parsed.astimezone(timezone.utc)
 
 
-def create_approval_queue(settings: Settings) -> ApprovalQueue:
+def create_approval_queue(
+    settings: Settings,
+    *,
+    sql_provider: SqlConnectionProvider | None = None,
+) -> ApprovalQueue:
     backend = settings.approval_queue_backend.strip().lower()
     if settings.approval_execution_grant_ttl_seconds <= 0:
         raise ApprovalQueueConfigurationError(
@@ -420,6 +725,15 @@ def create_approval_queue(settings: Settings) -> ApprovalQueue:
     if backend == "jsonl":
         return ApprovalQueue(
             storage_path=settings.approval_queue_path,
+            execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
+        )
+    if backend in {"postgres", "postgresql"}:
+        if sql_provider is None:
+            raise ApprovalQueueConfigurationError(
+                "Postgres approval queue backend requires an injected SqlConnectionProvider."
+            )
+        return ApprovalQueue(
+            storage=PostgresApprovalQueueStorage(connection=sql_provider),
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
         )
     raise ApprovalQueueConfigurationError(

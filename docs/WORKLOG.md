@@ -5652,3 +5652,55 @@ Remaining risks:
   roadmap and adds no runtime behavior.
 - The live smokes described in each batch require Docker / CI and are not
   runnable in the current local Windows environment.
+
+## 2026-07-09 - Batch 1 - PostgreSQL core (pool, audit ledger, approval queue)
+
+Slice selected:
+
+- Implemented the PostgreSQL core of milestone M6: a shared connection pool
+  provider, a PostgreSQL audit-ledger backend, a PostgreSQL approval-queue
+  backend, and repeatable migrations.
+- LIVE validation (a smoke against a real database) is explicitly deferred as
+  live-pending because no local Docker is available on this Windows host; the
+  Postgres backends are proven against a recording provider fake only.
+
+Implementation:
+
+- `services/postgres.py`: `SqlConnectionProvider` protocol, a
+  `PooledPostgresProvider` sharing a bounded psycopg connection pool, and a
+  `RecordingSqlProvider` fake for deterministic tests.
+- Migrations `infra/rag/pgvector/000_schema_migrations.sql`,
+  `003_audit_ledger.sql`, and `004_approval_queue.sql`, plus
+  `scripts/dev/apply_postgres_migrations.py`, which applies them idempotently.
+- `PostgresAuditLedgerStorage` in `services/audit.py`: redaction before
+  persistence and export bounded by `audit_export_max_records` with
+  `ORDER BY created_at DESC, id DESC LIMIT`.
+- `PostgresApprovalQueueStorage` in `services/approvals.py`: atomic
+  decide-once / consume-once guards via `UPDATE ... RETURNING`.
+- Wiring across config, `.env`, dependencies, pyproject, and Makefile, and the
+  env-gated `scripts/dev/live_postgres_persistence_smoke.py`
+  (`HALLU_DEFENSE_LIVE_POSTGRES_PERSISTENCE_SMOKE_ENABLED`).
+- Traceability matrix rows `PY-018`/`PY-019`/`PY-020`, Batch 1 updates to
+  `PY-011`, `PY-013`, `SEC-004`, `CTR-010`, `CTR-023`, `CTR-025`, `CI-013`, and
+  `CI-014`, and the requirement-row-count bump from 151 to 154 in `FND-003` and
+  `CI-017`.
+
+Validation:
+
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  154 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 96 entries.
+- `.venv\Scripts\python -m pytest apps\api\tests\test_traceability_matrix.py apps\api\tests\test_worklog.py -q`:
+  12 passed.
+- Batch 1 code gates confirmed green at integration before this docs slice:
+  `ruff` clean; `mypy apps/api/src` clean across 38 source files;
+  `pytest apps\api\tests`: 426 passed; `secret_scan.py`: no obvious secrets
+  found; `check_audit_ledger_config.py` and `check_approval_queue_config.py`
+  validated the persistence gates.
+
+Remaining risks:
+
+- The live persistence smoke (`live_postgres_persistence_smoke.py`) and the
+  migrations against a real database require Docker/CI and are not runnable on
+  this local Windows host, so they remain live-pending.
+- Nothing advances beyond `tested`; no traceability row is marked `accepted`.

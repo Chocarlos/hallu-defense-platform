@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke python-audit container-scan-config security-check
+.PHONY: lint typecheck test build contracts openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test evals-smoke evals-scenarios dashboard-lint local-runtime-config encryption-config auth-config oidc-provider-smoke secrets-config audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke postgres-migrations-apply postgres-persistence-live-smoke python-audit container-scan-config security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -99,6 +99,12 @@ rag-opensearch-live-smoke:
 
 rag-pgvector-live-smoke:
 	$(PY) scripts/dev/live_pgvector_rag_smoke.py
+
+postgres-migrations-apply:
+	$(PY) scripts/dev/apply_postgres_migrations.py
+
+postgres-persistence-live-smoke:
+	$(PY) scripts/dev/live_postgres_persistence_smoke.py
 
 python-audit:
 	$(PY) scripts/ci/python_dependency_audit.py
