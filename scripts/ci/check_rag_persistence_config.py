@@ -14,6 +14,9 @@ RAG_DOC = ROOT / "docs" / "rag" / "persistent-indexes.md"
 MAKEFILE = ROOT / "Makefile"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
+LIVE_OPENSEARCH_RAG_SMOKE_SCRIPT = "scripts/dev/live_opensearch_rag_smoke.py"
+LIVE_OPENSEARCH_RAG_SMOKE_TARGET = "rag-opensearch-live-smoke"
+LIVE_OPENSEARCH_RAG_SMOKE_ENV = "HALLU_DEFENSE_LIVE_OPENSEARCH_RAG_SMOKE_ENABLED=true"
 
 REQUIRED_SQL_SNIPPETS = {
     "CREATE EXTENSION IF NOT EXISTS vector",
@@ -178,6 +181,82 @@ def _validate_supporting_files(
         errors.append("security workflow must run check_rag_persistence_config.py")
     if bootstrap not in security_workflow_text:
         errors.append("security workflow must run the OpenSearch template bootstrap dry-run")
+    _validate_live_opensearch_smoke_wiring(
+        docs_text=docs_text,
+        makefile_text=makefile_text,
+        ci_workflow_text=ci_workflow_text,
+        security_workflow_text=security_workflow_text,
+        errors=errors,
+    )
+
+
+def _validate_live_opensearch_smoke_wiring(
+    *,
+    docs_text: str,
+    makefile_text: str,
+    ci_workflow_text: str,
+    security_workflow_text: str,
+    errors: list[str],
+) -> None:
+    live_target = LIVE_OPENSEARCH_RAG_SMOKE_TARGET
+    live_script = LIVE_OPENSEARCH_RAG_SMOKE_SCRIPT
+    required_doc_markers = {
+        live_target,
+        live_script,
+        LIVE_OPENSEARCH_RAG_SMOKE_ENV,
+        "hallu_evidence_smoke",
+        "docker compose up -d opensearch",
+        "http://localhost:9200",
+    }
+    missing_doc_markers = sorted(marker for marker in required_doc_markers if marker not in docs_text)
+    if missing_doc_markers:
+        errors.append(
+            "RAG docs missing live OpenSearch RAG smoke markers: "
+            + ", ".join(missing_doc_markers)
+        )
+
+    if not _makefile_phony_includes(makefile_text, live_target):
+        errors.append("Makefile .PHONY must include the live OpenSearch RAG smoke target")
+    live_target_body = _makefile_target_body(makefile_text, live_target)
+    if not live_target_body:
+        errors.append("Makefile must expose the live OpenSearch RAG smoke target")
+    elif live_script not in live_target_body:
+        errors.append("live OpenSearch RAG smoke target must run live_opensearch_rag_smoke.py")
+
+    for target in ("rag-persistence-config", "security-check"):
+        target_body = _makefile_target_body(makefile_text, target)
+        if live_target in target_body or live_script in target_body:
+            errors.append(f"Makefile {target} must not run the live OpenSearch RAG smoke")
+
+    for workflow_name, workflow_text in (
+        ("CI workflow", ci_workflow_text),
+        ("security workflow", security_workflow_text),
+    ):
+        if live_target in workflow_text or live_script in workflow_text:
+            errors.append(f"{workflow_name} must not run the live OpenSearch RAG smoke by default")
+
+
+def _makefile_phony_includes(makefile_text: str, target: str) -> bool:
+    for line in makefile_text.splitlines():
+        if line.startswith(".PHONY:"):
+            return target in line.split()
+    return False
+
+
+def _makefile_target_body(makefile_text: str, target: str) -> str:
+    match = re.search(rf"(?m)^{re.escape(target)}:\s*$", makefile_text)
+    if match is None:
+        return ""
+    body_lines: list[str] = []
+    for line in makefile_text[match.end() :].splitlines():
+        if not line:
+            if body_lines:
+                break
+            continue
+        if not line.startswith("\t"):
+            break
+        body_lines.append(line)
+    return "\n".join(body_lines)
 
 
 def _mapping(value: object, path: str, errors: list[str]) -> Mapping[str, object]:

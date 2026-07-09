@@ -1,5 +1,63 @@
 # Worklog
 
+## 2026-07-08 - Live OpenSearch RAG smoke and persistent ID hardening
+
+Slice selected:
+
+- Advance the large persistent RAG slice from static OpenSearch wiring to an
+  opt-in live-service smoke while preserving tenant isolation guarantees.
+
+Coordination:
+
+- Used four read-only subagents to audit RAG runtime architecture, local
+  Docker/OpenSearch prerequisites, tenant isolation invariants, and live-smoke
+  test strategy.
+- Used two writing subagents for smoke/wiring scaffolding, then audited and
+  integrated only the verified pieces in the main tree.
+
+Implementation:
+
+- Changed persistent RAG chunk IDs from inline ordinal IDs to stable hashed IDs
+  scoped by corpus, source, document index, and chunk index.
+- Made OpenSearch bulk indexing fail closed when `_bulk` reports item errors.
+- Made `/evidence/retrieve` and `/documents/ingest` return explicit 503 errors
+  for persistent RAG backend failures, then regenerated the OpenAPI artifact.
+- Added `scripts/dev/live_opensearch_rag_smoke.py`, an opt-in live smoke that
+  installs the OpenSearch template, creates a validated smoke index, indexes
+  synthetic tenant A/B documents, refreshes/searches, asserts tenant isolation,
+  and deletes the smoke index.
+- Added `make rag-opensearch-live-smoke`, static wiring checks, unit coverage
+  for the smoke script, and updated persistent RAG documentation.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_live_opensearch_rag_smoke.py apps\api\tests\test_rag_persistence_config.py apps\api\tests\test_rag_index_adapters.py -q`:
+  54 passed, with the existing FastAPI TestClient deprecation warning.
+- `.venv\Scripts\python scripts\ci\check_rag_persistence_config.py`: validated
+  RAG persistence configuration.
+- `.venv\Scripts\python scripts\ci\export_openapi.py` and
+  `.venv\Scripts\python scripts\ci\check_openapi.py`: OpenAPI artifact is up to
+  date.
+- `HALLU_DEFENSE_LIVE_OPENSEARCH_RAG_SMOKE_ENABLED=true` with
+  `HALLU_DEFENSE_OPENSEARCH_ENDPOINT=http://127.0.0.1:9200` against local Docker
+  OpenSearch: status passed, indexed_count 2, tenant_isolation true.
+- `Invoke-WebRequest http://127.0.0.1:9200/hallu_evidence_live_smoke`: returned
+  404 after the smoke, proving the smoke index was removed.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 360 passed, with the
+  existing FastAPI TestClient deprecation warning.
+- `.venv\Scripts\python -m mypy apps\api\src`: success, no issues in 37 source
+  files.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  passed.
+
+Remaining risks:
+
+- The OpenSearch smoke is opt-in and local-service only; it is not part of
+  default CI because it requires Docker/OpenSearch.
+- pgvector still needs live runtime connection wiring, migration execution
+  evidence, and integration tests.
+- Backfill workers and managed-service/load validation remain future slices.
+
 ## 2026-07-08 - Tool validation rate limit
 
 Slice selected:

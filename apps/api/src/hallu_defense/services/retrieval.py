@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -287,7 +289,7 @@ class HybridRetriever:
         metadata = self._metadata_for(evidence)
         return RagChunk(
             tenant_id=tenant_id,
-            evidence_id=evidence.evidence_id,
+            evidence_id=self._persistent_evidence_id(evidence, metadata),
             source_ref=evidence.source_ref,
             content=evidence.content,
             authority=evidence.authority,
@@ -296,6 +298,16 @@ class HybridRetriever:
             document_index=self._int_metadata(evidence, "document_index"),
             chunk_index=self._int_metadata(evidence, "chunk_index"),
         )
+
+    def _persistent_evidence_id(self, evidence: Evidence, metadata: dict[str, object]) -> str:
+        identity = {
+            "corpus_id": metadata.get("corpus_id", ""),
+            "source_ref": evidence.source_ref,
+            "document_index": self._int_metadata(evidence, "document_index"),
+            "chunk_index": self._int_metadata(evidence, "chunk_index"),
+        }
+        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        return f"ev_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
 
     def _rank(self, claim: Claim, chunks: list[Evidence]) -> list[Evidence]:
         claim_tokens = tokenize(claim.text)

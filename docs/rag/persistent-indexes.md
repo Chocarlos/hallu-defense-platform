@@ -76,6 +76,42 @@ The dry-run command is wired into `Makefile`, CI, and security CI. The non-dry-r
 command requires a reachable OpenSearch endpoint from `HALLU_DEFENSE_OPENSEARCH_ENDPOINT`
 or `--endpoint`.
 
+## Live OpenSearch RAG Smoke
+
+The live OpenSearch RAG smoke is opt-in. It is not part of `rag-persistence-config`,
+`security-check`, CI, or security CI because it requires a running OpenSearch service.
+Use it only when validating the local live-service path:
+
+```text
+HALLU_DEFENSE_LIVE_OPENSEARCH_RAG_SMOKE_ENABLED=true make rag-opensearch-live-smoke
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:HALLU_DEFENSE_LIVE_OPENSEARCH_RAG_SMOKE_ENABLED = 'true'
+make rag-opensearch-live-smoke
+```
+
+The Makefile target runs `scripts/dev/live_opensearch_rag_smoke.py`. The smoke
+installs the committed OpenSearch template, creates a validated smoke index,
+indexes synthetic tenant A/B documents, refreshes/searches OpenSearch, asserts
+tenant isolation, and deletes the smoke index before exiting. The default smoke
+index is `hallu_evidence_live_smoke`; custom smoke indexes must remain dedicated
+developer indexes such as `hallu_evidence_smoke`. Do not point this command at a
+production or shared customer index.
+
+Current local prerequisites:
+
+- Docker Desktop or Docker Engine must be running.
+- Start the local OpenSearch service from the committed Compose topology:
+  `docker compose up -d opensearch`.
+- OpenSearch must be reachable at `HALLU_DEFENSE_OPENSEARCH_ENDPOINT`, which
+  defaults to `http://localhost:9200` for developer runs.
+- The local Compose service uses `opensearchproject/opensearch:2.15.0`,
+  single-node discovery, disabled security, and the local-only bootstrap password
+  from `docker-compose.yml`.
+
 ## Validation
 
 `apps/api/tests/test_rag_index_adapters.py` verifies:
@@ -100,7 +136,7 @@ when tenant isolation, pinned images, bootstrap dry-run wiring, or CI wiring are
 
 ## Current Limits
 
-This is an adapter and integration boundary, not proof of a running OpenSearch
-cluster or pgvector database. Executing the OpenSearch bootstrap against a live
-cluster, OpenSearch health checks, pgvector connection pools, runtime migration
-execution evidence, and backfill workers remain future work.
+OpenSearch has an opt-in live smoke for local validation, but it is intentionally
+not part of default CI because it requires Docker/OpenSearch. pgvector remains an
+adapter and static configuration boundary only: connection pools, live migration
+execution evidence, integration tests, and backfill workers remain future work.
