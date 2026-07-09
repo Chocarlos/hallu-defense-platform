@@ -126,6 +126,18 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
 
+  vault:
+    image: hashicorp/vault:1.17
+    command:
+      - server
+      - -dev
+      - -dev-listen-address=0.0.0.0:8200
+      - -dev-root-token-id=${HALLU_DEFENSE_LOCAL_VAULT_DEV_ROOT_TOKEN:-dev-root}
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+
 volumes:
   postgres-data:
   minio-data:

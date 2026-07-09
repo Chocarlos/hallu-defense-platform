@@ -31,6 +31,7 @@ REQUIRED_SERVICES = {
     "redis",
     "minio",
     "keycloak",
+    "vault",
 }
 REQUIRED_VOLUMES = {"postgres-data", "opensearch-data", "minio-data"}
 REQUIRED_PORTS = {
@@ -44,6 +45,7 @@ REQUIRED_PORTS = {
     "redis": "6379:6379",
     "minio": ("9000:9000", "9001:9001"),
     "keycloak": "8081:8080",
+    "vault": "8200:8200",
 }
 PINNED_IMAGE_PREFIXES = {
     "prometheus": "prom/prometheus:v",
@@ -54,6 +56,7 @@ PINNED_IMAGE_PREFIXES = {
     "redis": "redis:",
     "minio": "minio/minio:RELEASE.",
     "keycloak": "quay.io/keycloak/keycloak:",
+    "vault": "hashicorp/vault:1.17",
 }
 REQUIRED_KEYCLOAK_REALM_ROLES = {
     "verifier",
@@ -159,6 +162,7 @@ def _validate_compose(compose: Mapping[str, object], errors: list[str]) -> None:
     _validate_opensearch(services, errors)
     _validate_minio(services, errors)
     _validate_keycloak(compose, errors)
+    _validate_vault(services, errors)
 
 
 def _validate_service_port(
@@ -303,6 +307,21 @@ def _validate_keycloak(compose: Mapping[str, object], errors: list[str]) -> None
     if "--import-realm" not in tokens:
         errors.append("service keycloak command must include --import-realm")
     _validate_keycloak_realm(errors)
+
+
+def _validate_vault(services: Mapping[str, object], errors: list[str]) -> None:
+    vault = _mapping(services.get("vault"), "service vault", errors)
+    command = vault.get("command")
+    if isinstance(command, str):
+        tokens: tuple[str, ...] = tuple(command.split())
+    else:
+        tokens = _string_sequence(command, "vault.command", errors)
+    if "-dev" not in tokens:
+        errors.append("service vault command must run Vault in dev mode locally")
+    if "-dev-listen-address=0.0.0.0:8200" not in tokens:
+        errors.append("service vault command must listen on 0.0.0.0:8200")
+    if not any(token.startswith("-dev-root-token-id=") for token in tokens):
+        errors.append("service vault command must set a deterministic local dev root token id")
 
 
 def _validate_keycloak_realm(errors: list[str]) -> None:

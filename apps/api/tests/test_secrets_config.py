@@ -5,7 +5,15 @@ import copy
 import pytest
 
 from scripts.ci.check_secrets_config import (
+    BOOTSTRAP_LOCAL_VAULT_PATH,
+    DOCKER_COMPOSE_PATH,
+    DOC_PATH,
+    ENV_EXAMPLE_PATH,
+    LIVE_VAULT_SECRETS_SMOKE_PATH,
+    LIVE_WORKFLOW_PATH,
+    MAKEFILE_PATH,
     POLICY_PATH,
+    SECURITY_PATH,
     SecretsConfigError,
     load_policy,
     validate_policy,
@@ -56,4 +64,31 @@ def test_supporting_files_must_document_required_config() -> None:
             env_example_text="HALLU_DEFENSE_SECRETS_BACKEND=env\n",
             docs_text="Vault-compatible HALLU_DEFENSE_VAULT_TOKEN_ENV",
             security_text="Vault-compatible secret manager",
+        )
+
+
+def test_supporting_files_validate_local_vault_wiring() -> None:
+    validate_supporting_files(
+        env_example_text=ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+        docs_text=DOC_PATH.read_text(encoding="utf-8"),
+        security_text=SECURITY_PATH.read_text(encoding="utf-8"),
+        compose_text=DOCKER_COMPOSE_PATH.read_text(encoding="utf-8"),
+        bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
+        live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+        makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
+        live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
+    )
+
+
+def test_supporting_files_reject_missing_local_vault_service() -> None:
+    with pytest.raises(SecretsConfigError, match="service vault"):
+        validate_supporting_files(
+            env_example_text=ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+            docs_text=DOC_PATH.read_text(encoding="utf-8"),
+            security_text=SECURITY_PATH.read_text(encoding="utf-8"),
+            compose_text="services: {}\n",
+            bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
+            live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+            makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
+            live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
         )

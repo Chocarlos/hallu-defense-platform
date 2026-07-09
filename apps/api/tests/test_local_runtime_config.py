@@ -186,6 +186,49 @@ def test_local_runtime_config_rejects_missing_keycloak_service() -> None:
         validate_local_runtime_config(**inputs)
 
 
+def test_local_runtime_config_rejects_missing_vault_service() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    services.pop("vault")
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="vault"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_vault_latest_image() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    vault = services["vault"]
+    assert isinstance(vault, dict)
+    vault["image"] = "hashicorp/vault:latest"
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="latest"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_vault_without_dev_mode() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    vault = services["vault"]
+    assert isinstance(vault, dict)
+    vault["command"] = ["server"]
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="dev mode"):
+        validate_local_runtime_config(**inputs)
+
+
 def test_local_runtime_config_rejects_keycloak_latest_image() -> None:
     inputs = _current_inputs()
     compose = copy.deepcopy(inputs["compose"])
