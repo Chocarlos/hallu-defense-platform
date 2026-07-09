@@ -194,6 +194,109 @@ class VerificationOrchestrator:
         self._record_metrics(run, started_at)
         return run
 
+    def replay(self, source: VerificationRun) -> VerificationRun:
+        started_at = time.perf_counter()
+        trace_id = current_trace_id()
+        source_task_type = source.input.get("task_type")
+        task_type = source_task_type if isinstance(source_task_type, str) else "chat"
+        source_message_text = source.input.get("message_text")
+        replay_text = source_message_text if isinstance(source_message_text, str) else source.final_text
+        replay_input = {
+            "replay_of": source.trace_id,
+            "source_created_at": source.created_at.isoformat(),
+            "task_type": task_type,
+            "claim_count": len(source.claims),
+            "evidence_count": len(source.evidence),
+        }
+        replay_request = VerificationRunRequest(
+            tenant_id=source.tenant_id,
+            message_text=replay_text,
+            task_type=task_type,
+        )
+        base_attrs: dict[str, AttributeValue] = {
+            "app.trace_id": trace_id,
+            "app.component": "verification",
+            "verification.replay": True,
+            "verification.claim_count": len(source.claims),
+            "verification.evidence_count": len(source.evidence),
+        }
+        with self._span("verification.replay_scan_content_security", base_attrs) as span:
+            input_threats = self._content_scanner.scan_user_message(
+                replay_text,
+                source_ref=f"replay:{source.trace_id}",
+            )
+            span.set_attribute("verification.security_threat_count", len(input_threats))
+            span.set_attribute("app.outcome", "blocked" if input_threats else "success")
+            if input_threats:
+                policy_response = self._evaluate_threat_policy(
+                    input_threats,
+                    trace_id=trace_id,
+                    tenant_id=source.tenant_id,
+                    action="verify_response",
+                    resource=f"message:replay:{source.trace_id}",
+                )
+                if not policy_response.allowed:
+                    return self._blocked_by_security_policy(
+                        request=replay_request,
+                        trace_id=trace_id,
+                        started_at=started_at,
+                        claims=source.claims,
+                        evidence=source.evidence,
+                        threats=input_threats,
+                        policy_response=policy_response,
+                        input_metadata=replay_input,
+                    )
+
+        evidence_threats = self._content_scanner.threats_from_evidence(source.evidence)
+        if evidence_threats:
+            policy_response = self._evaluate_threat_policy(
+                evidence_threats,
+                trace_id=trace_id,
+                tenant_id=source.tenant_id,
+                action="retrieve_evidence",
+                resource=f"evidence:replay:{source.trace_id}",
+            )
+            if not policy_response.allowed:
+                return self._blocked_by_security_policy(
+                    request=replay_request,
+                    trace_id=trace_id,
+                    started_at=started_at,
+                    claims=source.claims,
+                    evidence=source.evidence,
+                    threats=evidence_threats,
+                    policy_response=policy_response,
+                    input_metadata=replay_input,
+                )
+
+        with self._span("verification.replay_verify_claims", base_attrs) as span:
+            verdicts = self._verifier.verify(source.claims, source.evidence)
+            span.set_attribute("verification.verdict_count", len(verdicts))
+            span.set_attribute("app.outcome", "success")
+
+        with self._span(
+            "verification.replay_repair_response",
+            {**base_attrs, "verification.verdict_count": len(verdicts)},
+        ) as span:
+            repair = self._repairer.repair(replay_text, source.claims, verdicts, source.evidence)
+            span.set_attribute("verification.final_decision", repair.final_decision.value)
+            span.set_attribute("app.outcome", "success")
+
+        source_task_type = source.input.get("task_type")
+        run = VerificationRun(
+            trace_id=trace_id,
+            tenant_id=source.tenant_id,
+            input=replay_input,
+            claims=source.claims,
+            evidence=source.evidence,
+            verdicts=verdicts,
+            final_decision=repair.final_decision,
+            final_text=repair.final_text,
+            policy_version=self._settings.policy_version,
+        )
+        self._audit.append(run)
+        self._record_metrics(run, started_at)
+        return run
+
     def _evaluate_threat_policy(
         self,
         threats: list[ContentThreat],
@@ -233,6 +336,7 @@ class VerificationOrchestrator:
         evidence: list[Evidence],
         threats: list[ContentThreat],
         policy_response: PolicyEvaluationResponse,
+        input_metadata: Mapping[str, object] | None = None,
     ) -> VerificationRun:
         security_evidence = self._security_policy_evidence(threats, policy_response)
         blocked_claims = claims or [self._security_claim()]
@@ -259,16 +363,19 @@ class VerificationOrchestrator:
             for claim in blocked_claims
         ]
         repair = self._repairer.repair(request.message_text, blocked_claims, verdicts, evidence)
+        input_payload: dict[str, object] = {
+            "message_text": request.message_text,
+            "task_type": request.task_type,
+            "document_count": len(request.documents),
+            "tool_output_count": len(request.tool_outputs),
+            "security_threat_count": len(threats),
+        }
+        if input_metadata is not None:
+            input_payload.update(input_metadata)
         run = VerificationRun(
             trace_id=trace_id,
             tenant_id=request.tenant_id or "local-dev",
-            input={
-                "message_text": request.message_text,
-                "task_type": request.task_type,
-                "document_count": len(request.documents),
-                "tool_output_count": len(request.tool_outputs),
-                "security_threat_count": len(threats),
-            },
+            input=input_payload,
             claims=blocked_claims,
             evidence=[*evidence, security_evidence],
             verdicts=verdicts,

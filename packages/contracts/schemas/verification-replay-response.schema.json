@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-replay-response.schema.json",
+  "title": "VerificationReplayResponse",
+  "type": "object",
+  "required": [
+    "trace_id",
+    "source_trace_id",
+    "source_created_at",
+    "source_final_decision",
+    "decision_changed",
+    "replayed_run"
+  ],
+  "properties": {
+    "trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "source_trace_id": { "type": "string", "pattern": "^tr_[A-Za-z0-9_-]+$" },
+    "source_created_at": { "type": "string", "format": "date-time" },
+    "source_final_decision": {
+      "type": "string",
+      "enum": ["allow", "repaired", "abstained", "blocked", "require_human_review"]
+    },
+    "decision_changed": { "type": "boolean" },
+    "replayed_run": { "$ref": "verification-run.schema.json" }
+  },
+  "additionalProperties": false
+}

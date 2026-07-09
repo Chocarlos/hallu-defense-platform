@@ -1,5 +1,100 @@
 # Worklog
 
+## 2026-07-08 - TS-004 approval queue browser e2e and TS-005 verification replay
+
+Slice selected:
+
+- Close the last two non-`tested` traceability rows: real browser/e2e evidence
+  for the approval queue UI (`TS-004`) and a complete tenant-scoped
+  `VerificationRun` replay API/UI (`TS-005`).
+
+Implementation:
+
+- Added `POST /verification/replay`: tenant comes only from `RequestContext`,
+  the source run is looked up with
+  `audit_ledger.export(tenant_id=context.tenant_id, trace_id=request.trace_id)`,
+  replay-generated runs are excluded from source selection so trace reuse does
+  not chain replay over replay, missing and cross-tenant traces fail closed
+  with identical `404`s, and the orchestrator re-executes content-security,
+  claim verification, and repair over the redacted stored snapshot instead of
+  echoing the old run. The response returns
+  `trace_id`, `source_trace_id`, `source_created_at`, `source_final_decision`,
+  `decision_changed`, and `replayed_run`, and the route appends a
+  `verification_replay` audit event plus the replayed run to the ledger.
+- Added `VerificationReplayRequest`/`VerificationReplayResponse` across
+  Pydantic, TypeScript contracts, JSON Schemas, valid/invalid examples, the
+  SDK (`replayVerification()`), regenerated OpenAPI, and the endpoint role
+  matrix (`verifier`) with docs in `docs/security/auth-rbac.md`.
+- Hardened audit ledger snapshot redaction: `canonical_form`, claim metadata,
+  evidence `source_ref`, evidence `structured_content`, verdict
+  reason/validator trace, and bare secret-shaped values are now redacted before
+  storage, closing leaks where replay and audit export could return raw
+  sensitive text through non-redacted snapshot fields.
+- Added a console replay panel (trace input, current-trace helper, source vs
+  replayed decision, `decision_changed` badge, replayed final text) and an
+  approval-queue input snippet so server-side redaction is visible in the UI;
+  the run ledger also redacts claim/verdict text and approval status updates
+  are exposed with `role="status"`.
+- Added deterministic Playwright e2e (`apps/console/e2e`): boots the real
+  FastAPI on port 18100 with a reset persistent JSONL approval queue/audit
+  ledger and the production Next build on port 3100, then covers enqueue from
+  UI, pending visibility, approve, reload, empty pending queue, the reject
+  flow, `api_key` redaction in both API response and UI, replay of a
+  UI-created run, the fail-closed missing-trace error, and claim/verdict
+  redaction in the browser. `npm run test:e2e` is wired at the root and console
+  workspaces, GitHub Actions installs Chromium and runs the browser suite, and
+  Vitest now excludes `e2e/**` so unit runs never execute Playwright specs.
+- Fixed a real SDK browser bug found by the e2e run: the client assigned the
+  global `fetch` to a field, which throws `Failed to execute 'fetch' on
+  'Window': Illegal invocation` in Chromium; the SDK now wraps both default
+  and injected fetch implementations to keep the browser binding, so the
+  console works in real browsers, not only in Node tests.
+- Made CORS configurable without weakening defaults:
+  `HALLU_DEFENSE_CORS_ALLOW_ORIGINS` keeps the previous localhost:3000
+  defaults, rejects wildcard/relative/path-bearing origins, requires https in
+  production/staging, and is documented in `.env.example`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: `340 passed`.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`: passed.
+- `.venv\Scripts\python -m mypy apps\api\src`: success, no issues in 37 files.
+- `.venv\Scripts\python scripts\ci\check_json_schemas.py`: 57 schemas, 57
+  valid examples, 57 invalid examples, 57 TypeScript interfaces.
+- `.venv\Scripts\python scripts\ci\export_openapi.py` then
+  `.venv\Scripts\python scripts\ci\check_openapi.py`: artifact up to date.
+- `npm run typecheck`: passed.
+- `npm run test`: passed (SDK 9 including live `/verification/replay`
+  contract and cross-tenant 404, agent-adapters 5, MCP 6, console 6).
+- `npm run build`: passed.
+- `npx playwright install chromium`: installed the local Chromium browser
+  dependency required for Playwright.
+- `npm run test:e2e`: 5 passed (approve flow, reject flow, replay flow,
+  fail-closed missing trace, claim/verdict redaction) against the real API and
+  production console.
+- `.venv\Scripts\python scripts\ci\secret_scan.py`: no obvious secrets found.
+- `.venv\Scripts\python scripts\ci\python_dependency_audit.py`: no known
+  vulnerabilities found, with the local editable package skipped as not
+  present on PyPI.
+- `npm audit --omit dev`: 0 vulnerabilities.
+- `.venv\Scripts\python scripts\ci\check_auth_config.py`,
+  `check_traceability_matrix.py`, `check_worklog.py`,
+  `check_foundation_infra.py`, `check_foundation_docs.py`,
+  `check_audit_ledger_config.py`, `check_approval_queue_config.py`,
+  `check_local_runtime_config.py`, and `check_rag_persistence_config.py`:
+  passed.
+- `git diff --check`: no errors.
+
+Remaining risks:
+
+- Playwright e2e runs locally on alternate ports (18100/3100) because host
+  port 8000 stays occupied; the workflow is wired in GitHub Actions, but this
+  session has only local execution evidence, not a completed remote Actions
+  run.
+- Replay re-executes deterministic verify/repair stages from the stored
+  redacted snapshot by design; it does not re-run live retrieval against
+  current corpora.
+
 ## 2026-07-08 - Fable enterprise batch delegation
 
 Slice selected:

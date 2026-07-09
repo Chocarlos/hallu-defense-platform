@@ -12,6 +12,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm --workspace @hallu-defense/console run test:e2e",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:console": "npm --workspace @hallu-defense/console run dev",
     "mcp": "npm --workspace @hallu-defense/mcp-server run dev"

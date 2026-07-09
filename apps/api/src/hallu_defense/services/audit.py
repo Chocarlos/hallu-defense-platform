@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
@@ -19,6 +20,17 @@ SENSITIVE_KEYWORDS = (
     "token",
 )
 REDACTED = "[REDACTED]"
+SENSITIVE_VALUE_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b", re.IGNORECASE),
+    re.compile(
+        r"(?i)([?&](?:sig|signature|token|access_token|x-amz-signature)=)[^&#\s]+"
+    ),
+)
 
 
 class AuditLedgerError(RuntimeError):
@@ -171,12 +183,33 @@ def _redact_verification_run(run: VerificationRun) -> VerificationRun:
         update={
             "input": _redact_value(run.input),
             "claims": [
-                claim.model_copy(update={"text": _redact_text(claim.text)})
+                claim.model_copy(
+                    update={
+                        "text": _redact_text(claim.text),
+                        "canonical_form": _redact_text(claim.canonical_form),
+                        "metadata": _redact_value(claim.metadata),
+                    }
+                )
                 for claim in run.claims
             ],
             "evidence": [
-                evidence.model_copy(update={"content": _redact_text(evidence.content)})
+                evidence.model_copy(
+                    update={
+                        "source_ref": _redact_text(evidence.source_ref),
+                        "content": _redact_text(evidence.content),
+                        "structured_content": _redact_value(evidence.structured_content),
+                    }
+                )
                 for evidence in run.evidence
+            ],
+            "verdicts": [
+                verdict.model_copy(
+                    update={
+                        "reason": _redact_text(verdict.reason),
+                        "validator_trace": _redact_value(verdict.validator_trace),
+                    }
+                )
+                for verdict in run.verdicts
             ],
             "final_text": _redact_text(run.final_text),
         },
@@ -207,7 +240,10 @@ def _redact_text(value: str) -> str:
     lowered = value.lower()
     if any(keyword in lowered for keyword in SENSITIVE_KEYWORDS):
         return REDACTED
-    return value
+    redacted = value
+    for pattern in SENSITIVE_VALUE_PATTERNS:
+        redacted = pattern.sub(REDACTED, redacted)
+    return redacted
 
 
 def _is_sensitive_key(key: str) -> bool:

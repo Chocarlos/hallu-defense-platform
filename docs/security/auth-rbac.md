@@ -134,6 +134,13 @@ role requirements.
 | `POST /repo/checks/run` | `sandbox_runner` |
 | `POST /audit/export` | `auditor` |
 | `POST /verification/run` | `verifier` |
+| `POST /verification/replay` | `verifier` |
+
+`POST /verification/replay` only replays `VerificationRun` snapshots that the
+audit ledger returns for the authenticated tenant. Missing traces and
+cross-tenant traces fail closed with the same `404` response, and the replay
+re-executes verification/repair over the redacted stored snapshot instead of
+echoing live payloads.
 
 Local development with `HALLU_DEFENSE_AUTH_REQUIRED=false` bypasses this matrix
 except for `POST /approvals/decide`, `POST /rag/corpus-grants/upsert`,

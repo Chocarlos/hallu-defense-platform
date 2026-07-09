@@ -30,6 +30,8 @@ import type {
   SandboxRun,
   ToolCallEnvelope,
   ToolValidationResponse,
+  VerificationReplayRequest,
+  VerificationReplayResponse,
   VerificationRun,
   VerificationRunRequest
 } from "@hallu-defense/contracts";
@@ -74,11 +76,20 @@ export class HalluDefenseClient {
     this.#roles = options.roles;
     this.#token = options.token;
     this.#timeoutMs = options.timeoutMs ?? 10000;
-    this.#fetchImpl = options.fetchImpl ?? fetch;
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    // Wrap fetch so browsers keep the required global binding even when callers
+    // pass `window.fetch` explicitly.
+    this.#fetchImpl = (input, init) => fetchImpl.call(globalThis, input, init);
   }
 
   async runVerification(request: VerificationRunRequest): Promise<VerificationRun> {
     return this.#post<VerificationRun>("/verification/run", request);
+  }
+
+  async replayVerification(
+    request: VerificationReplayRequest
+  ): Promise<VerificationReplayResponse> {
+    return this.#post<VerificationReplayResponse>("/verification/replay", request);
   }
 
   async extractClaims(messageText: string): Promise<readonly Claim[]> {

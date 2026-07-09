@@ -6,6 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from hallu_defense import __version__
+from hallu_defense.api.dependencies import get_settings
 from hallu_defense.api.errors import (
     http_exception_handler,
     unhandled_exception_handler,
@@ -23,7 +24,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_origins=list(get_settings().cors_allow_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

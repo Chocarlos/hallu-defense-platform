@@ -135,6 +135,7 @@ def test_endpoint_role_matrix_covers_protected_routes() -> None:
         "POST /repo/checks/run": frozenset({"sandbox_runner"}),
         "POST /audit/export": frozenset({"auditor"}),
         "POST /verification/run": frozenset({"verifier"}),
+        "POST /verification/replay": frozenset({"verifier"}),
     }
 
 

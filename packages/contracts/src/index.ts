@@ -272,6 +272,19 @@ export interface VerificationRun {
   readonly created_at: string;
 }
 
+export interface VerificationReplayRequest {
+  readonly trace_id: string;
+}
+
+export interface VerificationReplayResponse {
+  readonly trace_id: string;
+  readonly source_trace_id: string;
+  readonly source_created_at: string;
+  readonly source_final_decision: FinalDecision;
+  readonly decision_changed: boolean;
+  readonly replayed_run: VerificationRun;
+}
+
 export interface ToolCallEnvelope {
   readonly tool_name: string;
   readonly input: Readonly<Record<string, unknown>>;

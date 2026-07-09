@@ -28,6 +28,7 @@ import type {
   RepoChecksRunRequest,
   RiskLevel,
   SandboxRun,
+  VerificationReplayResponse,
   VerificationRun
 } from "@hallu-defense/contracts";
 import { HalluDefenseClient } from "@hallu-defense/sdk";
@@ -77,6 +78,10 @@ export function RunConsole({
   const [sandboxRun, setSandboxRun] = useState<SandboxRun | null>(null);
   const [sandboxLoading, setSandboxLoading] = useState(false);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [replayTraceId, setReplayTraceId] = useState("");
+  const [replayResult, setReplayResult] = useState<VerificationReplayResponse | null>(null);
+  const [replayLoading, setReplayLoading] = useState(false);
+  const [replayError, setReplayError] = useState<string | null>(null);
 
   const client = useMemo(
     () =>
@@ -84,7 +89,7 @@ export function RunConsole({
         baseUrl: apiBaseUrl,
         tenantId: "console",
         subjectId: "console-reviewer",
-        roles: ["approval_reviewer"],
+        roles: ["approval_reviewer", "verifier"],
         timeoutMs: 8000
       }),
     [apiBaseUrl]
@@ -224,6 +229,26 @@ export function RunConsole({
       setPolicyError(error instanceof Error ? error.message : "No se pudo evaluar policy");
     } finally {
       setPolicyLoading(false);
+    }
+  }
+
+  async function handleReplaySubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const traceId = replayTraceId.trim();
+    if (traceId.length === 0) {
+      setReplayError("El trace es obligatorio");
+      return;
+    }
+    setReplayLoading(true);
+    setReplayError(null);
+    try {
+      const result = await client.replayVerification({ trace_id: traceId });
+      setReplayResult(result);
+    } catch (error) {
+      setReplayResult(null);
+      setReplayError(error instanceof Error ? error.message : "No se pudo ejecutar replay");
+    } finally {
+      setReplayLoading(false);
     }
   }
 
@@ -471,13 +496,57 @@ export function RunConsole({
         </section>
       </section>
 
+      <section className="panel operation-panel replay-panel" aria-label="Replay verification">
+        <div className="panel-header">
+          <h2>
+            <RotateCcw aria-hidden="true" />
+            <span>Replay verification</span>
+          </h2>
+          <span className="policy">/verification/replay</span>
+        </div>
+
+        <form className="operation-form" onSubmit={handleReplaySubmit}>
+          <label className="field">
+            <span>Trace a reproducir</span>
+            <input
+              value={replayTraceId}
+              onChange={(event) => setReplayTraceId(event.target.value)}
+              placeholder="tr_..."
+              autoComplete="off"
+              required
+            />
+          </label>
+          <div className="form-footer">
+            {replayError !== null ? (
+              <p className="error compact-error" role="alert">
+                {replayError}
+              </p>
+            ) : null}
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setReplayTraceId(run.trace_id)}
+            >
+              <RotateCcw aria-hidden="true" size={16} />
+              <span>Usar trace actual</span>
+            </button>
+            <button className="primary-button" type="submit" disabled={replayLoading}>
+              <Play aria-hidden="true" size={18} />
+              <span>{replayLoading ? "Reproduciendo" : "Replay"}</span>
+            </button>
+          </div>
+        </form>
+
+        <ReplayResult result={replayResult} loading={replayLoading} />
+      </section>
+
       <section className="grid-three">
         <LedgerPanel title="Claims" icon={<ClipboardCheck aria-hidden="true" />}>
           <ul className="ledger-list">
             {run.claims.map((claim) => (
               <li key={claim.claim_id}>
                 <span className="row-title">{claim.claim_id}</span>
-                <span>{claim.text}</span>
+                <span>{safeText(claim.text)}</span>
                 <small>
                   {claim.type} / {claim.risk_level}
                 </small>
@@ -492,7 +561,7 @@ export function RunConsole({
               <li key={verdict.claim_id}>
                 <span className={`badge badge-${verdict.action}`}>{verdict.action}</span>
                 <span>{verdict.status}</span>
-                <small>{verdict.reason}</small>
+                <small>{safeText(verdict.reason)}</small>
               </li>
             ))}
           </ul>
@@ -541,7 +610,11 @@ export function RunConsole({
           </div>
         </div>
 
-        {approvalMessage !== null ? <p className="approval-message">{approvalMessage}</p> : null}
+        {approvalMessage !== null ? (
+          <p className="approval-message" role="status" aria-live="polite">
+            {approvalMessage}
+          </p>
+        ) : null}
 
         <ul className="ledger-list approval-list">
           {approvals.length === 0 ? (
@@ -556,6 +629,9 @@ export function RunConsole({
                 <span className={`badge badge-${approval.status}`}>{approval.status}</span>
                 <small>
                   {approval.approval_id} / {approval.risk_level} / {approval.requested_by}
+                </small>
+                <small className="approval-input-snippet">
+                  input {safeSnippet(JSON.stringify(approval.tool_call.input), 200)}
                 </small>
                 <div className="approval-actions">
                   <button
@@ -854,6 +930,53 @@ function PolicyExplanation({
       <div className="detail-block">
         <span className="detail-label">Matched rules</span>
         <TagList values={result.matched_rules} emptyLabel="Sin reglas" />
+      </div>
+    </article>
+  );
+}
+
+function ReplayResult({
+  result,
+  loading
+}: Readonly<{ result: VerificationReplayResponse | null; loading: boolean }>) {
+  if (result === null) {
+    return (
+      <article className="evidence-card empty-card" aria-live="polite">
+        <span className="row-title">{loading ? "Reproduciendo run" : "Sin replay"}</span>
+        <small>tenant console</small>
+      </article>
+    );
+  }
+
+  const replayed = result.replayed_run;
+  return (
+    <article className="evidence-card" aria-live="polite">
+      <div className="decision-line">
+        <span className={`badge badge-${result.source_final_decision}`}>
+          origen {result.source_final_decision}
+        </span>
+        <span className={`badge badge-${replayed.final_decision}`}>
+          replay {replayed.final_decision}
+        </span>
+        <span className={result.decision_changed ? "badge badge-block" : "badge badge-allow"}>
+          {result.decision_changed ? "decision cambiada" : "decision estable"}
+        </span>
+      </div>
+      <p className="explanation-text">
+        Fuente {safeText(result.source_trace_id)} creada {formatRunDate(result.source_created_at)}.
+        Replay {safeText(result.trace_id)} re-ejecuto verificacion y reparacion sobre el snapshot
+        auditado.
+      </p>
+      <div className="detail-block">
+        <span className="detail-label">Respuesta replay</span>
+        <pre className="snippet">{safeSnippet(replayed.final_text, 500)}</pre>
+      </div>
+      <div className="detail-block">
+        <span className="detail-label">Veredictos replay</span>
+        <TagList
+          values={replayed.verdicts.map((verdict) => `${verdict.claim_id}: ${verdict.status}`)}
+          emptyLabel="Sin veredictos"
+        />
       </div>
     </article>
   );
@@ -1286,6 +1409,9 @@ function redactSecrets(value: string): string {
   return value
     .replace(/"(api[_-]?key|token|secret|password|authorization)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"')
     .replace(/\b(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*([^\s,;'"`]+)/gi, "$1=[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[redacted]")
     .replace(/(--(?:api-key|token|secret|password)\s+)([^\s]+)/gi, "$1[redacted]")
     .replace(/\b([A-Za-z0-9_]*(?:API|TOKEN|SECRET|PASSWORD|KEY)[A-Za-z0-9_]*)=([^\s]+)/g, "$1=[redacted]");

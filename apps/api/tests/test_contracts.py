@@ -49,6 +49,8 @@ REQUIRED_SCHEMA_NAMES = {
     "evidence-retrieval-request",
     "evidence-retrieval-response",
     "verdict",
+    "verification-replay-request",
+    "verification-replay-response",
     "verification-run",
     "verification-run-request",
     "tool-call-envelope",
@@ -174,6 +176,7 @@ REQUIRED_ENDPOINT_PAYLOADS = {
         "network_policy": "deny",
     },
     "/audit/export": {"include_events": True},
+    "/verification/replay": {"trace_id": "tr_api_discipline_replay_missing"},
 }
 
 
@@ -237,6 +240,7 @@ def test_openapi_contains_required_endpoints() -> None:
         "/audit/export",
         "/approvals/list",
         "/approvals/decide",
+        "/verification/replay",
     }
     openapi = TestClient(app).get("/openapi.json").json()
     assert required_paths.issubset(openapi["paths"].keys())

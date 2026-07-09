@@ -9,6 +9,10 @@ PRODUCTION_LIKE_ENVIRONMENTS = {"production", "staging"}
 AUTH_CLAIMS_MODE_OIDC_JWT = "oidc_jwt"
 AUTH_CLAIMS_MODE_SIGNED_HEADERS = "signed_headers"
 AUTH_CLAIMS_MODE_UNSIGNED_HEADERS = "unsigned_headers"
+DEFAULT_CORS_ALLOW_ORIGINS: tuple[str, ...] = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -19,6 +23,10 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class AuthConfigurationError(ValueError):
+    pass
+
+
+class CorsConfigurationError(ValueError):
     pass
 
 
@@ -82,6 +90,7 @@ class Settings:
     corpus_grants_backend: str = "memory"
     corpus_grants_path: Path = Path("var/rag/corpus-grants.jsonl")
     corpus_grants_table_name: str = "rag_corpus_grants"
+    cors_allow_origins: tuple[str, ...] = DEFAULT_CORS_ALLOW_ORIGINS
 
 
 def load_settings() -> Settings:
@@ -177,9 +186,56 @@ def load_settings() -> Settings:
             "HALLU_DEFENSE_CORPUS_GRANTS_TABLE_NAME",
             "rag_corpus_grants",
         ),
+        cors_allow_origins=_parse_cors_allow_origins(
+            os.getenv("HALLU_DEFENSE_CORS_ALLOW_ORIGINS")
+        ),
     )
     validate_auth_settings(settings)
+    validate_cors_settings(settings)
     return settings
+
+
+def _parse_cors_allow_origins(raw: str | None) -> tuple[str, ...]:
+    if raw is None or not raw.strip():
+        return DEFAULT_CORS_ALLOW_ORIGINS
+    origins: list[str] = []
+    for candidate in raw.split(","):
+        origin = candidate.strip()
+        if origin and origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
+def validate_cors_settings(settings: Settings) -> None:
+    environment = settings.environment.strip().lower()
+    errors: list[str] = []
+
+    if not settings.cors_allow_origins:
+        errors.append("HALLU_DEFENSE_CORS_ALLOW_ORIGINS must contain at least one origin.")
+    for origin in settings.cors_allow_origins:
+        if origin == "*" or "*" in origin:
+            errors.append(
+                "HALLU_DEFENSE_CORS_ALLOW_ORIGINS must not contain wildcard origins."
+            )
+            continue
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            errors.append(
+                f"HALLU_DEFENSE_CORS_ALLOW_ORIGINS entry must be an absolute HTTP(S) origin: {origin}"
+            )
+            continue
+        if parsed.path or parsed.params or parsed.query or parsed.fragment:
+            errors.append(
+                f"HALLU_DEFENSE_CORS_ALLOW_ORIGINS entry must not include a path or query: {origin}"
+            )
+            continue
+        if environment in PRODUCTION_LIKE_ENVIRONMENTS and parsed.scheme != "https":
+            errors.append(
+                f"HALLU_DEFENSE_CORS_ALLOW_ORIGINS entry must use https in production and staging: {origin}"
+            )
+
+    if errors:
+        raise CorsConfigurationError("\n".join(errors))
 
 
 def validate_auth_settings(settings: Settings) -> None:
