@@ -28,6 +28,7 @@ from hallu_defense.services import (
     SandboxRunner,
     SecretManager,
     TelemetryService,
+    ToolValidationRateLimiter,
     ToolSafetyService,
     VerificationOrchestrator,
     create_model_provider,
@@ -120,6 +121,10 @@ metrics_collector = PrometheusMetrics(
 )
 policy_engine = PolicyEngine(settings, opa_evaluator=opa_policy_evaluator, metrics=metrics_collector)
 tool_safety = ToolSafetyService()
+tool_validation_rate_limiter = ToolValidationRateLimiter(
+    max_requests=settings.tool_validation_rate_limit_max_requests,
+    window_seconds=settings.tool_validation_rate_limit_window_seconds,
+)
 sandbox_runner = SandboxRunner(settings)
 orchestrator = VerificationOrchestrator(
     settings=settings,

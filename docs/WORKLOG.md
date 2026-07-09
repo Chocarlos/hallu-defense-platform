@@ -1,5 +1,50 @@
 # Worklog
 
+## 2026-07-08 - Tool validation rate limit
+
+Slice selected:
+
+- Close the small `API-006`/`PY-009` gap where tool input validation still
+  listed rate limits as pending.
+
+Implementation:
+
+- Added `ToolValidationRateLimiter`, an in-memory fixed-window limiter scoped by
+  tenant, authenticated subject, and normalized tool name.
+- Wired `/tools/validate-input` so new tool validations and approval requests
+  are blocked when the scoped limit is exceeded.
+- Kept approved execution grants outside the limiter because they are already
+  reviewer-authorized, fingerprint-bound, expiring, and consumed once.
+- Added configurable settings and `.env.example` values:
+  `HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_MAX_REQUESTS` and
+  `HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS`.
+- Documented the behavior in `docs/security/approvals.md`.
+- Updated `docs/TRACEABILITY_MATRIX.md` for `API-006` and `PY-009`.
+
+Validation:
+
+- `.venv\Scripts\python -m pytest apps\api\tests\test_core_flow.py -q -k "tool_input or tool_output"`:
+  6 passed, 62 deselected, with the existing FastAPI TestClient deprecation
+  warning.
+- `.venv\Scripts\python -m ruff check apps\api\src\hallu_defense\services\tool_safety.py apps\api\src\hallu_defense\config.py apps\api\src\hallu_defense\api\dependencies.py apps\api\src\hallu_defense\api\routes.py apps\api\tests\test_core_flow.py`:
+  passed.
+- `.venv\Scripts\python -m pytest apps\api\tests -q`: 343 passed, with the
+  existing FastAPI TestClient deprecation warning.
+- `.venv\Scripts\python -m mypy apps\api\src`: success, no issues in 37 source
+  files.
+- `.venv\Scripts\python -m ruff check apps\api\src apps\api\tests scripts evals`:
+  passed.
+- `.venv\Scripts\python scripts\ci\check_traceability_matrix.py`: validated
+  151 requirement rows.
+- `.venv\Scripts\python scripts\ci\check_worklog.py`: validated 92 entries.
+- `.venv\Scripts\python scripts\ci\check_approval_queue_config.py`: passed.
+- `git diff --check`: no whitespace errors; Windows LF/CRLF warnings only.
+
+Remaining risks:
+
+- The limiter is process-local memory. Distributed quotas across multiple API
+  replicas still require Redis or another shared store.
+
 ## 2026-07-08 - Traceability evidence hygiene for retrieval contracts
 
 Slice selected:

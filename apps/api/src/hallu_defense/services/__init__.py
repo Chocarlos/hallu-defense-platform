@@ -118,7 +118,7 @@ from hallu_defense.services.secrets import (
     create_secret_manager,
 )
 from hallu_defense.services.telemetry import TelemetryService
-from hallu_defense.services.tool_safety import ToolSafetyService
+from hallu_defense.services.tool_safety import ToolSafetyService, ToolValidationRateLimiter
 from hallu_defense.services.trace import current_trace_id, new_trace_id
 from hallu_defense.services.verifier import ClaimVerifier
 
@@ -211,6 +211,7 @@ __all__ = [
     "SecretValue",
     "TelemetryService",
     "ToolSafetyService",
+    "ToolValidationRateLimiter",
     "TOOL_OPERATOR_ROLE",
     "VaultSecretManager",
     "VerificationOrchestrator",
