@@ -27,6 +27,7 @@ from hallu_defense.services.rag_index import (
     PgVectorRagIndexBackend,
     RagChunk,
     RagIndexConfigurationError,
+    RagIndexTransportError,
     RagIndexWriteResult,
     RagSearchRequest,
 )
@@ -51,12 +52,51 @@ def test_hybrid_retriever_indexes_documents_as_tenant_scoped_chunks() -> None:
 
     assert result.indexed_count == 2
     assert result.backend == "recording"
-    assert result.evidence_ids == ["ev_001_001", "ev_001_002"]
+    assert len(result.evidence_ids) == 2
+    assert all(evidence_id.startswith("ev_") for evidence_id in result.evidence_ids)
+    assert result.evidence_ids[0] != result.evidence_ids[1]
     assert [chunk.tenant_id for chunk in backend.indexed_chunks] == ["tenant-a", "tenant-a"]
-    assert [chunk.evidence_id for chunk in backend.indexed_chunks] == ["ev_001_001", "ev_001_002"]
+    assert [chunk.evidence_id for chunk in backend.indexed_chunks] == result.evidence_ids
     assert backend.indexed_chunks[0].metadata["department"] == "hr"
     assert backend.indexed_chunks[0].document_index == 1
     assert backend.indexed_chunks[1].chunk_index == 2
+
+
+def test_hybrid_retriever_persistent_evidence_ids_are_stable_and_source_scoped() -> None:
+    first_backend = RecordingRagIndexBackend()
+    second_backend = RecordingRagIndexBackend()
+    first_retriever = HybridRetriever(index_backend=first_backend)
+    second_retriever = HybridRetriever(index_backend=second_backend)
+
+    first_retriever.index_documents(
+        tenant_id="tenant-a",
+        documents=[
+            DocumentInput(
+                source_ref="policy-a",
+                content="First paragraph.\n\nSecond paragraph.",
+                metadata={"corpus_id": "hr"},
+            ),
+            DocumentInput(
+                source_ref="policy-b",
+                content="First paragraph.",
+                metadata={"corpus_id": "hr"},
+            ),
+        ],
+    )
+    second_retriever.index_documents(
+        tenant_id="tenant-a",
+        documents=[
+            DocumentInput(
+                source_ref="policy-a",
+                content="Updated first paragraph.\n\nUpdated second paragraph.",
+                metadata={"corpus_id": "hr"},
+            )
+        ],
+    )
+
+    assert first_backend.indexed_chunks[0].evidence_id == second_backend.indexed_chunks[0].evidence_id
+    assert first_backend.indexed_chunks[1].evidence_id != second_backend.indexed_chunks[0].evidence_id
+    assert first_backend.indexed_chunks[2].evidence_id != second_backend.indexed_chunks[0].evidence_id
 
 
 def test_hybrid_retriever_indexes_markdown_sections_with_structure_metadata() -> None:
@@ -209,7 +249,8 @@ def test_document_ingestion_service_adds_corpus_metadata_and_reports_indexed_ids
     assert response.backend == "recording"
     assert response.document_count == 1
     assert response.indexed_count == 1
-    assert response.evidence_ids == ["ev_001_001"]
+    assert len(response.evidence_ids) == 1
+    assert response.evidence_ids[0].startswith("ev_")
     assert response.warnings == []
     assert backend.indexed_chunks[0].metadata == {
         "department": "hr",
@@ -371,9 +412,37 @@ def test_document_ingestion_endpoint_uses_request_tenant_and_trace(
     assert payload["trace_id"] == "tr_route_ingest"
     assert payload["tenant_id"] == "tenant-route"
     assert payload["backend"] == "recording"
-    assert payload["evidence_ids"] == ["ev_001_001"]
+    assert len(payload["evidence_ids"]) == 1
+    assert payload["evidence_ids"][0].startswith("ev_")
     assert backend.indexed_chunks[0].tenant_id == "tenant-route"
     assert backend.indexed_chunks[0].metadata["owner_tenant_id"] == "tenant-route"
+
+
+def test_document_ingestion_endpoint_returns_503_when_persistent_backend_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        routes,
+        "document_ingestor",
+        DocumentIngestionService(HybridRetriever(index_backend=FailingRagIndexBackend())),
+    )
+
+    response = TestClient(app).post(
+        "/documents/ingest",
+        headers={"x-tenant-id": "tenant-route", "x-trace-id": "tr_route_ingest_failed"},
+        json={
+            "documents": [
+                {
+                    "source_ref": "policy-a",
+                    "content": "Remote work requests must be approved by a manager.",
+                    "authority": "internal",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "persistent backend unavailable"
 
 
 def test_document_ingestion_endpoint_rejects_cross_tenant_owner_metadata(
@@ -516,6 +585,38 @@ def test_retrieval_endpoint_passes_tenant_context_to_persistent_backend(
     assert backend.search_requests[0].tenant_id == "tenant-route"
     assert backend.search_requests[0].context_refs == ["persisted-policy"]
     assert backend.search_requests[0].metadata_filter == {"department": "hr"}
+
+
+def test_retrieval_endpoint_returns_503_when_persistent_backend_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        routes,
+        "hybrid_retriever",
+        HybridRetriever(index_backend=FailingRagIndexBackend()),
+    )
+
+    response = TestClient(app).post(
+        "/evidence/retrieve",
+        headers={"x-tenant-id": "tenant-route", "x-trace-id": "tr_route_retrieve_failed"},
+        json={
+            "claims": [
+                {
+                    "claim_id": "clm_remote",
+                    "text": "Remote work requests must be approved by a manager.",
+                    "canonical_form": "",
+                    "type": "doc_grounded",
+                    "risk_level": "medium",
+                    "requires_evidence": True,
+                    "metadata": {},
+                }
+            ],
+            "max_evidence_per_claim": 2,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "persistent backend unavailable"
 
 
 def test_retrieval_endpoint_rejects_cross_tenant_owner_metadata_filter(
@@ -700,6 +801,39 @@ def test_opensearch_index_bulk_payload_includes_tenant_metadata() -> None:
     assert body[1]["tenant_id"] == "tenant-a"
     assert body[1]["evidence_id"] == "ev_001_001"
     assert body[1]["metadata"] == {"department": "hr"}
+
+
+def test_opensearch_bulk_errors_fail_closed() -> None:
+    transport = RecordingOpenSearchTransport(
+        bulk_response={
+            "errors": True,
+            "items": [
+                {
+                    "index": {
+                        "status": 201,
+                    }
+                },
+                {
+                    "index": {
+                        "status": 400,
+                        "error": {
+                            "type": "mapper_parsing_exception",
+                            "reason": "failed to parse field [metadata]",
+                        },
+                    }
+                }
+            ],
+        }
+    )
+    backend = OpenSearchRagIndexBackend(
+        endpoint="http://opensearch:9200",
+        index_name="hallu_evidence",
+        timeout_seconds=3,
+        transport=transport,
+    )
+
+    with pytest.raises(RagIndexTransportError, match="failed to parse field"):
+        backend.index_chunks([_chunk()])
 
 
 def test_opensearch_document_ids_are_tenant_scoped_to_prevent_cross_tenant_overwrite() -> None:
@@ -945,8 +1079,22 @@ class RecordingRagIndexBackend:
         return list(self._search_results)
 
 
+class FailingRagIndexBackend:
+    backend_name = "failing"
+
+    def index_chunks(self, chunks: Sequence[RagChunk]) -> RagIndexWriteResult:
+        raise RagIndexTransportError("persistent backend unavailable")
+
+    def search(self, search_request: RagSearchRequest) -> list[Evidence]:
+        raise RagIndexTransportError("persistent backend unavailable")
+
+
 class RecordingOpenSearchTransport:
-    def __init__(self, search_response: Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        search_response: Mapping[str, object] | None = None,
+        bulk_response: Mapping[str, object] | None = None,
+    ) -> None:
         self.calls: list[
             tuple[
                 str,
@@ -957,6 +1105,7 @@ class RecordingOpenSearchTransport:
             ]
         ] = []
         self._search_response = search_response or {"hits": {"hits": []}}
+        self._bulk_response = bulk_response or {"errors": False}
 
     def request_json(
         self,
@@ -972,7 +1121,7 @@ class RecordingOpenSearchTransport:
             return self._search_response
         if path.startswith("/_index_template/"):
             return {"acknowledged": True}
-        return {"errors": False}
+        return self._bulk_response
 
 
 class RecordingPgVectorConnection:

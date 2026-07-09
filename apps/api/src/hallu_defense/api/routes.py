@@ -81,6 +81,7 @@ from hallu_defense.services.corpus_grants import (
 )
 from hallu_defense.services.metrics import PROMETHEUS_CONTENT_TYPE
 from hallu_defense.services.rag_access import RagAccessDeniedError
+from hallu_defense.services.rag_index import RagIndexError
 from hallu_defense.services.sandbox import SandboxError
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -139,7 +140,11 @@ def classify_claims(
     )
 
 
-@router.post("/evidence/retrieve", response_model=EvidenceRetrievalResponse)
+@router.post(
+    "/evidence/retrieve",
+    response_model=EvidenceRetrievalResponse,
+    responses={503: {"model": ErrorResponse}},
+)
 def retrieve_evidence(
     request: EvidenceRetrievalRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /evidence/retrieve")),
@@ -170,10 +175,16 @@ def retrieve_evidence(
         )
     except RagAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RagIndexError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return EvidenceRetrievalResponse(evidence=evidence, claim_evidence_map=claim_map)
 
 
-@router.post("/documents/ingest", response_model=DocumentIngestionResponse)
+@router.post(
+    "/documents/ingest",
+    response_model=DocumentIngestionResponse,
+    responses={503: {"model": ErrorResponse}},
+)
 def ingest_documents(
     request: DocumentIngestionRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /documents/ingest")),
@@ -187,6 +198,8 @@ def ingest_documents(
         )
     except RagAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RagIndexError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/rag/corpus-grants/upsert", response_model=CorpusGrantResponse)

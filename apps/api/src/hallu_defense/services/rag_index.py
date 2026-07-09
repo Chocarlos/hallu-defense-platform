@@ -174,13 +174,14 @@ class OpenSearchRagIndexBackend:
                 }
             )
             operations.append(_opensearch_source_from_chunk(chunk))
-        self._transport.request_json(
+        response = self._transport.request_json(
             "POST",
             "/_bulk",
             operations,
             headers={"content-type": "application/x-ndjson"},
             timeout_seconds=self._timeout_seconds,
         )
+        _raise_for_opensearch_bulk_errors(response)
         return RagIndexWriteResult(
             indexed_count=len(chunks),
             backend=self.backend_name,
@@ -369,6 +370,32 @@ def _opensearch_document_id(tenant_id: str, evidence_id: str) -> str:
         raise RagIndexConfigurationError("evidence_id must be non-empty")
     digest = hashlib.sha256(f"{tenant_id}\0{evidence_id}".encode("utf-8")).hexdigest()
     return f"tenant_{digest}"
+
+
+def _raise_for_opensearch_bulk_errors(response: Mapping[str, object]) -> None:
+    if response.get("errors") is not True:
+        return
+    failures: list[str] = []
+    items = response.get("items")
+    if isinstance(items, Sequence) and not isinstance(items, (str, bytes, bytearray)):
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            operation = item.get("index")
+            if not isinstance(operation, Mapping):
+                continue
+            error_body = operation.get("error")
+            if isinstance(error_body, Mapping):
+                reason = error_body.get("reason") or error_body.get("type")
+                if isinstance(reason, str) and reason.strip():
+                    failures.append(reason.strip())
+            status = operation.get("status")
+            if not failures and isinstance(status, int) and status >= 400:
+                failures.append(f"status {status}")
+            if failures:
+                break
+    suffix = f": {failures[0]}" if failures else ""
+    raise RagIndexTransportError(f"OpenSearch bulk indexing failed{suffix}")
 
 
 def _evidence_from_opensearch_response(
