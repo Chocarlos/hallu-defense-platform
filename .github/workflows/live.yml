@@ -1,0 +1,111 @@
+name: live
+
+# Live integration smokes against real backing services.
+#
+# Unlike ci.yml / security.yml (which stay offline and skip the live smokes),
+# this workflow provisions each dependency with `docker compose up -d <svc>` and
+# runs the matching `scripts/dev/live_*_smoke.py` with its env-gate flipped to
+# `true`. Compose (not GitHub `services:`) is used on purpose: the services need
+# repo bind mounts to work -- postgres mounts `infra/rag/pgvector` as its initdb
+# schema and keycloak mounts `infra/security/keycloak` as its realm import.
+#
+# Every job tears its stack down with `docker compose down -v` under
+# `if: always()` so a failed smoke never leaks containers or volumes.
+#
+# Extensible by design: future batches append further live jobs here
+# (e.g. sandbox-live, observability-live, opensearch-live, pgvector-rag-live)
+# following the same start -> wait-for-readiness -> gated-smoke -> teardown
+# shape. ci.yml and security.yml are intentionally left untouched.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["master", "main"]
+  schedule:
+    # Weekly, Mondays at 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+jobs:
+  postgres-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+          # PooledPostgresProvider drives the smoke through psycopg_pool; install
+          # it explicitly so the live path has the pool driver even if the base
+          # extra ever drops it.
+          python -m pip install "psycopg-pool>=3.2,<4"
+      - name: Start postgres
+        run: docker compose up -d postgres
+      - name: Wait for postgres readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T postgres pg_isready -U hallu -d hallu_defense; then
+              echo "postgres is ready"
+              exit 0
+            fi
+            echo "waiting for postgres (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "postgres did not become ready in time" >&2
+          docker compose logs postgres
+          exit 1
+      - name: Run postgres persistence live smoke
+        env:
+          HALLU_DEFENSE_LIVE_POSTGRES_PERSISTENCE_SMOKE_ENABLED: "true"
+          HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@localhost:5432/hallu_defense
+        run: python scripts/dev/live_postgres_persistence_smoke.py
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
+
+  keycloak-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+      - name: Start keycloak
+        run: docker compose up -d keycloak
+      - name: Wait for keycloak discovery
+        run: |
+          discovery_url="http://localhost:8081/realms/hallu-defense/.well-known/openid-configuration"
+          # ~5 min deadline: keycloak start-dev + realm import is slow to warm up.
+          for attempt in $(seq 1 60); do
+            if curl -fsS "${discovery_url}" > /dev/null 2>&1; then
+              echo "keycloak discovery is reachable"
+              exit 0
+            fi
+            echo "waiting for keycloak discovery (attempt ${attempt})..."
+            sleep 5
+          done
+          echo "keycloak discovery not reachable before the deadline" >&2
+          docker compose logs keycloak
+          exit 1
+      - name: Run keycloak OIDC live smoke
+        # NOTE: scripts/dev/live_keycloak_oidc_smoke.py reads the
+        # HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_* env names (verified in
+        # `_config_from_env`), not the generic HALLU_DEFENSE_OIDC_* settings
+        # names. These values match infra/security/keycloak/realm-hallu-defense.json.
+        env:
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_SMOKE_ENABLED: "true"
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_ISSUER: http://localhost:8081/realms/hallu-defense
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_AUDIENCE: hallu-defense-api
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_DISCOVERY_URL: http://localhost:8081/realms/hallu-defense/.well-known/openid-configuration
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_CLIENT_ID: hallu-defense-api
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_CLIENT_SECRET: local-dev-only
+        run: python scripts/dev/live_keycloak_oidc_smoke.py
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
