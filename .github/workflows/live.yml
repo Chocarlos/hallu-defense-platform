@@ -114,7 +114,7 @@ jobs:
 
   keycloak-live:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       COMPOSE_PROJECT_NAME: hallu-keycloak-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -125,6 +125,10 @@ jobs:
         with:
           python-version: "3.12.13"
           pip-version: "26.1.2"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          cache: npm
       - name: Install API
         run: |
           python scripts/ci/install_python_lock.py build-tools
@@ -198,6 +202,49 @@ jobs:
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_CLIENT_SECRET: limited-only
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_EXPECTED_SUBJECT: hallu-defense-limited
         run: python scripts/dev/live_keycloak_oidc_smoke.py --api
+      - name: Install and build the Console smoke runtime
+        run: |
+          test "$(npm --version)" = "11.16.0"
+          npm ci
+          npm audit --audit-level=high
+          npm --workspace @hallu-defense/contracts run build
+          npm --workspace @hallu-defense/sdk run build
+          npm --workspace @hallu-defense/console run build
+          npx playwright install --with-deps chromium
+      - name: Start OIDC Console and wait for readiness
+        env:
+          HALLU_DEFENSE_ENV: local
+          HALLU_DEFENSE_CONSOLE_AUTH_MODE: oidc
+          HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: http://127.0.0.1:3100
+          HALLU_DEFENSE_CONSOLE_API_ORIGIN: http://127.0.0.1:18123
+          HALLU_DEFENSE_CONSOLE_ALLOW_INSECURE_LOCAL_HTTP: "true"
+          HALLU_DEFENSE_CONSOLE_OIDC_ISSUER: http://localhost:8081/realms/hallu-defense
+          HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID: hallu-defense-console
+          HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE: hallu-defense-api
+          HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES: verifier
+        run: |
+          nohup npm --workspace @hallu-defense/console run start -- --port 3100 \
+            > keycloak-console.log 2>&1 &
+          echo "$!" > keycloak-console.pid
+          for attempt in $(seq 1 60); do
+            if curl --max-time 2 -fsS http://127.0.0.1:3100 > /dev/null 2>&1; then
+              echo "OIDC Console is ready"
+              exit 0
+            fi
+            echo "waiting for OIDC Console (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "OIDC Console did not become ready" >&2
+          cat keycloak-console.log || true
+          exit 1
+      - name: Run browser OIDC/BFF live smoke
+        env:
+          HALLU_DEFENSE_LIVE_CONSOLE_OIDC_SMOKE_ENABLED: "true"
+          HALLU_DEFENSE_LIVE_CONSOLE_OIDC_CONSOLE_ORIGIN: http://127.0.0.1:3100
+          HALLU_DEFENSE_LIVE_CONSOLE_OIDC_API_ORIGIN: http://127.0.0.1:18123
+          HALLU_DEFENSE_LIVE_CONSOLE_OIDC_USERNAME: console-reviewer
+          HALLU_DEFENSE_LIVE_CONSOLE_OIDC_PASSWORD: console-reviewer-local-only
+        run: make console-oidc-live-smoke
       - name: Teardown
         if: always()
         run: |
@@ -208,8 +255,14 @@ jobs:
             fi
             wait "${api_pid}" 2> /dev/null || true
           fi
-          docker compose stop keycloak || true
-          docker compose rm -f keycloak || true
+          if [ -f keycloak-console.pid ]; then
+            console_pid="$(cat keycloak-console.pid)"
+            if kill -0 "${console_pid}" 2> /dev/null; then
+              kill "${console_pid}"
+            fi
+            wait "${console_pid}" 2> /dev/null || true
+          fi
+          docker compose down -v || true
 
   vault-live:
     runs-on: ubuntu-24.04

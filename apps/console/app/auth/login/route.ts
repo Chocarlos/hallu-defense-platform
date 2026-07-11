@@ -3,12 +3,16 @@ import { NextResponse } from "next/server";
 
 import {
   createAuthorizationTransaction,
-  transactionCookieName
+  deleteAuthorizationTransaction,
+  sessionCookieName,
+  transactionCookieName,
+  type AuthorizationTransaction
 } from "../../../lib/auth-store";
 import {
   consumeAuthRateLimit
 } from "../../../lib/auth-rate-limit";
 import { buildAuthorizationUrl, discoverOidc } from "../../../lib/oidc";
+import { isTrustedLoginNavigation } from "../../../lib/request-security";
 import {
   CONSOLE_AUTH_MODE_OIDC,
   loadConsoleRuntimeConfig,
@@ -29,6 +33,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return unavailable();
   }
 
+  if (!isTrustedLoginNavigation(request)) {
+    return jsonError("Authentication navigation is invalid.", 403);
+  }
+
   const rateLimit = consumeAuthRateLimit("login", request, config);
   if (!rateLimit.allowed) {
     const response = NextResponse.json(
@@ -40,9 +48,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return response;
   }
 
+  let transaction: AuthorizationTransaction | undefined;
   try {
+    const priorSessionId = request.cookies.get(sessionCookieName(config))?.value;
+    // Capture the Strict-cookie session before the first await. A concurrent
+    // callback can rotate it while discovery is in flight; the bound ID then
+    // makes this authorization attempt fail closed instead of creating an
+    // unrelated session.
+    transaction = createAuthorizationTransaction(
+      config,
+      priorSessionId === undefined ? {} : { priorSessionId }
+    );
     const discovery = await discoverOidc(config);
-    const transaction = createAuthorizationTransaction(config);
     const response = NextResponse.redirect(
       buildAuthorizationUrl(config, discovery, transaction),
       302
@@ -58,6 +75,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     secureResponse(response);
     return response;
   } catch {
+    if (transaction !== undefined) {
+      deleteAuthorizationTransaction(transaction.state);
+    }
     const response = unavailable();
     secureResponse(response);
     return response;
@@ -65,10 +85,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 }
 
 function unavailable(): NextResponse {
-  const response = NextResponse.json(
-    { error: "Authentication is unavailable." },
-    { status: 503 }
-  );
+  return jsonError("Authentication is unavailable.", 503);
+}
+
+function jsonError(message: string, status: number): NextResponse {
+  const response = NextResponse.json({ error: message }, { status });
   noStore(response);
   return response;
 }

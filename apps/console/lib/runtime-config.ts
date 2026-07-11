@@ -27,7 +27,6 @@ interface ConsoleRuntimeBase {
   readonly publicOrigin: string;
   readonly apiOrigin: string;
   readonly allowInsecureLocalHttp: boolean;
-  readonly demoFixtureEnabled: boolean;
 }
 
 export interface ConsoleOidcRuntimeConfig extends ConsoleRuntimeBase {
@@ -63,12 +62,9 @@ export type ConsoleRuntimeConfig =
 export type BrowserRuntimeConfig =
   | {
       readonly authMode: typeof CONSOLE_AUTH_MODE_OIDC;
-      readonly apiOrigin: string;
     }
   | {
       readonly authMode: typeof CONSOLE_AUTH_MODE_UNSIGNED_LOCAL;
-      readonly apiOrigin: string;
-      readonly localIdentity: ConsoleIdentity;
     };
 
 export function loadConsoleRuntimeConfig(
@@ -89,14 +85,14 @@ export function loadConsoleRuntimeConfig(
       "Production console cannot enable insecure local HTTP."
     );
   }
-  const demoFixtureEnabled = strictBoolean(
+  const demoFixtureRequested = strictBoolean(
     env,
     "HALLU_DEFENSE_CONSOLE_DEMO_FIXTURE_ENABLED",
     false
   );
-  if (productionLike && demoFixtureEnabled) {
+  if (demoFixtureRequested) {
     throw new ConsoleRuntimeConfigError(
-      "Production console cannot enable the demo verification fixture."
+      "Console demo verification fixtures are not supported."
     );
   }
   const publicOrigin = parseOrigin(
@@ -116,8 +112,7 @@ export function loadConsoleRuntimeConfig(
     productionLike,
     publicOrigin,
     apiOrigin,
-    allowInsecureLocalHttp,
-    demoFixtureEnabled
+    allowInsecureLocalHttp
   };
   if (authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
     if (
@@ -126,14 +121,6 @@ export function loadConsoleRuntimeConfig(
     ) {
       throw new ConsoleRuntimeConfigError(
         "Unsigned console identity is restricted to explicit local fixtures."
-      );
-    }
-    if (
-      demoFixtureEnabled &&
-      (!isLoopbackOrigin(publicOrigin) || !isLoopbackOrigin(apiOrigin))
-    ) {
-      throw new ConsoleRuntimeConfigError(
-        "Demo verification fixture is restricted to loopback console and API origins."
       );
     }
     const tenantId = required(env, "HALLU_DEFENSE_CONSOLE_LOCAL_TENANT_ID");
@@ -157,12 +144,6 @@ export function loadConsoleRuntimeConfig(
   if (authMode !== CONSOLE_AUTH_MODE_OIDC) {
     throw new ConsoleRuntimeConfigError("Console auth mode is invalid.");
   }
-  if (demoFixtureEnabled) {
-    throw new ConsoleRuntimeConfigError(
-      "Demo verification fixture requires unsigned local authentication."
-    );
-  }
-
   const issuer = parseIssuer(
     required(env, "HALLU_DEFENSE_CONSOLE_OIDC_ISSUER"),
     allowInsecureLocalHttp
@@ -275,14 +256,7 @@ export function loadConsoleRuntimeConfig(
 }
 
 export function browserRuntimeConfig(config: ConsoleRuntimeConfig): BrowserRuntimeConfig {
-  if (config.authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
-    return {
-      authMode: config.authMode,
-      apiOrigin: config.apiOrigin,
-      localIdentity: config.localIdentity
-    };
-  }
-  return { authMode: config.authMode, apiOrigin: config.apiOrigin };
+  return { authMode: config.authMode };
 }
 
 export function parseOrigin(
@@ -373,10 +347,6 @@ function absoluteUrl(value: string, label: string): URL {
 
 function isLoopbackHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
-}
-
-function isLoopbackOrigin(origin: string): boolean {
-  return isLoopbackHostname(new URL(origin).hostname);
 }
 
 function required(

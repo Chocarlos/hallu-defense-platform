@@ -4,10 +4,10 @@
   --surface-muted: #eef2f7;
   --text: #172033;
   --muted: #5d6b82;
-  --border: #d9e0ea;
+  --border: #8290a3;
   --blue: #1f6feb;
   --blue-dark: #1457bd;
-  --green: #208a4f;
+  --green: #126b3a;
   --amber: #a96000;
   --red: #c03221;
   --violet: #6f42c1;
@@ -47,8 +47,34 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 3px solid rgb(31 111 235 / 45%);
+  outline: 3px solid #0b57d0;
   outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 1000;
+  top: -5rem;
+  left: 1rem;
+  border-radius: 0.5rem;
+  background: var(--text);
+  color: #fff;
+  padding: 0.75rem 1rem;
+  font-weight: 800;
+}
+
+.skip-link:focus {
+  top: 1rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
 }
 
 .shell {

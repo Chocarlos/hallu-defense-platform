@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -26,22 +26,21 @@ import type {
   VerificationReplayResponse,
   VerificationRun
 } from "@hallu-defense/contracts";
-import { HalluDefenseClient } from "@hallu-defense/sdk";
+import type { HalluDefenseClient } from "@hallu-defense/sdk";
 import { LiveDashboards } from "./live-dashboards";
+import { safeConsoleApiError } from "../lib/api-error";
 import {
-  parseOidcBrowserSession,
-  unsignedBrowserSession,
+  parseBrowserSession,
   type BrowserAuthenticatedSession
 } from "../lib/browser-session";
+import { createConsoleApiClient } from "../lib/console-client";
 import {
   CONSOLE_AUTH_MODE_OIDC,
-  CONSOLE_AUTH_MODE_UNSIGNED_LOCAL,
   type BrowserRuntimeConfig
 } from "../lib/runtime-config";
 
 interface RunConsoleProps {
   readonly runtimeConfig: BrowserRuntimeConfig;
-  readonly initialRun: VerificationRun | null;
 }
 
 const sampleDocument =
@@ -50,24 +49,15 @@ const sampleDocument =
 const defaultPolicyAttributes = '{\n  "tool_name": "read_file"\n}';
 const defaultSandboxCommands = "python --version";
 
-export function RunConsole({
-  runtimeConfig,
-  initialRun
-}: RunConsoleProps) {
-  const [authSession, setAuthSession] = useState<BrowserAuthenticatedSession | null>(() =>
-    runtimeConfig.authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL
-      ? unsignedBrowserSession(runtimeConfig.localIdentity)
-      : null
-  );
-  const [authLoading, setAuthLoading] = useState(
-    runtimeConfig.authMode === CONSOLE_AUTH_MODE_OIDC
-  );
+export function RunConsole({ runtimeConfig }: RunConsoleProps) {
+  const [authSession, setAuthSession] = useState<BrowserAuthenticatedSession | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [messageText, setMessageText] = useState(
     "Los empleados part-time reciben 15 dias de vacaciones pagadas al ano."
   );
   const [documentText, setDocumentText] = useState(sampleDocument);
-  const [run, setRun] = useState<VerificationRun | null>(initialRun);
+  const [run, setRun] = useState<VerificationRun | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [approvals, setApprovals] = useState<readonly ApprovalRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -88,15 +78,13 @@ export function RunConsole({
   const [sandboxLoading, setSandboxLoading] = useState(false);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [replayTraceId, setReplayTraceId] = useState("");
+  const [replaySelectionMessage, setReplaySelectionMessage] = useState("");
+  const replayInputRef = useRef<HTMLInputElement>(null);
   const [replayResult, setReplayResult] = useState<VerificationReplayResponse | null>(null);
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayError, setReplayError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (runtimeConfig.authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
-      return;
-    }
-
     let cancelled = false;
     const controller = new AbortController();
     async function loadAuthenticatedSession() {
@@ -119,7 +107,7 @@ export function RunConsole({
         if (!response.ok) {
           throw new Error("Authentication session is unavailable.");
         }
-        const session = parseOidcBrowserSession(await response.json());
+        const session = parseBrowserSession(await response.json());
         if (!cancelled) {
           setAuthSession(session);
           setAuthMessage(null);
@@ -154,28 +142,24 @@ export function RunConsole({
     return () => window.clearTimeout(timeout);
   }, [authSession]);
 
-  const client = useMemo(() => {
+  const clientFactory = useMemo(() => {
     if (authSession === null) {
       return null;
     }
-    if (runtimeConfig.authMode === CONSOLE_AUTH_MODE_OIDC) {
-      if (authSession.accessToken === null) {
-        return null;
-      }
-      return new HalluDefenseClient({
-        baseUrl: runtimeConfig.apiOrigin,
-        token: authSession.accessToken,
-        timeoutMs: 8000
-      });
-    }
-    return new HalluDefenseClient({
-      baseUrl: runtimeConfig.apiOrigin,
-      tenantId: authSession.tenantId,
-      subjectId: authSession.subjectId,
-      roles: authSession.roles,
-      timeoutMs: 8000
-    });
-  }, [authSession, runtimeConfig]);
+    return createConsoleApiClient(authSession);
+  }, [authSession]);
+  const client = useMemo(() => clientFactory?.() ?? null, [clientFactory]);
+
+  const handleUnauthorized = useCallback(() => {
+    setAuthSession(null);
+    setAuthMessage("La sesion expiro. Inicia sesion nuevamente.");
+  }, []);
+
+  const selectReplayTrace = useCallback((traceId: string) => {
+    setReplayTraceId(traceId);
+    setReplaySelectionMessage(`Trace ${safeText(traceId)} seleccionado para replay.`);
+    window.requestAnimationFrame(() => replayInputRef.current?.focus());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,9 +173,16 @@ export function RunConsole({
         if (!cancelled) {
           setApprovals(result.approvals);
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
           setApprovals([]);
+          setApprovalMessage(
+            safeConsoleApiError(
+              error,
+              "No se pudo cargar la cola de aprobaciones.",
+              handleUnauthorized
+            ).message
+          );
         }
       }
     }
@@ -199,7 +190,7 @@ export function RunConsole({
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [client, handleUnauthorized]);
 
   function requireClient(): HalluDefenseClient {
     if (client === null) {
@@ -236,17 +227,10 @@ export function RunConsole({
       setRun(result);
       setHistoryRevision((current) => current + 1);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "No se pudo ejecutar el run");
+      setErrorMessage(apiErrorMessage(error, "No se pudo ejecutar el run."));
     } finally {
       setLoading(false);
     }
-  }
-
-  function resetDemo() {
-    setRun(initialRun);
-    setMessageText("Los empleados part-time reciben 15 dias de vacaciones pagadas al ano.");
-    setDocumentText(sampleDocument);
-    setErrorMessage(null);
   }
 
   async function refreshApprovals() {
@@ -256,7 +240,7 @@ export function RunConsole({
       const result = await requireClient().listApprovals({ status: "pending" });
       setApprovals(result.approvals);
     } catch (error) {
-      setApprovalMessage(error instanceof Error ? error.message : "No se pudo cargar la cola");
+      setApprovalMessage(apiErrorMessage(error, "No se pudo cargar la cola."));
     } finally {
       setApprovalLoading(false);
     }
@@ -269,7 +253,7 @@ export function RunConsole({
       const session = requireAuthSession();
       const validation = await requireClient().validateToolInput({
         tool_name: "delete_repository",
-        input: { repo: "core", api_key: "demo" },
+        input: { repo: "core", operation: "delete" },
         schema: { type: "object", required: ["repo"] },
         risk_level: "high",
         approval_required: false,
@@ -282,7 +266,7 @@ export function RunConsole({
       await refreshApprovals();
       setApprovalMessage(message);
     } catch (error) {
-      setApprovalMessage(error instanceof Error ? error.message : "No se pudo encolar approval");
+      setApprovalMessage(apiErrorMessage(error, "No se pudo encolar approval."));
       setApprovalLoading(false);
     }
   }
@@ -299,7 +283,7 @@ export function RunConsole({
       await refreshApprovals();
       setApprovalMessage(decision === "approve" ? "Aprobado" : "Rechazado");
     } catch (error) {
-      setApprovalMessage(error instanceof Error ? error.message : "No se pudo decidir approval");
+      setApprovalMessage(apiErrorMessage(error, "No se pudo decidir approval."));
       setApprovalLoading(false);
     }
   }
@@ -332,7 +316,7 @@ export function RunConsole({
       const result = await requireClient().evaluatePolicy(request);
       setPolicyResult(result);
     } catch (error) {
-      setPolicyError(error instanceof Error ? error.message : "No se pudo evaluar policy");
+      setPolicyError(apiErrorMessage(error, "No se pudo evaluar policy."));
     } finally {
       setPolicyLoading(false);
     }
@@ -353,7 +337,7 @@ export function RunConsole({
       setHistoryRevision((current) => current + 1);
     } catch (error) {
       setReplayResult(null);
-      setReplayError(error instanceof Error ? error.message : "No se pudo ejecutar replay");
+      setReplayError(apiErrorMessage(error, "No se pudo ejecutar replay."));
     } finally {
       setReplayLoading(false);
     }
@@ -382,7 +366,7 @@ export function RunConsole({
       const result = await requireClient().runRepoChecks(request, { timeoutMs: 330_000 });
       setSandboxRun(result);
     } catch (error) {
-      setSandboxError(error instanceof Error ? error.message : "No se pudo ejecutar sandbox");
+      setSandboxError(apiErrorMessage(error, "No se pudo ejecutar sandbox."));
     } finally {
       setSandboxLoading(false);
     }
@@ -394,15 +378,19 @@ export function RunConsole({
   const supportedCount = verdicts.filter((verdict) => verdict.status === "SUPPORTED").length;
   const sandboxSummary = useMemo(() => summarizeSandboxRun(sandboxRun), [sandboxRun]);
 
+  function apiErrorMessage(error: unknown, fallback: string): string {
+    return safeConsoleApiError(error, fallback, handleUnauthorized).message;
+  }
+
   if (authLoading) {
     return <AuthenticationGate loading message={null} />;
   }
-  if (authSession === null || client === null) {
+  if (authSession === null || client === null || clientFactory === null) {
     return <AuthenticationGate loading={false} message={authMessage} />;
   }
 
   return (
-    <main className="shell">
+    <main className="shell" id="main-content" tabIndex={-1}>
       <header className="topbar">
         <div>
           <p className="eyebrow">Hallu Defense</p>
@@ -442,10 +430,11 @@ export function RunConsole({
       </section>
 
       <LiveDashboards
-        client={client}
+        createClient={clientFactory}
         roles={authSession.roles}
         historyRevision={historyRevision}
-        onUseReplayTrace={setReplayTraceId}
+        onUseReplayTrace={selectReplayTrace}
+        onUnauthorized={handleUnauthorized}
       />
 
       <section className="workspace">
@@ -453,11 +442,6 @@ export function RunConsole({
           <div className="panel-header">
             <h2>Verificacion</h2>
             <div className="toolbar">
-              {initialRun !== null ? (
-                <button className="icon-button" type="button" onClick={resetDemo} title="Restaurar demo">
-                  <RotateCcw aria-hidden="true" size={18} />
-                </button>
-              ) : null}
               <button className="primary-button" type="submit" disabled={loading}>
                 <Play aria-hidden="true" size={18} />
                 <span>{loading ? "Ejecutando" : "Ejecutar"}</span>
@@ -655,13 +639,23 @@ export function RunConsole({
           <label className="field">
             <span>Trace a reproducir</span>
             <input
+              ref={replayInputRef}
               value={replayTraceId}
               onChange={(event) => setReplayTraceId(event.target.value)}
               placeholder="tr_..."
               autoComplete="off"
+              aria-describedby="replay-selection-status"
               required
             />
           </label>
+          <p
+            className="sr-only"
+            id="replay-selection-status"
+            role="status"
+            aria-live="polite"
+          >
+            {replaySelectionMessage}
+          </p>
           <div className="form-footer">
             {replayError !== null ? (
               <p className="error compact-error" role="alert">
@@ -673,7 +667,7 @@ export function RunConsole({
               type="button"
               onClick={() => {
                 if (run !== null) {
-                  setReplayTraceId(run.trace_id);
+                  selectReplayTrace(run.trace_id);
                 }
               }}
               disabled={run === null}
@@ -746,6 +740,7 @@ export function RunConsole({
               onClick={refreshApprovals}
               disabled={approvalLoading}
               title="Actualizar approvals"
+              aria-label="Actualizar approvals"
             >
               <RotateCcw aria-hidden="true" size={18} />
             </button>
@@ -818,7 +813,7 @@ function AuthenticationGate({
   message
 }: Readonly<{ loading: boolean; message: string | null }>) {
   return (
-    <main className="shell">
+    <main className="shell" id="main-content" tabIndex={-1}>
       <header className="topbar">
         <div>
           <p className="eyebrow">Hallu Defense</p>

@@ -10,6 +10,12 @@ test("renders tenant-scoped run, grant, ingestion, and eval data from the live A
   await seedLiveDashboardData(request);
   await page.goto("/");
 
+  await page.keyboard.press("Tab");
+  const skipLink = page.getByRole("link", { name: "Saltar al contenido principal" });
+  await expect(skipLink).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#main-content")).toBeFocused();
+
   const history = page.locator('section[aria-label="Historial de runs"]');
   await expect(history).toContainText("tr_console_live_history");
   await expect(history).toContainText("Usar en replay");
@@ -17,8 +23,11 @@ test("renders tenant-scoped run, grant, ingestion, and eval data from the live A
     .locator("li", { hasText: "tr_console_live_history" })
     .getByRole("button", { name: "Usar en replay" })
     .click();
-  await expect(page.getByLabel("Trace a reproducir")).toHaveValue(
-    "tr_console_live_history"
+  const replayInput = page.getByLabel("Trace a reproducir");
+  await expect(replayInput).toHaveValue("tr_console_live_history");
+  await expect(replayInput).toBeFocused();
+  await expect(page.locator("#replay-selection-status")).toContainText(
+    "Trace tr_console_live_history seleccionado para replay."
   );
 
   const corpus = page.locator('section[aria-label="Corpus e ingesta"]');
@@ -94,9 +103,11 @@ test("shows deterministic loading, empty, and error states", async ({ page }) =>
   await expect(page.locator('section[aria-label="Corpus e ingesta"]')).toContainText(
     "Sin grants de corpus registrados"
   );
-  await expect(page.locator('section[aria-label="Reportes de eval"]')).toContainText(
-    "Eval report service is unavailable."
+  const evalReports = page.locator('section[aria-label="Reportes de eval"]');
+  await expect(evalReports).toContainText(
+    "El servicio no esta disponible temporalmente."
   );
+  await expect(evalReports).not.toContainText("Eval report service is unavailable.");
 });
 
 async function seedLiveDashboardData(request: APIRequestContext): Promise<void> {

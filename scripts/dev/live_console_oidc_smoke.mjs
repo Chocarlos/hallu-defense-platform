@@ -24,41 +24,67 @@ const password =
   process.env.HALLU_DEFENSE_LIVE_CONSOLE_OIDC_PASSWORD ??
   "console-reviewer-local-only";
 
-let resolveObservedHeaders;
-const observedHeaders = new Promise((resolve) => {
-  resolveObservedHeaders = resolve;
+let resolveObservedBearer;
+const observedBearer = new Promise((resolve) => {
+  resolveObservedBearer = resolve;
 });
-let headersCaptured = false;
-const api = createServer((request, response) => {
-  response.setHeader("access-control-allow-origin", consoleOrigin);
-  response.setHeader("access-control-allow-methods", "POST, OPTIONS");
-  response.setHeader(
-    "access-control-allow-headers",
-    "authorization, content-type, x-trace-id"
-  );
-  response.setHeader("vary", "origin");
+let bearerResolved = false;
+let sawCorsPreflight = false;
+const api = createServer(async (request, response) => {
   if (request.method === "OPTIONS") {
-    response.writeHead(204).end();
+    sawCorsPreflight = true;
+    response.writeHead(405, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "cors_not_supported" }));
     return;
   }
-  if (request.method === "POST" && request.url === "/approvals/list") {
-    if (!headersCaptured) {
-      headersCaptured = true;
-      resolveObservedHeaders({
-        bearer: /^Bearer [A-Za-z0-9._~+/=-]+$/u.test(
-          String(request.headers.authorization ?? "")
-        ),
-        tenantHeader: request.headers["x-tenant-id"] !== undefined,
-        subjectHeader: request.headers["x-subject-id"] !== undefined,
-        rolesHeader: request.headers["x-roles"] !== undefined
-      });
-    }
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ trace_id: "tr_console_oidc_smoke", approvals: [] }));
-    return;
+  await drainRequest(request);
+  const authorization = String(request.headers.authorization ?? "");
+  const bearer = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  if (!bearerResolved && bearer.length > 0) {
+    bearerResolved = true;
+    resolveObservedBearer({
+      value: bearer,
+      validShape: /^[A-Za-z0-9._~+/=-]+$/u.test(bearer),
+      tenantHeader: request.headers["x-tenant-id"] !== undefined,
+      subjectHeader: request.headers["x-subject-id"] !== undefined,
+      rolesHeader: request.headers["x-roles"] !== undefined,
+      browserOriginHeader: request.headers.origin !== undefined
+    });
   }
-  response.writeHead(404, { "content-type": "application/json" });
-  response.end(JSON.stringify({ error: "not_found" }));
+
+  if (request.method !== "POST") {
+    return json(response, 405, { error: "method_not_allowed" });
+  }
+  if (request.url === "/approvals/list") {
+    return json(response, 200, {
+      trace_id: "tr_console_oidc_smoke",
+      approvals: []
+    });
+  }
+  if (request.url === "/verification/runs/list") {
+    return json(response, 200, {
+      trace_id: "tr_console_oidc_smoke",
+      runs: [],
+      next_cursor: null
+    });
+  }
+  if (request.url === "/rag/corpus-grants/list") {
+    return json(response, 200, {
+      trace_id: "tr_console_oidc_smoke",
+      grants: [],
+      next_cursor: null
+    });
+  }
+  if (request.url === "/evals/reports/list") {
+    return json(response, 200, {
+      trace_id: "tr_console_oidc_smoke",
+      reports: [],
+      next_cursor: null
+    });
+  }
+  return json(response, 404, { error: "not_found" });
 });
 
 let browser;
@@ -67,7 +93,41 @@ try {
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
+  const directApiRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).origin === apiOrigin) {
+      directApiRequests.push(request.url());
+    }
+  });
+
   await page.goto(`${consoleOrigin}/auth/login`, { waitUntil: "domcontentloaded" });
+  const authorizationUrl = new URL(page.url());
+  const state = authorizationUrl.searchParams.get("state") ?? "";
+  const nonce = authorizationUrl.searchParams.get("nonce") ?? "";
+  const challenge = authorizationUrl.searchParams.get("code_challenge") ?? "";
+  assert(opaqueValue(state), "Authorization request state was invalid");
+  assert(opaqueValue(nonce), "Authorization request nonce was invalid");
+  assert(opaqueValue(challenge), "Authorization request PKCE challenge was invalid");
+  assert(
+    authorizationUrl.searchParams.get("code_challenge_method") === "S256",
+    "Authorization request did not require PKCE S256"
+  );
+  assert(
+    authorizationUrl.searchParams.get("response_type") === "code",
+    "Authorization request did not use code flow"
+  );
+  assert(
+    authorizationUrl.searchParams.get("redirect_uri") === `${consoleOrigin}/auth/callback`,
+    "Authorization callback was not exact"
+  );
+
+  const transactionCookie = (await context.cookies(consoleOrigin)).find((cookie) =>
+    cookie.name.endsWith("hallu-oidc-state")
+  );
+  assert(transactionCookie?.value === state, "OIDC state cookie did not bind the request");
+  assert(transactionCookie?.httpOnly === true, "OIDC state cookie was readable by JavaScript");
+  assert(transactionCookie?.sameSite === "Lax", "OIDC state cookie SameSite was not Lax");
+
   await page.locator("#username").fill(username);
   await page.locator("#password").fill(password);
   await Promise.all([
@@ -91,36 +151,103 @@ try {
       sessionBody.subjectId.length <= 256,
     "Session subject was invalid"
   );
-  assert(
-    typeof sessionBody.accessToken === "string" && sessionBody.accessToken.length > 32,
-    "Session did not contain a validated access token"
+  assert(opaqueValue(sessionBody.csrfToken), "Session CSRF token was invalid");
+  for (const forbidden of [
+    "accessToken",
+    "access_token",
+    "idToken",
+    "id_token",
+    "refreshToken",
+    "refresh_token"
+  ]) {
+    assert(!(forbidden in sessionBody), `Session exposed forbidden field ${forbidden}`);
+  }
+
+  const sessionCookie = (await context.cookies(consoleOrigin)).find((cookie) =>
+    cookie.name.endsWith("hallu-console-session")
   );
-  await page.getByText(sessionBody.subjectId, { exact: false }).waitFor();
+  assert(sessionCookie?.httpOnly === true, "Console session cookie was readable by JavaScript");
+  assert(sessionCookie?.sameSite === "Strict", "Console session cookie SameSite was not Strict");
 
-  const headers = await withTimeout(observedHeaders, 15_000);
-  assert(headers.bearer, "SDK request did not carry Bearer authentication");
-  assert(!headers.tenantHeader, "SDK request leaked x-tenant-id beside Bearer");
-  assert(!headers.subjectHeader, "SDK request leaked x-subject-id beside Bearer");
-  assert(!headers.rolesHeader, "SDK request leaked x-roles beside Bearer");
+  const observed = await withTimeout(observedBearer, 15_000);
+  assert(observed.validShape, "BFF request did not carry Bearer authentication");
+  assert(!observed.tenantHeader, "BFF leaked x-tenant-id beside Bearer");
+  assert(!observed.subjectHeader, "BFF leaked x-subject-id beside Bearer");
+  assert(!observed.rolesHeader, "BFF leaked x-roles beside Bearer");
+  assert(!observed.browserOriginHeader, "API received a browser Origin header");
+  assert(directApiRequests.length === 0, "Browser contacted the API origin directly");
+  assert(!sawCorsPreflight, "Browser required CORS to reach the API");
+  assert(!(await page.content()).includes(observed.value), "Bearer appeared in rendered HTML");
+  assert(!JSON.stringify(sessionBody).includes(observed.value), "Bearer appeared in session JSON");
 
-  const [logoutResponse] = await Promise.all([
-    page.waitForResponse(
-      (response) =>
-        response.url() === `${consoleOrigin}/auth/logout` &&
-        response.request().method() === "POST"
-    ),
-    page.getByRole("button", { name: "Cerrar sesion" }).click()
+  const crossOriginBff = await context.request.post(
+    `${consoleOrigin}/api/approvals/list`,
+    {
+      headers: {
+        origin: "https://attacker.example.invalid",
+        "content-type": "application/json",
+        "x-console-csrf": sessionBody.csrfToken
+      },
+      data: {}
+    }
+  );
+  assert(crossOriginBff.status() === 403, "BFF accepted a cross-origin mutation");
+  const wrongCsrfBff = await context.request.post(`${consoleOrigin}/api/approvals/list`, {
+    headers: {
+      origin: consoleOrigin,
+      "content-type": "application/json",
+      "x-console-csrf": "invalid"
+    },
+    data: {}
+  });
+  assert(wrongCsrfBff.status() === 403, "BFF accepted an invalid CSRF token");
+
+  const crossOriginLogout = await context.request.post(`${consoleOrigin}/auth/logout`, {
+    headers: { origin: "https://attacker.example.invalid" }
+  });
+  assert(crossOriginLogout.status() === 403, "Logout accepted a cross-origin mutation");
+  assert(
+    (await context.request.get(`${consoleOrigin}/auth/session`)).status() === 200,
+    "Rejected logout invalidated the legitimate session"
+  );
+
+  const providerLogoutRequest = page.waitForRequest(
+    (request) => {
+      const target = new URL(request.url());
+      return (
+        target.origin !== consoleOrigin &&
+        target.pathname.endsWith("/protocol/openid-connect/logout")
+      );
+    },
+    { timeout: 15_000 }
+  );
+  const consoleLogoutResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${consoleOrigin}/auth/logout` &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Cerrar sesion" }).click({ noWaitAfter: true });
+  const [logoutResponse, logoutRequest] = await Promise.all([
+    consoleLogoutResponse,
+    providerLogoutRequest
   ]);
-  const logoutRequestHeaders = await logoutResponse.request().allHeaders();
+  const logoutHeaders = await logoutResponse.request().allHeaders();
+  assert(logoutResponse.status() === 303, "Console logout did not redirect with 303");
+  assert(logoutHeaders.origin === consoleOrigin, "Logout did not carry the exact origin");
+  const providerLogoutUrl = new URL(logoutRequest.url());
   assert(
-    logoutResponse.status() === 303,
-    `Logout POST returned unexpected status ${logoutResponse.status()} ` +
-      `(origin=${logoutRequestHeaders.origin ?? "missing"}, ` +
-      `referer=${logoutRequestHeaders.referer ?? "missing"}, ` +
-      `site=${logoutRequestHeaders["sec-fetch-site"] ?? "missing"}, ` +
-      `mode=${logoutRequestHeaders["sec-fetch-mode"] ?? "missing"}, ` +
-      `user=${logoutRequestHeaders["sec-fetch-user"] ?? "missing"})`
+    providerLogoutUrl.searchParams.get("client_id") === "hallu-defense-console",
+    "Provider logout did not identify the public client"
   );
+  assert(
+    providerLogoutUrl.searchParams.get("post_logout_redirect_uri") === consoleOrigin,
+    "Provider logout return URI was not exact"
+  );
+  for (const key of providerLogoutUrl.searchParams.keys()) {
+    assert(!/token/iu.test(key), "Provider logout URL exposed a token parameter");
+  }
+
+  await page.goto(consoleOrigin, { waitUntil: "domcontentloaded" });
   await page
     .getByRole("heading", { name: "Autenticacion requerida" })
     .waitFor({ timeout: 15_000 });
@@ -130,12 +257,14 @@ try {
   console.log(
     JSON.stringify({
       status: "passed",
-      authorizationCodePkce: true,
-      authenticatedTenant: "tenant-a",
-      authenticatedSubject: "opaque-sub-claim",
-      bearerOnlyIdentityHeaders: true,
-      sessionNoStore: true,
-      logoutInvalidatedSession: true
+      stateNoncePkceS256: true,
+      browserCredentialExposure: false,
+      sameOriginBff: true,
+      csrfAndOriginEnforced: true,
+      bearerOnlyServerIdentity: true,
+      corsRequired: false,
+      providerLogoutInvoked: true,
+      localSessionInvalidated: true
     })
   );
 } finally {
@@ -155,6 +284,10 @@ function loopbackOrigin(raw, label) {
   return url.origin;
 }
 
+function opaqueValue(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
 function listen(server, url) {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -172,13 +305,39 @@ function close(server) {
   });
 }
 
+function drainRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.on("error", reject);
+    request.on("end", resolve);
+    request.resume();
+  });
+}
+
+function json(response, status, body) {
+  response.writeHead(status, {
+    "cache-control": "no-store",
+    "content-type": "application/json"
+  });
+  response.end(JSON.stringify(body));
+}
+
 function withTimeout(promise, timeoutMs) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Timed out waiting for API authentication.")), timeoutMs);
-    })
-  ]);
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Timed out waiting for BFF authentication.")),
+      timeoutMs
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
 }
 
 function assert(condition, message) {

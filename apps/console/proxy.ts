@@ -9,11 +9,7 @@ export function proxy(request: NextRequest): NextResponse {
   try {
     const config = loadConsoleRuntimeConfig();
     const nonce = randomBytes(16).toString("base64");
-    const csp = contentSecurityPolicy(
-      nonce,
-      config.apiOrigin,
-      config.productionLike
-    );
+    const csp = contentSecurityPolicy(nonce, config.productionLike);
     const requestHeaders = new Headers(request.headers);
     requestHeaders.set("x-nonce", nonce);
     requestHeaders.set("content-security-policy", csp);
@@ -41,7 +37,6 @@ export const config = {
 
 export function contentSecurityPolicy(
   nonce: string,
-  apiOrigin: string,
   productionLike: boolean
 ): string {
   const directives = [
@@ -50,7 +45,7 @@ export function contentSecurityPolicy(
     `style-src 'self' 'nonce-${nonce}'`,
     "img-src 'self' data: blob:",
     "font-src 'self'",
-    `connect-src 'self' ${apiOrigin}`,
+    "connect-src 'self'",
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'none'",

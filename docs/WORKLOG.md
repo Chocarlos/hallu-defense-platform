@@ -6713,3 +6713,100 @@ Remaining risks:
   attempted in this corrective follow-up; no persistent infrastructure was
   touched and live install/upgrade evidence remains pending.
 - Status remains `tested`, not `accepted`; no global close is claimed.
+### 2026-07-11 addendum - Six-front Front E - Console OIDC/BFF and live dashboards
+
+Slice selected:
+
+- Resumed the existing dirty Front E worktree on
+  `codex/sixfront-e-console-oidc` without reset, merge, push, or cross-worktree
+  edits. Scope stayed inside Console, its OIDC smoke, Console-only Make/CI
+  wiring, and Console security/traceability documentation.
+- Closed the browser credential boundary and live-dashboard path, then applied
+  the mandatory `SameSite=Strict` reauthentication correction: an IdP callback
+  must revoke the exact prior server session even though that callback carries
+  no prior session cookie.
+
+Implementation:
+
+- Added a same-origin Next BFF that keeps Bearer tokens server-only, rebuilds
+  upstream identity headers, enforces an endpoint allowlist, exact Origin and
+  Fetch Metadata, session-bound CSRF, object JSON, 1 MiB request and 4 MiB
+  response limits, timeouts, `redirect: error`, no-store responses, generic
+  errors, bounded `Retry-After`, and session invalidation on upstream `401`.
+- Hardened OIDC discovery, PKCE/state/nonce, RS256 issuer/audience/authorized-
+  party validation, opaque cookies, credential-free browser session JSON,
+  provider logout, callback and login rate limiting, and origin checks. Rate
+  identity does not trust a browser-controlled cookie or forwarding header.
+- `GET /auth/login` now captures the active prior OIDC session in the one-shot
+  authorization transaction before provider I/O and deletes the unissued
+  transaction on initiation failure. A successful callback performs an
+  in-process compare-and-swap replacement of that exact prior session; only
+  one sibling transaction can win, stale siblings fail closed, callback
+  failures preserve the prior session, and 2,048 orphan reauthentication
+  transactions cannot allocate session slots.
+- Replaced demo/initial-run fixtures with live API-backed dashboards. Per-
+  channel epochs, `AbortController`, in-flight deduplication, stable-ID merges,
+  status-specific safe errors, and retry rules prevent stale responses and
+  automatic `429` amplification. A synchronous coordinator failure now keeps
+  its real error and cannot pin a fingerprint forever.
+- Added keyboard skip navigation, replay focus/status announcements, responsive
+  checks, generic UI handling for upstream `5xx`, and negative BFF coverage for
+  streamed/declared bounds, media/JSON failures, and redirect rejection.
+- Added the deployable-artifact checker, Console Make targets, CI wiring, and
+  the explicit opt-in OIDC/Keycloak browser smoke. The smoke uses a loopback API
+  without CORS so successful browser API traffic proves the BFF boundary.
+
+Validation:
+
+- `make console-check`: passed lint, Next typegen plus TypeScript typecheck,
+  101/101 Vitest tests in 17 files, contracts/SDK builds, optimized Next build,
+  and the production checker over 181 deployable artifacts.
+- Focused adversarial tests passed for callback rotation without the Strict
+  cookie, old stolen-session revocation, replacement creation, state replay,
+  callback/login failure, 2,048 stale sibling transactions, capacity, BFF
+  request/response bounds, and synchronous request-coordinator errors.
+- A scratch production Next server plus headless Playwright probe passed opaque
+  Strict `HttpOnly` session creation, credential-free session JSON,
+  Origin/CSRF/allowlist rejection, skip-link focus, fixture-free render, and
+  zero direct browser requests to the API origin. The exact listener was
+  stopped and port 3110 was verified clear. `npx playwright test --list`
+  enumerated 10 tests across 4 files without collection errors.
+- `node --check scripts/dev/live_console_oidc_smoke.mjs` passed and its default
+  invocation skipped safely because opt-in was disabled. This is not enabled
+  live-smoke evidence.
+- The traceability and worklog gates were run with `PYTHONPATH` pinned to this
+  worktree's `apps/api/src`; the imported `hallu_defense` path was checked
+  before trusting the shared root virtual environment.
+- `scripts/ci/secret_scan.py` no longer reported the Console redaction fixture
+  after neutral test-only naming, but the repository-wide command remains red
+  on two pre-existing fixtures outside this front:
+  `apps/api/tests/test_auth.py` and
+  `packages/agent-adapters/tests/agent-adapters.test.ts`.
+- Two independent read-only Codex audits found the sibling-session CAS race,
+  pre-discovery binding race, synchronous coordinator pin, stale 5xx E2E
+  expectation, accessibility evidence gap, and missing BFF negative tests.
+  Every reproducible finding was corrected; both reaudits reported no remaining
+  in-scope bypass. `git diff --check` was repeated after documentation.
+
+Remaining risks:
+
+- The prior enabled Docker/Keycloak smoke was interrupted and is invalid; it is
+  not claimed. Docker later answered `version`, but exact scratch-project
+  inspection and `docker compose -p hallu-console-e-20260711 down -v
+  --remove-orphans` both timed out against the daemon. Root integration must
+  recheck that exact label/project and run the enabled live lane on a healthy
+  daemon; no new Docker run was started during this correction. The three
+  hung `docker.exe` clients whose command lines contained that exact Front E
+  project name were terminated and a process-level recheck found none left;
+  container/volume absence could not be queried from the unresponsive daemon.
+- Multi-replica deployment requires a shared atomic transaction/session/rate
+  store. In particular, one-time transaction consumption and prior-session
+  compare-and-swap rotation must be atomic across replicas; process-local maps
+  are intentionally limited to a single Console process.
+- Root integration dependency E/F: the approval E2E uses the literal synthetic
+  fixture `e2e-redaction-sensitive-value` only to prove API/UI redaction. Front F
+  secret policy must recognize that test fixture without deleting or weakening
+  its assertion, and root must reconcile any scanner allowlist deterministically.
+- The Docker-backed full Playwright suite, enabled Keycloak browser smoke, and
+  remote workflow execution remain integration evidence. No requirement row is
+  marked `accepted`, and this entry does not claim global closure.

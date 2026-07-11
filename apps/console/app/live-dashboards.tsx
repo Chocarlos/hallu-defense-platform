@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Database, History, RefreshCw, Upload } from "lucide-react";
 
 import type {
@@ -10,13 +10,16 @@ import type {
   EvalReport,
   VerificationRunSummary
 } from "@hallu-defense/contracts";
-import { HalluDefenseClient } from "@hallu-defense/sdk";
+import { safeConsoleApiError } from "../lib/api-error";
+import type { ConsoleApiClientFactory } from "../lib/console-client";
+import { createRequestCoordinator } from "../lib/request-coordinator";
 
 interface LiveDashboardsProps {
-  readonly client: HalluDefenseClient;
+  readonly createClient: ConsoleApiClientFactory;
   readonly roles: readonly string[];
   readonly historyRevision: number;
   readonly onUseReplayTrace: (traceId: string) => void;
+  readonly onUnauthorized: () => void;
 }
 
 type LoadState = "loading" | "ready" | "error";
@@ -39,11 +42,13 @@ const emptyLoading = <T,>(): ResourceState<T> => ({
 });
 
 export function LiveDashboards({
-  client,
+  createClient,
   roles,
   historyRevision,
-  onUseReplayTrace
+  onUseReplayTrace,
+  onUnauthorized
 }: LiveDashboardsProps) {
+  const coordinator = useMemo(() => createRequestCoordinator(), []);
   const [history, setHistory] = useState<ResourceState<VerificationRunSummary>>(
     emptyLoading
   );
@@ -64,58 +69,61 @@ export function LiveDashboards({
   const canWriteRag = roles.includes("rag_writer");
 
   useEffect(() => {
-    let active = true;
+    return () => coordinator.abortAll();
+  }, [coordinator]);
+
+  useEffect(() => {
     setHistory(emptyLoading());
     setHistoryCursor(null);
-    void client
-      .listVerificationRuns({ limit: 20 })
-      .then((response) => {
-        if (active) {
+    void coordinator
+      .run("history", `first:${historyRevision}`, (signal) =>
+        createClient(signal).listVerificationRuns({ limit: 20 })
+      )
+      .then((result) => {
+        if (result.kind === "current") {
+          const response = result.value;
           setHistory({ status: "ready", values: newestRuns(response.runs), error: null });
           setHistoryCursor(response.next_cursor);
         }
       })
       .catch((error: unknown) => {
-        if (active) {
-          setHistory({
-            status: "error",
-            values: [],
-            error: errorMessage(error, "No se pudo cargar el historial de runs.")
-          });
-        }
+        setHistory({
+          status: "error",
+          values: [],
+          error: apiError(error, "No se pudo cargar el historial de runs.", onUnauthorized)
+        });
       });
-    return () => {
-      active = false;
-    };
-  }, [client, historyRevision]);
+    return () => coordinator.abort("history");
+  }, [coordinator, createClient, historyRevision, onUnauthorized]);
 
   useEffect(() => {
-    let active = true;
     setGrants(emptyLoading());
     setGrantCursor(null);
-    void client
-      .listCorpusGrants({ limit: 50, include_disabled: true })
-      .then((response) => {
-        if (active) {
+    void coordinator
+      .run("grants", "first", (signal) =>
+        createClient(signal).listCorpusGrants({ limit: 50, include_disabled: true })
+      )
+      .then((result) => {
+        if (result.kind === "current") {
+          const response = result.value;
           setGrants({ status: "ready", values: newestGrants(response.grants), error: null });
           setGrantCursor(response.next_cursor ?? null);
         }
       })
       .catch((error: unknown) => {
-        if (active) {
-          setGrants({
-            status: "error",
-            values: [],
-            error: errorMessage(error, "No se pudieron cargar los grants de corpus.")
-          });
-        }
+        setGrants({
+          status: "error",
+          values: [],
+          error: apiError(error, "No se pudieron cargar los grants de corpus.", onUnauthorized)
+        });
       });
 
     setEvalReports(emptyLoading());
-    void client
-      .listEvalReports({ limit: 50 })
-      .then((response) => {
-        if (active) {
+    void coordinator
+      .run("evals", "first", (signal) => createClient(signal).listEvalReports({ limit: 50 }))
+      .then((result) => {
+        if (result.kind === "current") {
+          const response = result.value;
           setEvalReports({
             status: "ready",
             values: newestEvalReports(response.reports),
@@ -124,31 +132,36 @@ export function LiveDashboards({
         }
       })
       .catch((error: unknown) => {
-        if (active) {
-          setEvalReports({
-            status: "error",
-            values: [],
-            error: errorMessage(error, "No se pudieron cargar los reportes de eval.")
-          });
-        }
+        setEvalReports({
+          status: "error",
+          values: [],
+          error: apiError(error, "No se pudieron cargar los reportes de eval.", onUnauthorized)
+        });
       });
     return () => {
-      active = false;
+      coordinator.abort("grants");
+      coordinator.abort("evals");
     };
-  }, [client]);
+  }, [coordinator, createClient, onUnauthorized]);
 
   async function refreshHistory() {
     setHistory((current) => ({ ...current, status: "loading", error: null }));
     setHistoryCursor(null);
     try {
-      const response = await client.listVerificationRuns({ limit: 20 });
+      const result = await coordinator.run("history", `first:${historyRevision}`, (signal) =>
+        createClient(signal).listVerificationRuns({ limit: 20 })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setHistory({ status: "ready", values: newestRuns(response.runs), error: null });
       setHistoryCursor(response.next_cursor);
     } catch (error) {
       setHistory((current) => ({
         ...current,
         status: "error",
-        error: errorMessage(error, "No se pudo cargar el historial de runs.")
+        error: apiError(error, "No se pudo cargar el historial de runs.", onUnauthorized)
       }));
     }
   }
@@ -159,7 +172,14 @@ export function LiveDashboards({
     }
     setHistory((current) => ({ ...current, status: "loading", error: null }));
     try {
-      const response = await client.listVerificationRuns({ limit: 20, cursor: historyCursor });
+      const cursor = historyCursor;
+      const result = await coordinator.run("history", `cursor:${cursor}`, (signal) =>
+        createClient(signal).listVerificationRuns({ limit: 20, cursor })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setHistory((current) => ({
         status: "ready",
         values: mergeRuns(current.values, response.runs),
@@ -170,7 +190,7 @@ export function LiveDashboards({
       setHistory((current) => ({
         ...current,
         status: "error",
-        error: errorMessage(error, "No se pudo cargar la siguiente pagina de runs.")
+        error: apiError(error, "No se pudo cargar la siguiente pagina de runs.", onUnauthorized)
       }));
     }
   }
@@ -179,14 +199,20 @@ export function LiveDashboards({
     setGrants((current) => ({ ...current, status: "loading", error: null }));
     setGrantCursor(null);
     try {
-      const response = await client.listCorpusGrants({ limit: 50, include_disabled: true });
+      const result = await coordinator.run("grants", "first", (signal) =>
+        createClient(signal).listCorpusGrants({ limit: 50, include_disabled: true })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setGrants({ status: "ready", values: newestGrants(response.grants), error: null });
       setGrantCursor(response.next_cursor ?? null);
     } catch (error) {
       setGrants((current) => ({
         ...current,
         status: "error",
-        error: errorMessage(error, "No se pudieron cargar los grants de corpus.")
+        error: apiError(error, "No se pudieron cargar los grants de corpus.", onUnauthorized)
       }));
     }
   }
@@ -197,11 +223,18 @@ export function LiveDashboards({
     }
     setGrants((current) => ({ ...current, status: "loading", error: null }));
     try {
-      const response = await client.listCorpusGrants({
-        limit: 50,
-        include_disabled: true,
-        cursor: grantCursor
-      });
+      const cursor = grantCursor;
+      const result = await coordinator.run("grants", `cursor:${cursor}`, (signal) =>
+        createClient(signal).listCorpusGrants({
+          limit: 50,
+          include_disabled: true,
+          cursor
+        })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setGrants((current) => ({
         status: "ready",
         values: mergeGrants(current.values, response.grants),
@@ -212,7 +245,7 @@ export function LiveDashboards({
       setGrants((current) => ({
         ...current,
         status: "error",
-        error: errorMessage(error, "No se pudo cargar la siguiente pagina de grants.")
+        error: apiError(error, "No se pudo cargar la siguiente pagina de grants.", onUnauthorized)
       }));
     }
   }
@@ -220,7 +253,13 @@ export function LiveDashboards({
   async function refreshEvalReports() {
     setEvalReports((current) => ({ ...current, status: "loading", error: null }));
     try {
-      const response = await client.listEvalReports({ limit: 50 });
+      const result = await coordinator.run("evals", "first", (signal) =>
+        createClient(signal).listEvalReports({ limit: 50 })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setEvalReports({
         status: "ready",
         values: newestEvalReports(response.reports),
@@ -230,7 +269,7 @@ export function LiveDashboards({
       setEvalReports((current) => ({
         ...current,
         status: "error",
-        error: errorMessage(error, "No se pudieron cargar los reportes de eval.")
+        error: apiError(error, "No se pudieron cargar los reportes de eval.", onUnauthorized)
       }));
     }
   }
@@ -252,12 +291,18 @@ export function LiveDashboards({
     setCorpusMutation("grant");
     setCorpusMessage(null);
     try {
-      const response = await client.upsertCorpusGrant({
-        corpus_id: normalizedCorpusId,
-        reader_roles: [],
-        writer_roles: [],
-        expected_version: 0
-      });
+      const result = await coordinator.run("grant-mutation", normalizedCorpusId, (signal) =>
+        createClient(signal).upsertCorpusGrant({
+          corpus_id: normalizedCorpusId,
+          reader_roles: [],
+          writer_roles: [],
+          expected_version: 0
+        })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setCorpusMessage({
         kind: "status",
         text: `Grant ${safeText(response.grant.corpus_id)} registrado en version ${response.grant.version}.`
@@ -266,7 +311,7 @@ export function LiveDashboards({
     } catch (error) {
       setCorpusMessage({
         kind: "error",
-        text: errorMessage(error, "No se pudo registrar el grant de corpus.")
+        text: apiError(error, "No se pudo registrar el grant de corpus.", onUnauthorized)
       });
     } finally {
       setCorpusMutation(null);
@@ -290,21 +335,30 @@ export function LiveDashboards({
     setIngestion(null);
     setIngestionStatus(null);
     try {
-      const response = await client.ingestDocuments({
-        corpus_id: normalizedCorpusId,
-        documents: [
-          {
-            source_ref: normalizedSourceRef,
-            content: documentText,
-            authority: "internal"
-          }
-        ]
-      });
+      const result = await coordinator.run(
+        "ingest-mutation",
+        `${normalizedCorpusId}\0${normalizedSourceRef}\0${documentText}`,
+        (signal) =>
+          createClient(signal).ingestDocuments({
+            corpus_id: normalizedCorpusId,
+            documents: [
+              {
+                source_ref: normalizedSourceRef,
+                content: documentText,
+                authority: "internal"
+              }
+            ]
+          })
+      );
+      if (result.kind === "superseded") {
+        return;
+      }
+      const response = result.value;
       setIngestion(response);
     } catch (error) {
       setCorpusMessage({
         kind: "error",
-        text: errorMessage(error, "No se pudo ejecutar la ingesta documental.")
+        text: apiError(error, "No se pudo ejecutar la ingesta documental.", onUnauthorized)
       });
     } finally {
       setCorpusMutation(null);
@@ -318,13 +372,17 @@ export function LiveDashboards({
     setCorpusMutation("status");
     setCorpusMessage(null);
     try {
-      setIngestionStatus(
-        await client.getDocumentIngestionStatus({ job_id: ingestion.job_id })
+      const jobId = ingestion.job_id;
+      const result = await coordinator.run("ingestion-status", jobId, (signal) =>
+        createClient(signal).getDocumentIngestionStatus({ job_id: jobId })
       );
+      if (result.kind === "current") {
+        setIngestionStatus(result.value);
+      }
     } catch (error) {
       setCorpusMessage({
         kind: "error",
-        text: errorMessage(error, "No se pudo actualizar el estado de la ingesta.")
+        text: apiError(error, "No se pudo actualizar el estado de la ingesta.", onUnauthorized)
       });
     } finally {
       setCorpusMutation(null);
@@ -350,8 +408,8 @@ export function LiveDashboards({
         />
         {history.values.length > 0 ? (
           <ul className="ledger-list live-list">
-            {history.values.map((item, index) => (
-              <li key={`${item.trace_id}-${item.created_at}-${index}`}>
+            {history.values.map((item) => (
+              <li key={item.trace_id}>
                 <span className="row-title">{safeText(item.trace_id)}</span>
                 <span className={`badge badge-${item.final_decision}`}>
                   {item.final_decision}
@@ -398,7 +456,7 @@ export function LiveDashboards({
         {grants.values.length > 0 ? (
           <ul className="ledger-list live-list corpus-grant-list">
             {grants.values.map((grant) => (
-              <li key={`${grant.corpus_id}-${grant.version}`}>
+              <li key={grant.corpus_id}>
                 <span className="row-title">{safeText(grant.corpus_id)}</span>
                 <span className={grant.disabled_at === null || grant.disabled_at === undefined ? "badge badge-allow" : "badge badge-rejected"}>
                   {grant.disabled_at === null || grant.disabled_at === undefined
@@ -509,8 +567,8 @@ export function LiveDashboards({
             ) : null}
             {ingestion.warnings.length > 0 ? (
               <ul className="tag-list">
-                {ingestion.warnings.map((warning, index) => (
-                  <li key={`${index}-${warning}`}>{safeText(warning)}</li>
+                {[...new Set(ingestion.warnings)].map((warning) => (
+                  <li key={warning}>{safeText(warning)}</li>
                 ))}
               </ul>
             ) : null}
@@ -649,34 +707,81 @@ function ResourceStatus({
 }
 
 export function newestRuns(values: readonly VerificationRunSummary[]): readonly VerificationRunSummary[] {
-  return [...values].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
+  const byTrace = new Map<string, VerificationRunSummary>();
+  for (const value of values) {
+    const current = byTrace.get(value.trace_id);
+    if (current === undefined || timestamp(value.created_at) > timestamp(current.created_at)) {
+      byTrace.set(value.trace_id, value);
+    }
+  }
+  return [...byTrace.values()].sort(
+    (left, right) => timestamp(right.created_at) - timestamp(left.created_at)
+  );
 }
 
 export function newestGrants(values: readonly CorpusGrant[]): readonly CorpusGrant[] {
-  return [...values].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+  const byCorpus = new Map<string, CorpusGrant>();
+  for (const value of values) {
+    const current = byCorpus.get(value.corpus_id);
+    if (
+      current === undefined ||
+      value.version > current.version ||
+      (value.version === current.version &&
+        timestamp(value.updated_at) > timestamp(current.updated_at))
+    ) {
+      byCorpus.set(value.corpus_id, value);
+    }
+  }
+  return [...byCorpus.values()].sort(
+    (left, right) => timestamp(right.updated_at) - timestamp(left.updated_at)
+  );
 }
 
 export function newestEvalReports(values: readonly EvalReport[]): readonly EvalReport[] {
-  return [...values].sort((left, right) => Date.parse(right.published_at) - Date.parse(left.published_at));
+  const byReport = new Map<string, EvalReport>();
+  for (const value of values) {
+    const current = byReport.get(value.report_id);
+    if (
+      current === undefined ||
+      timestamp(value.published_at) > timestamp(current.published_at)
+    ) {
+      byReport.set(value.report_id, value);
+    }
+  }
+  return [...byReport.values()].sort(
+    (left, right) => timestamp(right.published_at) - timestamp(left.published_at)
+  );
 }
 
-function mergeRuns(
+export function mergeRuns(
   current: readonly VerificationRunSummary[],
   next: readonly VerificationRunSummary[]
 ): readonly VerificationRunSummary[] {
   return newestRuns([...current, ...next]);
 }
 
-function mergeGrants(current: readonly CorpusGrant[], next: readonly CorpusGrant[]): readonly CorpusGrant[] {
-  const byKey = new Map(current.map((item) => [item.corpus_id, item]));
-  for (const item of next) {
-    byKey.set(item.corpus_id, item);
-  }
-  return newestGrants([...byKey.values()]);
+export function mergeGrants(current: readonly CorpusGrant[], next: readonly CorpusGrant[]): readonly CorpusGrant[] {
+  return newestGrants([...current, ...next]);
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+export function mergeEvalReports(
+  current: readonly EvalReport[],
+  next: readonly EvalReport[]
+): readonly EvalReport[] {
+  return newestEvalReports([...current, ...next]);
+}
+
+function apiError(
+  error: unknown,
+  fallback: string,
+  onUnauthorized: () => void
+): string {
+  return safeConsoleApiError(error, fallback, onUnauthorized).message;
+}
+
+function timestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 function formatRoles(roles: readonly string[]): string {
