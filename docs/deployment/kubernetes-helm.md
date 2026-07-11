@@ -10,6 +10,16 @@ and console/API endpoint values default empty and are enforced with Helm
 `required` calls. The kind overlay keeps production transport validation enabled
 without weakening `HALLU_DEFENSE_ENV=production`.
 
+`values.schema.json` is JSON Schema Draft 7 and is intentionally closed: every
+top-level key is required, every object shape sets `additionalProperties=false`,
+and critical replicas, ports, commands, timeouts, quantities, URLs, CIDRs, image
+references, and Secret keys have explicit types and bounds. Misspelled or
+unknown keys therefore fail `helm lint`, `helm template`, install, and upgrade
+instead of being silently ignored. The worker contract is pinned to enabled,
+one-or-more bounded replicas, the production command, metrics port 9090, and a
+bounded `setupGraceSeconds`; the migration count and checksum inventory are
+also immutable chart inputs.
+
 The API receives only the logical approval commitment secret name
 `approvals/tool-call-commitment-key`. Production operators must provision that
 Vault path with at least 32 bytes of random key material before rollout; the
@@ -74,12 +84,22 @@ and the unused ingest-geoip module and is loaded as
 `hallu-defense-opensearch:ci`. Regular CI validates this inventory, and the
 security workflow scans the resulting runtime images with Trivy.
 
+The live smoke overrides each `:ci` fixture reference with one exact
+`:kind-<run-id>` scratch tag. The chart permits only the five expected local
+repositories with `:ci` or that bounded scratch-tag form; arbitrary registries,
+repositories, or mutable tags fail rendering.
+Kind pins both local-image pull policies to `IfNotPresent`; `Always` is rejected
+so a node cannot replace a locally loaded scratch tag from a remote registry.
+The Vault and Redis fixtures remain fixed to their exact verified third-party
+digests and cannot be overridden by the Kind overlay.
+
 The test-only env `HALLU_DEFENSE_SANDBOX_KUBERNETES_KIND_LOCAL_IMAGE=true` is
 emitted exclusively when `kindDependencies.enabled=true` and accepts only the
-exact locally loaded `hallu-defense-sandbox:ci` image. It is absent from base
-production values and `docker-compose.prod.yml`; any other mutable reference is
-rejected even when the flag is set, and non-Kubernetes backends reject the flag
-instead of ignoring it.
+exact local `hallu-defense-sandbox:ci` reference or the smoke-owned
+`hallu-defense-sandbox:kind-<run-id>` tag. It is absent from base production
+values and `docker-compose.prod.yml`; any other mutable reference is rejected
+even when the flag is set, and non-Kubernetes backends reject the flag instead
+of ignoring it.
 
 The API image packages the migration applier, OpenSearch schema bootstrap,
 `infra/rag/pgvector/*.sql`, the versioned OpenSearch template, OPA, and its policy
@@ -92,7 +112,10 @@ init containers reference absent runtime files.
 The revision-scoped migration Job first waits for PostgreSQL and then applies
 all fourteen schema migrations, including `011_rag_lifecycle_outbox.sql`,
 `012_rag_tenant_deletion_fence.sql`, and `013_audit_history_integrity.sql`. API
-and worker pods wait for the migration ledger before starting. A mandatory
+and worker pods wait for the migration ledger before starting. `values.yaml`
+records the canonical SHA-256 of the UTF-8 SQL text for every migration, and the
+static/live gates require the exact fourteen `(filename, checksum)` pairs with
+no null, missing, extra, or drifted entry. A mandatory
 `bootstrap-opensearch-schema` init container then installs and reads back the v3
 index template under the pinned `opensearch-bootstrap` runtime role. That role
 receives only the outbound allowlist, SecretManager/Vault token and CA, exact
@@ -107,6 +130,9 @@ stays false until its PostgreSQL, JWKS, Vault, provider, and persistent RAG
 dependencies are ready. The v3 template requires one replica. The single-node
 Kind fixture accepts `green` or `yellow` cluster health with at least one data
 node; staging and production require `green` health with at least two data nodes.
+Worker readiness uses the bounded `worker.setupGraceSeconds` initial delay;
+liveness adds ten seconds to the same grace. The Deployment progress deadline
+also includes that grace after the migration wait budget.
 
 PostgreSQL privilege is split across two precreated Secret objects. API, worker,
 and their readiness init containers mount only
@@ -134,7 +160,7 @@ with a CA. Kind may use the same ephemeral superuser URL behind the two distinct
 Secret identities; this is not a production privilege claim.
 
 The kind pgvector StatefulSet uses
-`PGDATA=/var/lib/postgresql/data/pgdata`, below the PVC mount root, so uid 999
+`PGDATA=/var/lib/postgresql/data/pgdata`, below the PVC mount root, so uid 70
 does not need to chmod the local-path mount itself. The core-only Kind
 OpenSearch fixture has no security-plugin admin credential, password Secret, or
 password value. Its HTTP endpoint remains reachable only inside the disposable
@@ -301,6 +327,16 @@ accounts, storage views, and tenant IDs. See
 [`kubernetes-sandbox-jobs.md`](kubernetes-sandbox-jobs.md) for the complete
 runtime and admission contract.
 
+`sandbox.cleanupGraceSeconds` defaults to 10 seconds and is schema-bounded from
+1 through 120. For the Kubernetes backend the chart maps it only into the API
+container as
+`HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS`; it is distinct from
+the Docker timeout grace. The runtime integration must consume that variable as
+`sandbox_kubernetes_cleanup_grace_seconds` and use it as a post-`DELETE`
+convergence deadline: the exact created Job must be absent and no Pod may retain
+an `ownerReferences[].uid` equal to that Job UID. Absence by label or Job name
+alone is not sufficient cleanup evidence.
+
 ## Static validation
 
 `scripts/ci/check_helm_chart.py` enforces:
@@ -324,6 +360,15 @@ runtime and admission contract.
 - production-disabled kind fixtures plus an explicit `values-kind.yaml` test
   overlay.
 
+The Kind fixture preparation Job carries the Helm revision label on both Job
+and Pod, writes an ephemeral readiness marker only after the Git repository and
+all fixture files exist on the isolated scratch workspace, exposes a
+`readinessProbe` that rechecks those files, and remains Running for the bounded
+setup grace (minimum five seconds, default fifteen). The live gate must observe
+the exact revision-owned Pod, its `prepare-sandbox-fixture` container, and the
+installed readiness probe in `Ready=True` with zero restarts before it accepts
+Job completion.
+
 Run the static check:
 
 ```text
@@ -332,26 +377,49 @@ python scripts/ci/check_helm_chart.py
 
 With Helm installed, the checker runs `helm lint` and renders both kind and
 synthetic production values. It also renders negative configurations and
-requires mutable images, missing claims or CAs, production-created PVCs,
-fixtures, and namespace identity collisions to fail.
+requires unknown/typo keys, invalid types, out-of-range replicas/ports/timeouts,
+disabled required workers/dependency fixtures, arbitrary mutable images,
+missing claims or CAs, production-created PVCs, fixtures, overlong release
+names, and namespace identity collisions to fail.
+Regular CI and the security workflow install checksum-pinned Helm 4.2.2 before
+the API tests/checker, so these Helm and negative-value gates cannot silently
+degrade to the local no-Helm skip path.
 
 ## Live kind validation
 
 `scripts/dev/live_kind_helm_smoke.py` is env-gated and skip-safe only while it is
 disabled. Once `HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED=true`, missing
-`docker`, `kind`, `kubectl`, or `helm` is a failure. It builds and loads API,
-console, sandbox, hardened pgvector, and core-only OpenSearch images. It creates
+`docker`, `kind`, `kubectl`, or `helm` is a failure. Each execution derives a
+DNS-safe run ID, a unique `hallu-defense-smoke-<run-id>` cluster, and five exact
+`:kind-<run-id>` image tags. An explicit run ID is available for CI auditability.
+The smoke refuses to overwrite a pre-existing scratch tag. It builds and loads
+API, console, sandbox, hardened pgvector, and core-only OpenSearch images. It creates
 Kind 0.32.0 with its default kindnet CNI left enabled and pins the Kubernetes
 1.36.1 node image to
 `kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5`.
 `HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE`, when set, must equal that exact reference;
 tag-only or different-digest overrides fail closed. No external CNI manifest is
 downloaded or applied. Non-amd64 Docker servers fail before cluster creation.
+Kind writes only to a kubeconfig inside the smoke's temporary directory; every
+kubectl and cluster-facing Helm command names that file and the exact context,
+so concurrent executions do not mutate the user's global kubeconfig.
 The smoke server-side dry-runs the rendered VAP on a clean control plane and
 waits for all nodes to become Ready before loading images. CEL/schema or native
 network failures therefore stop before Helm rendering. It lets the node pull
-each external dependency by its exact digest before performing
-`helm upgrade --install --rollback-on-failure --wait --wait-for-jobs`, verifying
+each external dependency by its exact digest before performing an initial
+`helm upgrade --install`. Custom revision-scoped waits first observe the fixture
+Pod Ready, then require the revision-1 fixture, migration, and Vault bootstrap
+Jobs to complete and all rollouts to converge. The three 600-second-TTL Jobs are
+polled as one revision set; once completion is observed a finished component is
+not queried again, so an early completion cannot disappear before a later Job
+is checked. It then performs a second real
+`helm upgrade` with only the one-shot fixture disabled, requires the revision-2
+migration and Vault bootstrap Jobs plus rollouts, and captures the revision-2
+migration Pod status and bounded logs immediately when that Job completes,
+before any rollout wait. It reads Helm history back as
+revision 1 `superseded` and revision 2 `deployed`. This verifies idempotent
+upgrade behavior without asking Helm itself to create a second fixture Job
+through the active sandbox admission boundary. The remaining checks verify
 migrations, OpenSearch schema v3 provisioning/readback, its one-replica setting,
 `green|yellow` Kind health with at least one data node, rollouts, worker hybrid
 readiness, and `/health` plus `/ready` against the deployed API.
@@ -362,7 +430,12 @@ HTTP 200.
 
 The smoke authenticates `/repo/checks/run` with an ephemeral signed OIDC token
 and verifies stdout, stderr, exit code, artifact export, path-escape rejection,
-timeout cleanup, and zero residual Jobs. It server-side dry-runs the exact
+and timeout cleanup. During the timeout request one foreground in-Pod observer
+captures the new Pod's controller Job name and UID, joins the HTTP request, and
+uses the bounded cleanup grace to require both an exact-Job 404 and zero Pods
+whose `ownerReferences[].uid` matches that UID. Final label inventories must
+also contain zero sandbox Jobs and zero sandbox Pods; a Jobs-only empty result
+cannot pass. It server-side dry-runs the exact
 backend Job through the real admission policy and proves malicious variants are
 denied with server-side dry-runs, so no intentionally malicious pod is ever
 started. It also verifies Redis through Vault, TLS, and the managed CA, proves an
@@ -376,7 +449,8 @@ both bootstrap Jobs complete, every long-running workload Pod as Running/Ready
 with zero restarts, successful non-revealing reads of both projected runtime
 files inside API and worker, the migration Job's successful consumption of its
 separate projected DSN with zero migration-container restarts, the VAP observed
-generation and ten malicious-Job denials, migrations, schema, and network
+generation and fifteen malicious-Job denials (including lifecycle and all probe
+execution hooks), migrations, schema, and network
 evidence.
 The smoke also updates the precreated runtime Secret through stdin with
 server-side apply (so no client-side last-applied secret annotation is stored),
@@ -384,7 +458,9 @@ waits for the API projection to change, and proves `load_settings` preserves the
 path while `VaultSecretManager` observes the rotated token fingerprint. It then
 restores the original token, proves that revision visible again, and rechecks
 all workload Pods with zero restarts; raw token bytes are never printed or
-passed through Helm values/history.
+passed through Helm values/history. The smoke reads the manifest and complete
+values for both revisions and rejects any rendered Secret object, raw DSN,
+private key, sensitive value field, or changed precreated-Secret reference.
 Inside the same API Pod, a lifecycle probe writes one real hybrid evidence row,
 executes coordinated tenant deletion, and requires a completed journal entry,
 one durable `rag_tenant_deletion_tombstones` row, and exact zero counts in both
@@ -392,17 +468,26 @@ PostgreSQL and OpenSearch. Reingesting the deleted tenant must raise
 `RagIndexTenantDeletedError`; the probe then rechecks both stores at zero, which
 proves the rejection occurred before an OpenSearch write and that the SQL fence
 remained authoritative.
-Cleanup is successful only after `kind delete` succeeds and a second cluster
-inventory proves the temporary cluster absent; cleanup failure does not mask a
-primary smoke failure.
+Cleanup is successful only after `kind delete` succeeds, a fresh inventory
+proves the exact owned cluster absent, every exact scratch image tag is removed,
+and subsequent image inspection proves all five absent. Baseline and post-run
+inventories are recorded as evidence, but unrelated concurrent cluster changes
+are not mistaken for this run's cleanup responsibility. A failed `kind create`
+never authorizes deletion of a cluster it did not establish. Cleanup removes no
+Docker volume, performs no prune, and never touches the repository's primary
+services or data. Cleanup failure does not mask a primary smoke failure, and
+diagnostics redact signed tokens, credential-bearing URLs, sensitive
+assignments, and private keys.
 
 The smoke does not call the synthetic provider endpoint; end-to-end provider
 connectivity remains covered by the separate live provider smoke.
 
 The `kind-helm-live` workflow installs kind 0.32.0, Helm 4.2.2, and kubectl
-1.36.1 with checksum verification. Helm 4 uses `--rollback-on-failure` instead
-of the deprecated `--atomic`. The smoke uses a digest-pinned Kubernetes
-1.36.1 kind node and runs on `workflow_dispatch` and the weekly schedule. Kind
+1.36.1 with checksum verification. It supplies a GitHub-run/attempt-derived
+scratch ID and has an `always()` teardown that targets only that exact cluster
+and those exact five image tags, then verifies their absence. The smoke uses a
+digest-pinned Kubernetes 1.36.1 kind node and runs on `workflow_dispatch` and
+the weekly schedule. Kind
 is CI infrastructure for this live lane, not a production workload or deployed
 runtime image. The lane does not run on every push because the static chart gate
 remains in regular CI.

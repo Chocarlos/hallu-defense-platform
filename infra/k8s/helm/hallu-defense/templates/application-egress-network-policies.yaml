@@ -5,6 +5,21 @@
 {{- fail "ragIndex.timeoutSeconds must be positive" }}
 {{- end }}
 {{- if .Values.kindDependencies.enabled }}
+{{- if not (and .Values.kindDependencies.vault.enabled .Values.kindDependencies.pgvector.enabled .Values.kindDependencies.opensearch.enabled .Values.kindDependencies.redis.enabled) }}
+{{- fail "kindDependencies.enabled=true requires vault, pgvector, opensearch, and redis fixtures" }}
+{{- end }}
+{{- if ne .Values.global.imagePullPolicy "IfNotPresent" }}
+{{- fail "kindDependencies.enabled=true requires global.imagePullPolicy=IfNotPresent for locally loaded images" }}
+{{- end }}
+{{- if ne .Values.sandbox.image.pullPolicy "IfNotPresent" }}
+{{- fail "kindDependencies.enabled=true requires sandbox.image.pullPolicy=IfNotPresent for the locally loaded sandbox image" }}
+{{- end }}
+{{- if ne .Values.kindDependencies.vault.image "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54" }}
+{{- fail "kindDependencies.vault.image must remain the exact verified digest" }}
+{{- end }}
+{{- if ne .Values.kindDependencies.redis.image "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" }}
+{{- fail "kindDependencies.redis.image must remain the exact verified digest" }}
+{{- end }}
 {{- if not .Values.kindDependencies.opensearch.enabled }}
 {{- fail "kind hybrid RAG requires kindDependencies.opensearch.enabled=true" }}
 {{- end }}
@@ -73,7 +88,7 @@
 {{- fail (printf "%s[].namespace must be $release or a valid Kubernetes DNS label" $group.path) -}}
 {{- end }}
 {{- $labelKey := required (printf "%s[].podLabelKey is required" $group.path) $peer.podLabelKey | trim -}}
-{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9./_-]*[A-Za-z0-9]$" $labelKey) -}}
+{{- if not (regexMatch "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $labelKey) -}}
 {{- fail (printf "%s[].podLabelKey contains invalid characters" $group.path) -}}
 {{- end }}
 {{- $labelValue := required (printf "%s[].podLabelValue is required" $group.path) $peer.podLabelValue | trim -}}

@@ -26,6 +26,21 @@ jobs:
           python scripts/ci/compile_python_locks.py --check
           python scripts/ci/install_python_lock.py dev
           python scripts/ci/check_python_reproducibility.py
+      - name: Install pinned Helm for chart and negative-value gates
+        env:
+          HELM_VERSION: v4.2.2
+          HELM_SHA256: 9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6
+        run: |
+          archive="$RUNNER_TEMP/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          extract_dir="$RUNNER_TEMP/helm-${HELM_VERSION}"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "${HELM_SHA256}" "$archive" | sha256sum --check
+          mkdir -p "$extract_dir"
+          tar -xzf "$archive" -C "$extract_dir"
+          sudo install "$extract_dir/linux-amd64/helm" /usr/local/bin/helm
+          test "$(helm version --short)" = "v4.2.2+gb05881c"
       - name: Lint Python
         run: python -m ruff check apps/api/src apps/api/tests scripts evals
       - name: Typecheck Python

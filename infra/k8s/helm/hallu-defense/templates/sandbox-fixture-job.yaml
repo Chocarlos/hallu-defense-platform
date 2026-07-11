@@ -10,6 +10,7 @@ metadata:
   labels:
     {{- include "hallu-defense.labels" . | nindent 4 }}
     app.kubernetes.io/component: sandbox-fixture
+    hallu-defense.openai.com/release-revision: {{ .Release.Revision | quote }}
 spec:
   backoffLimit: 1
   activeDeadlineSeconds: 120
@@ -20,6 +21,7 @@ spec:
         {{- include "hallu-defense.labels" . | nindent 8 }}
         app.kubernetes.io/component: sandbox-fixture
         hallu-defense.openai.com/network-policy: deny-egress
+        hallu-defense.openai.com/release-revision: {{ .Release.Revision | quote }}
     spec:
       restartPolicy: OnFailure
       automountServiceAccountToken: false
@@ -35,15 +37,21 @@ spec:
           env:
             - name: HALLU_FIXTURE_ROOT
               value: {{ printf "%s/%s" .Values.sandbox.workspace.mountPath .Values.sandbox.fixture.repositoryName | quote }}
+            - name: HALLU_FIXTURE_READY_MARKER
+              value: /run/hallu-fixture/ready
+            - name: HALLU_FIXTURE_READY_HOLD_SECONDS
+              value: {{ .Values.sandbox.setupGraceSeconds | quote }}
           command:
             - python
             - -c
             - |
               import os
               import subprocess
+              import time
               from pathlib import Path
 
               root = Path(os.environ["HALLU_FIXTURE_ROOT"])
+              ready_marker = Path(os.environ["HALLU_FIXTURE_READY_MARKER"])
               root.mkdir(parents=True, exist_ok=True)
               (root / "probe.py").write_text(
                   """from pathlib import Path
@@ -85,9 +93,36 @@ spec:
                   check=True,
                   timeout=10,
               )
+              ready_marker.write_text("ready\n", encoding="utf-8")
+              time.sleep(int(os.environ["HALLU_FIXTURE_READY_HOLD_SECONDS"]))
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os
+                  from pathlib import Path
+
+                  root = Path(os.environ["HALLU_FIXTURE_ROOT"])
+                  marker = Path(os.environ["HALLU_FIXTURE_READY_MARKER"])
+                  ready = (
+                      marker.read_text(encoding="utf-8") == "ready\n"
+                      and (root / ".git").is_dir()
+                      and (root / "probe.py").is_file()
+                      and (root / "timeout.py").is_file()
+                      and (root / "egress.py").is_file()
+                  )
+                  raise SystemExit(0 if ready else 1)
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 30
           volumeMounts:
             - name: workspace
               mountPath: {{ .Values.sandbox.workspace.mountPath | quote }}
+            - name: readiness
+              mountPath: /run/hallu-fixture
           resources:
             requests:
               cpu: 10m
@@ -99,4 +134,7 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: {{ include "hallu-defense.sandboxWorkspaceClaimName" . }}
+        - name: readiness
+          emptyDir:
+            sizeLimit: 1Mi
 {{- end }}

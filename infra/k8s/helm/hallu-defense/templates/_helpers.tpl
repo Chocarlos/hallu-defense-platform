@@ -3,16 +3,21 @@
 {{- end -}}
 
 {{- define "hallu-defense.fullname" -}}
+{{- $fullname := "" -}}
 {{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- $fullname = .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
 {{- $name := include "hallu-defense.name" . -}}
 {{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- $fullname = .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- $fullname = printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
+{{- if gt (len $fullname) 38 -}}
+{{- fail "release-derived fullname must be at most 38 characters so every namespaced resource remains collision-free and within Kubernetes name limits" -}}
+{{- end -}}
+{{- $fullname -}}
 {{- end -}}
 
 {{- define "hallu-defense.labels" -}}
@@ -45,6 +50,15 @@ capabilities:
 {{- $reference := required $message .reference -}}
 {{- if not (regexMatch "^[A-Za-z0-9._/@:+-]+$" $reference) -}}
 {{- fail (printf "%s.image.reference contains invalid characters" .name) -}}
+{{- end -}}
+{{- if .root.Values.kindDependencies.enabled -}}
+{{- $repository := printf "hallu-defense-%s" .name -}}
+{{- if or (eq .name "worker") (eq .name "migrations") -}}
+{{- $repository = "hallu-defense-api" -}}
+{{- end -}}
+{{- if not (regexMatch (printf "^%s:(ci|kind-[a-z0-9][a-z0-9-]{0,31})$" $repository) $reference) -}}
+{{- fail (printf "%s.image.reference must use the exact local kind repository with :ci or a :kind-<run-id> scratch tag" .name) -}}
+{{- end -}}
 {{- end -}}
 {{- if and (not .root.Values.kindDependencies.enabled) (not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $reference)) -}}
 {{- fail (printf "%s.image.reference must use repository@sha256:<64 lowercase hex> outside kind" .name) -}}
@@ -156,8 +170,20 @@ capabilities:
 {{- if not (regexMatch "^[A-Za-z0-9._/@:+-]+$" $reference) -}}
 {{- fail "sandbox.image.reference contains invalid characters" -}}
 {{- end -}}
+{{- if and .Values.kindDependencies.enabled (not (regexMatch "^hallu-defense-sandbox:(ci|kind-[a-z0-9][a-z0-9-]{0,31})$" $reference)) -}}
+{{- fail "sandbox.image.reference must use hallu-defense-sandbox:ci or a :kind-<run-id> scratch tag in kind" -}}
+{{- end -}}
 {{- if and (not .Values.kindDependencies.enabled) (not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $reference)) -}}
 {{- fail "sandbox.image.reference must use repository@sha256:<64 lowercase hex> outside kind" -}}
+{{- end -}}
+{{- $reference -}}
+{{- end -}}
+
+{{- define "hallu-defense.kindDependencyImage" -}}
+{{- $reference := required (printf "kindDependencies.%s.image is required" .name) .reference -}}
+{{- $repository := printf "hallu-defense-%s" .name -}}
+{{- if not (regexMatch (printf "^%s:(ci|kind-[a-z0-9][a-z0-9-]{0,31})$" $repository) $reference) -}}
+{{- fail (printf "kindDependencies.%s.image must use the exact local repository with :ci or a :kind-<run-id> scratch tag" .name) -}}
 {{- end -}}
 {{- $reference -}}
 {{- end -}}
@@ -458,6 +484,8 @@ capabilities:
   value: {{ .Values.sandbox.jobTtlSeconds | quote }}
 - name: HALLU_DEFENSE_SANDBOX_KUBERNETES_API_REQUEST_TIMEOUT_SECONDS
   value: {{ .Values.sandbox.apiRequestTimeoutSeconds | quote }}
+- name: HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS
+  value: {{ .Values.sandbox.cleanupGraceSeconds | quote }}
 - name: HALLU_DEFENSE_SANDBOX_KUBERNETES_SETUP_GRACE_SECONDS
   value: {{ .Values.sandbox.setupGraceSeconds | quote }}
 {{- end }}
