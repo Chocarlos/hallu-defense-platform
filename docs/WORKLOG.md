@@ -6508,3 +6508,98 @@ Remaining risks:
   exceeds the documented 14-minute SQL/900-second Job limits.
 - No requirement is marked `accepted`, and this Front A entry does not declare
   global closure.
+## 2026-07-11 - Front D Helm/Kind fail-closed hardening
+
+Slice selected:
+
+- Resumed the isolated dirty worktree on `codex/sixfront-d-helm-kind` at base
+  `c0ca4c81f1fb6d6dc81da43b7fe7c5cf409000d5`; preserved all prior Front D
+  work and made no merge, push, reset, business-service, Console, Dockerfile,
+  primary-volume, or cross-worktree change.
+- Closed the Helm values, worker, two-revision upgrade, migration-proof,
+  sandbox cleanup, admission, network and secret-history evidence as one
+  deployment slice. No repository-wide closure is claimed.
+
+Implementation:
+
+- Closed `values.schema.json` as Draft 7 across every root/critical object,
+  required every top-level/defaulted field, and bounded types, ports, replicas,
+  commands, URLs, CIDRs, quantities and timeout/grace values. Base and merged
+  Kind values now have explicit positive validation tests; typos, unknown keys,
+  mutable images and dangerous/range/type overrides fail Helm and static gates.
+- Pinned the fourteen migration filenames/checksums plus aggregate, revision
+  labels and semantic 600-second TTL on migration, Vault bootstrap and fixture
+  Jobs. Revision Jobs are polled as a set, reject identity/condition/deadline
+  drift, and capture revision-2 migration Pod/log evidence immediately upon
+  completion before rollout waits and TTL cleanup.
+- Completed the enabled ingestion worker contract: bounded replicas, immutable
+  command, metrics port 9090, setup grace, probes/resources/security contexts,
+  dedicated environment, Service and Prometheus scrape annotations.
+- Made the fixture Job expose a real readiness marker/probe and required the
+  exact revision-owned Pod to be Ready before completion. The smoke performs an
+  install and a second `helm upgrade`, proves history revisions 1/2, checks
+  both revisions for Secret leakage and preserves exact scratch identifiers.
+- Added `sandbox.cleanupGraceSeconds` with default `10`, Draft 7 integer range
+  `1..120`, exact API-only env mapping
+  `HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS`, rendered-profile
+  checks, direct/checker Helm negatives and deployment documentation. It is not
+  leaked into the worker environment.
+- Replaced the Jobs-only sandbox cleanup assertion with one foreground observer
+  that captures the timeout Pod's controller Job name/UID, joins its HTTP
+  thread, then requires two consecutive clean observations of exact Job 404 and
+  zero Pods with that owner UID. Final independent inventories require both
+  zero sandbox Jobs and zero sandbox Pods. The deterministic harness executes
+  the embedded script and covers Job/Pod persistence, late Pod appearance,
+  foreign UID, UID rebind, missing capture, thread error, grace bounds and
+  JWT/service-account-token non-disclosure.
+- Strengthened RBAC, NetworkPolicy, admission, workload readiness, immutable
+  dependency image, Helm secret-history, CI tool pinning and exact scratch
+  cleanup checks. No Docker volume/prune operation was added.
+
+Validation:
+
+- Set `PYTHONPATH` to this worktree's `apps/api/src`; the shared virtualenv
+  reported `hallu_defense.__file__` under
+  `sixfront-d-helm-c0ca4c8/apps/api/src/hallu_defense/__init__.py`.
+- `python -m pytest -q apps/api/tests/test_helm_chart_config.py
+  apps/api/tests/test_live_kind_helm_smoke.py
+  apps/api/tests/test_bootstrap_kind_vault.py`: 264 passed.
+- `python scripts/ci/check_helm_chart.py`: passed; Helm lint, baseline template
+  and all direct checker negatives executed successfully with the installed
+  pinned Helm toolchain.
+- `python -m ruff check scripts/ci/check_helm_chart.py
+  scripts/dev/live_kind_helm_smoke.py apps/api/tests/test_helm_chart_config.py
+  apps/api/tests/test_live_kind_helm_smoke.py`: all checks passed.
+- `values.schema.json` parsed as JSON; Draft 7 schema validation, base/Kind
+  profile validation and all-object `additionalProperties: false` tests passed.
+- `python scripts/ci/check_traceability_matrix.py`: validated 182 requirement
+  rows after refreshing `FND-014` and `CI-029` without promoting either row.
+- `git diff --check`: passed with Windows LF/CRLF informational warnings only.
+- Sequential Docker evidence: server `29.6.1`; `docker ps -a` showed only the
+  existing primary PostgreSQL, MinIO and Vault containers; exact image inventory
+  returned `NO_FRONTD_SCRATCH_IMAGES`; process inventory returned
+  `NO_KIND_KUBECTL_HELM_OR_LIVE_SMOKE_CLIENTS`.
+
+Independent audit:
+
+- Read-only Codex auditors reviewed cleanup UID semantics, cleanup-grace/Front C
+  contract, revision TTL/waits, Helm history, JSON escaping, token/thread safety
+  and final negative coverage. Their reproducible findings were corrected and
+  revalidated. No subagent wrote files.
+- No Claude workflow agent was used (`0`); therefore no Claude model/session
+  attribution applies to this slice.
+
+Remaining risks:
+
+- Enabled local Kind is truthfully pending. `kind get clusters` hung twice in
+  Docker's label-backed inventory path; both clients were terminated and later
+  process/container/image inventories proved no Front D scratch resource or
+  client remained. The live install/upgrade was not reported green.
+- Front C must integrate the chart contract before runtime cleanup-budget
+  enforcement can be claimed: add finite
+  `sandbox_kubernetes_cleanup_grace_seconds=10.0` (`0 < value <= 120`), consume
+  the exact env above, pass it independently to `KubernetesJobBackend`, and
+  after DELETE wait to the monotonic deadline for both exact Job absence and no
+  Pods whose owner UID matches the created Job. Do not reuse Docker grace or
+  accept name/label/Jobs-only evidence.
+- Status remains `tested`, not `accepted`; no global close is claimed.

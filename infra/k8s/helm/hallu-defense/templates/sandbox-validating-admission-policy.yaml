@@ -117,9 +117,13 @@ spec:
           !has(c.securityContext.windowsOptions) &&
           (!has(c.securityContext.appArmorProfile) ||
             c.securityContext.appArmorProfile.type != 'Unconfined') &&
+          !has(c.lifecycle) &&
+          !has(c.startupProbe) &&
+          !has(c.livenessProbe) &&
+          !has(c.readinessProbe) &&
           (!has(c.ports) || c.ports.size() == 0) &&
           (!has(c.volumeDevices) || c.volumeDevices.size() == 0))
-      message: Sandbox containers require the exact pinned image and hardened security context.
+      message: Sandbox containers require the exact pinned image, hardened security context, and no lifecycle or probe execution hooks.
       reason: Forbidden
     - expression: >-
         object.spec.template.spec.containers.all(c,

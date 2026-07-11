@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import io
 import json
+import re
+import ssl
 import subprocess
 import sys
+import threading
+import urllib.error
+import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -24,6 +30,7 @@ class RecordingExecutor:
         self,
         *,
         migration_count: int = smoke.EXPECTED_MIGRATION_COUNT,
+        migration_checksums_valid: bool = True,
         fail_prefix: tuple[str, ...] | None = None,
         missing_network_policy: str | None = None,
         docker_architecture: str = "amd64",
@@ -38,12 +45,25 @@ class RecordingExecutor:
         console_oidc_runtime_valid: bool = True,
         runtime_secret_rotation_visible: bool = True,
         hybrid_lifecycle_valid: bool = True,
+        existing_clusters: tuple[str, ...] = (),
+        existing_images: tuple[str, ...] = (),
+        fixture_ready: bool = True,
+        fixture_probe_valid: bool = True,
+        fixture_owner_valid: bool = True,
+        cleanup_job_absent: bool = True,
+        cleanup_owned_pods: int = 0,
+        cleanup_evidence_override: object | None = None,
+        residual_sandbox_jobs: int = 0,
+        residual_sandbox_pods: int = 0,
+        helm_history_override: object | None = None,
     ) -> None:
         self.commands: list[list[str]] = []
+        self.command_timeouts: list[float] = []
         self.bearer_tokens: list[str] = []
         self.secret_manifests: list[dict[str, object]] = []
         self.kind_config_text: str | None = None
         self.migration_count = migration_count
+        self.migration_checksums_valid = migration_checksums_valid
         self.fail_prefix = fail_prefix
         self.missing_network_policy = missing_network_policy
         self.docker_architecture = docker_architecture
@@ -61,6 +81,17 @@ class RecordingExecutor:
         self.initial_runtime_vault_token: str | None = None
         self.current_runtime_vault_token: str | None = None
         self.network_client_label: str | None = None
+        self.kind_clusters = set(existing_clusters)
+        self.docker_images = set(existing_images)
+        self.fixture_ready = fixture_ready
+        self.fixture_probe_valid = fixture_probe_valid
+        self.fixture_owner_valid = fixture_owner_valid
+        self.cleanup_job_absent = cleanup_job_absent
+        self.cleanup_owned_pods = cleanup_owned_pods
+        self.cleanup_evidence_override = cleanup_evidence_override
+        self.residual_sandbox_jobs = residual_sandbox_jobs
+        self.residual_sandbox_pods = residual_sandbox_pods
+        self.helm_history_override = helm_history_override
 
     def __call__(
         self,
@@ -70,9 +101,9 @@ class RecordingExecutor:
         timeout_seconds: float = 120,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del timeout_seconds
         argv = list(command)
         self.commands.append(argv)
+        self.command_timeouts.append(timeout_seconds)
         if input_text is not None:
             try:
                 input_payload = json.loads(input_text)
@@ -94,6 +125,13 @@ class RecordingExecutor:
                         self.current_runtime_vault_token = supplied
                     elif self.runtime_secret_rotation_visible:
                         self.current_runtime_vault_token = supplied
+        if (
+            self.fail_prefix is not None
+            and tuple(argv[: len(self.fail_prefix)]) == self.fail_prefix
+        ):
+            if check:
+                raise smoke.LiveKindHelmSmokeError("injected command failure")
+            return subprocess.CompletedProcess(argv, 1, "", "injected command failure")
         if argv[:2] == ["docker", "info"]:
             return subprocess.CompletedProcess(
                 argv,
@@ -101,9 +139,30 @@ class RecordingExecutor:
                 f"{self.docker_architecture}\n",
                 "",
             )
+        if argv[:3] == ["docker", "image", "inspect"]:
+            image = argv[3]
+            if image in self.docker_images:
+                return subprocess.CompletedProcess(argv, 0, "sha256:test\n", "")
+            return subprocess.CompletedProcess(argv, 1, "", "No such image")
+        if argv[:3] == ["docker", "image", "rm"]:
+            self.docker_images.discard(argv[3])
+            return subprocess.CompletedProcess(argv, 0, f"Untagged: {argv[3]}\n", "")
+        if argv[:2] == ["docker", "build"]:
+            self.docker_images.add(argv[argv.index("--tag") + 1])
         if argv[:4] == ["kind", "create", "cluster", "--name"]:
             config_path = Path(argv[argv.index("--config") + 1])
             self.kind_config_text = config_path.read_text(encoding="utf-8")
+            self.kind_clusters.add(argv[4])
+        if argv[:3] == ["kind", "delete", "cluster"]:
+            self.kind_clusters.discard(argv[argv.index("--name") + 1])
+            return subprocess.CompletedProcess(argv, 0, "Deleted cluster\n", "")
+        if argv[:3] == ["kind", "get", "clusters"]:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                "\n".join(sorted(self.kind_clusters)) + ("\n" if self.kind_clusters else ""),
+                "",
+            )
         if argv[:2] in (["helm", "lint"], ["helm", "template"], ["helm", "upgrade"]):
             if "--show-only" in argv:
                 return subprocess.CompletedProcess(
@@ -139,16 +198,27 @@ class RecordingExecutor:
                 + "\n",
                 "",
             )
-        if (
-            self.fail_prefix is not None
-            and tuple(argv[: len(self.fail_prefix)]) == self.fail_prefix
-        ):
-            if check:
-                raise smoke.LiveKindHelmSmokeError("injected command failure")
-            return subprocess.CompletedProcess(argv, 1, "", "injected command failure")
-        if "SELECT version FROM schema_migrations ORDER BY version;" in argv:
-            versions = smoke.EXPECTED_MIGRATION_VERSIONS[: self.migration_count]
-            return subprocess.CompletedProcess(argv, 0, "\n".join(versions) + "\n", "")
+        if argv[:2] == ["helm", "history"]:
+            history = (
+                self.helm_history_override
+                if self.helm_history_override is not None
+                else [
+                    {"revision": 1, "status": "superseded"},
+                    {"revision": 2, "status": "deployed"},
+                ]
+            )
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(history) + "\n",
+                "",
+            )
+        if "schema_migrations ORDER BY version;" in " ".join(argv):
+            ledger = list(smoke.EXPECTED_MIGRATION_LEDGER[: self.migration_count])
+            if ledger and not self.migration_checksums_valid:
+                ledger[0] = (ledger[0][0], "0" * 64)
+            rows = [f"{version}|{checksum}" for version, checksum in ledger]
+            return subprocess.CompletedProcess(argv, 0, "\n".join(rows) + "\n", "")
         if "http://127.0.0.1:8000/health" in " ".join(argv):
             return subprocess.CompletedProcess(
                 argv,
@@ -255,13 +325,22 @@ class RecordingExecutor:
             )
         if (
             "logs" in argv
-            and "--selector=app.kubernetes.io/component=migrations" in argv
+            and any(
+                item.startswith("--selector=app.kubernetes.io/component=migrations,")
+                for item in argv
+            )
             and "--container=migrations" in argv
         ):
+            selector = next(item for item in argv if item.startswith("--selector="))
+            applied = (
+                []
+                if "release-revision=2" in selector
+                else list(smoke.EXPECTED_MIGRATION_VERSIONS)
+            )
             payload = (
                 {
                     "status": "ok",
-                    "applied": list(smoke.EXPECTED_MIGRATION_VERSIONS),
+                    "applied": applied,
                 }
                 if self.migration_secret_read_valid
                 else {"status": "error", "reason": "projected DSN rejected"}
@@ -463,9 +542,76 @@ class RecordingExecutor:
                     "stderr": [""],
                     "artifacts": [],
                 }
-            envelope = {"status": status, "body": json.dumps(response)}
+            envelope: dict[str, object] = {
+                "status": status,
+                "body": json.dumps(response),
+            }
+            if "sandbox_cleanup_uid_probe" in " ".join(argv):
+                envelope["cleanup"] = (
+                    self.cleanup_evidence_override
+                    if self.cleanup_evidence_override is not None
+                    else {
+                        "probe": "sandbox_cleanup_uid_probe",
+                        "target_job_name": "hallu-sandbox-timeout",
+                        "target_job_uid": "11111111-1111-4111-8111-111111111111",
+                        "target_job_absent": self.cleanup_job_absent,
+                        "target_owned_pods": self.cleanup_owned_pods,
+                        "poll_attempts": 2,
+                    }
+                )
             return subprocess.CompletedProcess(argv, 0, json.dumps(envelope) + "\n", "")
         if "get" in argv and "jobs" in argv and "--output=json" in argv:
+            selectors = [item for item in argv if item.startswith("--selector=")]
+            selector = selectors[0] if selectors else ""
+            components = [
+                component
+                for component in ("migrations", "vault-bootstrap", "sandbox-fixture")
+                if f"app.kubernetes.io/component={component}" in selector
+            ]
+            revisions = re.findall(
+                r"hallu-defense\.openai\.com/release-revision=([0-9]+)",
+                selector,
+            )
+            if len(components) == 1 and len(revisions) == 1:
+                component = components[0]
+                revision = revisions[0]
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    json.dumps(
+                        {
+                            "items": [
+                                {
+                                    "metadata": {
+                                        "name": f"hallu-defense-{component}-{revision}",
+                                        "labels": {
+                                            "app.kubernetes.io/component": component,
+                                            "hallu-defense.openai.com/release-revision": revision
+                                        },
+                                    },
+                                    "status": {
+                                        "conditions": [
+                                            {"type": "Complete", "status": "True"}
+                                        ]
+                                    },
+                                }
+                            ]
+                        }
+                    )
+                    + "\n",
+                    "",
+                )
+            if smoke.SANDBOX_JOB_LABEL in argv:
+                items = [
+                    {"metadata": {"name": f"residual-sandbox-job-{index}"}}
+                    for index in range(self.residual_sandbox_jobs)
+                ]
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    json.dumps({"items": items}) + "\n",
+                    "",
+                )
             return subprocess.CompletedProcess(argv, 0, '{"items":[]}\n', "")
         if "get" in argv and "networkpolicy" in argv and "--output=json" in argv:
             policies = []
@@ -609,7 +755,95 @@ class RecordingExecutor:
         if (
             "get" in argv
             and "pods" in argv
-            and "--selector=app.kubernetes.io/component=migrations" in argv
+            and any(
+                item.startswith("--selector=app.kubernetes.io/component=sandbox-fixture,")
+                for item in argv
+            )
+            and "--output=json" in argv
+        ):
+            selector = next(item for item in argv if item.startswith("--selector="))
+            revision = re.search(r"release-revision=([0-9]+)", selector)
+            assert revision is not None
+            revision_value = revision.group(1)
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "name": "hallu-defense-sandbox-fixture-pod",
+                                    "labels": {
+                                        "hallu-defense.openai.com/release-revision": revision_value
+                                    },
+                                    "ownerReferences": [
+                                        {
+                                            "kind": "Job",
+                                            "name": (
+                                                f"hallu-defense-sandbox-fixture-{revision_value}"
+                                                if self.fixture_owner_valid
+                                                else "attacker-job"
+                                            ),
+                                            "controller": True,
+                                        }
+                                    ],
+                                },
+                                "spec": {
+                                    "containers": [
+                                        {
+                                            "name": "prepare-sandbox-fixture",
+                                            **(
+                                                {
+                                                    "readinessProbe": {
+                                                        "exec": {
+                                                            "command": [
+                                                                "python",
+                                                                "-c",
+                                                                "HALLU_FIXTURE_READY_MARKER",
+                                                            ]
+                                                        },
+                                                        "initialDelaySeconds": 1,
+                                                        "periodSeconds": 1,
+                                                        "timeoutSeconds": 1,
+                                                    }
+                                                }
+                                                if self.fixture_probe_valid
+                                                else {}
+                                            ),
+                                        }
+                                    ]
+                                },
+                                "status": {
+                                    "phase": "Running",
+                                    "conditions": [
+                                        {
+                                            "type": "Ready",
+                                            "status": "True" if self.fixture_ready else "False",
+                                        }
+                                    ],
+                                    "containerStatuses": [
+                                        {
+                                            "name": "prepare-sandbox-fixture",
+                                            "ready": self.fixture_ready,
+                                            "restartCount": 0,
+                                        }
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                "",
+            )
+        if (
+            "get" in argv
+            and "pods" in argv
+            and any(
+                item.startswith("--selector=app.kubernetes.io/component=migrations,")
+                for item in argv
+            )
             and "--output=json" in argv
         ):
             return subprocess.CompletedProcess(
@@ -655,6 +889,17 @@ class RecordingExecutor:
                 "",
             )
         if "get" in argv and "pods" in argv and "--output=json" in argv:
+            if smoke.SANDBOX_JOB_LABEL in argv:
+                items = [
+                    {"metadata": {"name": f"residual-sandbox-pod-{index}"}}
+                    for index in range(self.residual_sandbox_pods)
+                ]
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    json.dumps({"items": items}) + "\n",
+                    "",
+                )
             items = []
             for component in smoke.EXPECTED_WORKLOAD_COMPONENTS:
                 items.append(
@@ -691,6 +936,66 @@ class RecordingExecutor:
         return subprocess.CompletedProcess(argv, 0, "", "")
 
 
+class RevisionJobPollingExecutor:
+    def __init__(
+        self,
+        states: dict[str, list[str]],
+    ) -> None:
+        self.states = {component: list(sequence) for component, sequence in states.items()}
+        self.commands: list[list[str]] = []
+        self.calls: dict[str, int] = {component: 0 for component in states}
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, timeout_seconds, input_text
+        argv = list(command)
+        self.commands.append(argv)
+        selector = next(item for item in argv if item.startswith("--selector="))
+        component_match = re.search(r"app\.kubernetes\.io/component=([^,]+)", selector)
+        revision_match = re.search(r"release-revision=([0-9]+)", selector)
+        assert component_match is not None
+        assert revision_match is not None
+        component = component_match.group(1)
+        revision = revision_match.group(1)
+        self.calls[component] = self.calls.get(component, 0) + 1
+        sequence = self.states.setdefault(component, ["missing"])
+        state = sequence.pop(0) if sequence else "missing"
+        if state == "missing":
+            items: list[dict[str, object]] = []
+        else:
+            labels = {
+                "app.kubernetes.io/component": component,
+                "hallu-defense.openai.com/release-revision": (
+                    "999" if state == "wrong-revision" else revision
+                ),
+            }
+            conditions = []
+            if state == "complete":
+                conditions = [{"type": "Complete", "status": "True"}]
+            elif state == "failed":
+                conditions = [{"type": "Failed", "status": "True"}]
+            item = {
+                "metadata": {
+                    "name": f"hallu-defense-{component}-{revision}",
+                    "labels": labels,
+                },
+                "status": {"conditions": conditions},
+            }
+            items = [item, item] if state == "duplicate" else [item]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps({"items": items}) + "\n",
+            "",
+        )
+
+
 class CleanupFailingExecutor(RecordingExecutor):
     def __call__(
         self,
@@ -704,6 +1009,93 @@ class CleanupFailingExecutor(RecordingExecutor):
         if argv[:3] == ["kind", "delete", "cluster"]:
             self.commands.append(argv)
             return subprocess.CompletedProcess(argv, 1, "", "injected cleanup failure")
+        return super().__call__(
+            command,
+            check=check,
+            timeout_seconds=timeout_seconds,
+            input_text=input_text,
+        )
+
+
+class ConcurrentClusterExecutor(RecordingExecutor):
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        result = super().__call__(
+            command,
+            check=check,
+            timeout_seconds=timeout_seconds,
+            input_text=input_text,
+        )
+        if list(command)[:3] == ["kind", "delete", "cluster"]:
+            self.kind_clusters.add("unrelated-concurrent-cluster")
+        return result
+
+
+class DockerInspectFailingExecutor(RecordingExecutor):
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command)[:3] == ["docker", "image", "inspect"]:
+            argv = list(command)
+            self.commands.append(argv)
+            return subprocess.CompletedProcess(argv, 125, "", "daemon unavailable")
+        return super().__call__(
+            command,
+            check=check,
+            timeout_seconds=timeout_seconds,
+            input_text=input_text,
+        )
+
+
+class DockerRemoveFailingExecutor(RecordingExecutor):
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command)[:3] == ["docker", "image", "rm"]:
+            argv = list(command)
+            self.commands.append(argv)
+            return subprocess.CompletedProcess(argv, 125, "", "daemon unavailable")
+        return super().__call__(
+            command,
+            check=check,
+            timeout_seconds=timeout_seconds,
+            input_text=input_text,
+        )
+
+
+class SelectiveDockerRemoveFailingExecutor(RecordingExecutor):
+    def __init__(self, *, failing_image: str, existing_images: tuple[str, ...]) -> None:
+        super().__init__(existing_images=existing_images)
+        self.failing_image = failing_image
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        argv = list(command)
+        if argv[:3] == ["docker", "image", "rm"] and argv[3] == self.failing_image:
+            self.commands.append(argv)
+            return subprocess.CompletedProcess(argv, 125, "", "daemon removal error")
         return super().__call__(
             command,
             check=check,
@@ -912,6 +1304,7 @@ def test_helm_release_boundary_rejects_secret_manifest() -> None:
             executor,
             context="kind-test",
             namespace=smoke.DEFAULT_NAMESPACE,
+            kubeconfig=Path("scratch-kubeconfig"),
         )
 
 
@@ -1031,6 +1424,512 @@ def test_dependency_ingress_probe_fails_closed_on_cleanup_error() -> None:
         )
 
 
+def test_revision_jobs_are_polled_together_and_completed_jobs_are_not_requeried() -> None:
+    executor = RevisionJobPollingExecutor(
+        {
+            "migrations": ["pending", "complete"],
+            "vault-bootstrap": ["complete"],
+            "sandbox-fixture": ["complete"],
+        }
+    )
+    callbacks: list[str] = []
+
+    result = smoke._wait_for_revision_jobs(
+        executor,
+        component_kubectls={
+            "migrations": ["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+            "vault-bootstrap": ["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+            "sandbox-fixture": [
+                "kubectl",
+                "--namespace",
+                smoke.DEFAULT_SANDBOX_NAMESPACE,
+            ],
+        },
+        revision=7,
+        on_complete={"migrations": lambda: callbacks.append("migrations")},
+        attempts=3,
+        interval_seconds=0,
+    )
+
+    assert set(result) == {"migrations", "vault-bootstrap", "sandbox-fixture"}
+    assert executor.calls == {
+        "migrations": 2,
+        "vault-bootstrap": 1,
+        "sandbox-fixture": 1,
+    }
+    assert callbacks == ["migrations"]
+    assert all("release-revision=7" in " ".join(command) for command in executor.commands)
+
+
+def test_revision_job_poll_fails_immediately_on_failed_condition() -> None:
+    executor = RevisionJobPollingExecutor({"migrations": ["failed"]})
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="reported Failed=True"):
+        smoke._wait_for_revision_jobs(
+            executor,
+            component_kubectls={"migrations": ["kubectl"]},
+            revision=2,
+            attempts=1,
+            interval_seconds=0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("state", "match"),
+    [
+        ("wrong-revision", "exact Helm revision"),
+        ("duplicate", "expected exactly one"),
+    ],
+)
+def test_revision_job_poll_fails_closed_on_identity_drift(
+    state: str,
+    match: str,
+) -> None:
+    executor = RevisionJobPollingExecutor({"migrations": [state]})
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match=match):
+        smoke._wait_for_revision_jobs(
+            executor,
+            component_kubectls={"migrations": ["kubectl"]},
+            revision=2,
+            attempts=1,
+            interval_seconds=0,
+        )
+
+
+def test_revision_job_poll_fails_bounded_when_job_never_appears() -> None:
+    executor = RevisionJobPollingExecutor({"migrations": ["missing", "missing"]})
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="after 2 polls"):
+        smoke._wait_for_revision_jobs(
+            executor,
+            component_kubectls={"migrations": ["kubectl"]},
+            revision=2,
+            attempts=2,
+            interval_seconds=0,
+        )
+
+    assert executor.calls == {"migrations": 2}
+
+
+def test_revision_job_completion_after_deadline_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = RevisionJobPollingExecutor({"migrations": ["complete"]})
+    clock = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(clock))
+    monkeypatch.setitem(smoke.JOB_WAIT_TIMEOUT_SECONDS, "migrations", 1)
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="bounded wait"):
+        smoke._wait_for_revision_jobs(
+            executor,
+            component_kubectls={"migrations": ["kubectl"]},
+            revision=2,
+            attempts=1,
+            interval_seconds=0,
+        )
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [
+            {"revision": 1, "status": "deployed"},
+            {"revision": 2, "status": "superseded"},
+        ],
+        [
+            {"revision": 2, "status": "deployed"},
+            {"revision": 1, "status": "superseded"},
+        ],
+    ],
+    ids=["status-drift", "revision-order-drift"],
+)
+def test_helm_history_inspection_fails_closed_on_revision_drift(
+    history: list[dict[str, object]],
+    tmp_path: Path,
+) -> None:
+    executor = RecordingExecutor(helm_history_override=history)
+
+    with pytest.raises(
+        smoke.LiveKindHelmSmokeError,
+        match="did not prove a deployed second upgrade",
+    ):
+        smoke._verify_helm_history(
+            executor,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            context="kind-test",
+            kubeconfig=tmp_path / "kubeconfig",
+        )
+
+
+@pytest.mark.parametrize("malformed_revision", [True, 2.9, "2", "02"])
+def test_helm_history_rejects_non_integer_revision_types(
+    malformed_revision: object,
+    tmp_path: Path,
+) -> None:
+    executor = RecordingExecutor(
+        helm_history_override=[
+            {"revision": 1, "status": "superseded"},
+            {"revision": malformed_revision, "status": "deployed"},
+        ]
+    )
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="revision was invalid"):
+        smoke._verify_helm_history(
+            executor,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            context="kind-test",
+            kubeconfig=tmp_path / "kubeconfig",
+        )
+
+
+def _verify_sandbox_with_executor(executor: RecordingExecutor) -> dict[str, object]:
+    return smoke._verify_kubernetes_sandbox(
+        executor,
+        application_kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+        sandbox_kubectl=[
+            "kubectl",
+            "--namespace",
+            smoke.DEFAULT_SANDBOX_NAMESPACE,
+        ],
+        application_namespace=smoke.DEFAULT_NAMESPACE,
+        sandbox_namespace=smoke.DEFAULT_SANDBOX_NAMESPACE,
+        bearer_token="test-bearer-token",
+    )
+
+
+def test_sandbox_cleanup_probe_is_foreground_uid_scoped_and_bounded() -> None:
+    script = smoke.SANDBOX_CLEANUP_UID_PROBE_SCRIPT
+
+    ast.parse(script)
+    assert "request_thread.join()" in script
+    assert 'owner.get("uid") == target_job_uid' in script
+    assert "target_job is None and not owned_pods" in script
+    assert "sandbox request completed before Job UID capture" in script
+    assert "sandbox Job name was rebound to a different UID" in script
+    assert '"target_owned_pods": 0' in script
+    assert "cleanup_grace_seconds <= 120" in script
+
+
+def _execute_embedded_cleanup_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    capture_target: bool = True,
+    cleanup_job_state: str = "absent",
+    cleanup_pod_uids: Sequence[str | None] = (None, None),
+    request_error: bool = False,
+) -> tuple[dict[str, object], dict[str, int]]:
+    target_job_name = "hallu-sandbox-timeout"
+    target_job_uid = "11111111-1111-4111-8111-111111111111"
+    release_request = threading.Event()
+    state = {"job_gets": 0, "pod_lists": 0}
+    pod_cleanup_sequence = list(cleanup_pod_uids)
+    clock = {"now": 0.0}
+
+    class FakeResponse(io.BytesIO):
+        def __init__(self, payload: object, *, status: int = 200) -> None:
+            super().__init__(json.dumps(payload).encode("utf-8"))
+            self.status = status
+
+    def target_job(*, uid: str = target_job_uid) -> dict[str, object]:
+        return {
+            "metadata": {
+                "name": target_job_name,
+                "uid": uid,
+                "labels": {"hallu-defense.openai.com/sandbox": "true"},
+            }
+        }
+
+    def pod_owned_by(owner_uid: str) -> dict[str, object]:
+        return {
+            "metadata": {
+                "name": "hallu-sandbox-timeout-pod",
+                "uid": "22222222-2222-4222-8222-222222222222",
+                "labels": {"hallu-defense.openai.com/sandbox": "true"},
+                "ownerReferences": [
+                    {
+                        "kind": "Job",
+                        "name": target_job_name,
+                        "uid": owner_uid,
+                        "controller": True,
+                    }
+                ],
+            }
+        }
+
+    def fake_urlopen(
+        request: urllib.request.Request,
+        timeout: float,
+        context: object | None = None,
+    ) -> FakeResponse:
+        del timeout, context
+        url = request.full_url
+        if url == "http://127.0.0.1:8000/repo/checks/run":
+            assert release_request.wait(timeout=2)
+            if request_error:
+                raise OSError("injected request failure")
+            return FakeResponse(
+                {
+                    "exit_codes": [smoke.SANDBOX_TIMEOUT_RETURN_CODE],
+                    "stdout": [""],
+                    "stderr": ["kubernetes sandbox command timed out\n"],
+                    "artifacts": [],
+                }
+            )
+        if url.endswith("/pods"):
+            state["pod_lists"] += 1
+            if state["pod_lists"] == 1:
+                return FakeResponse({"items": []})
+            if state["pod_lists"] == 2:
+                release_request.set()
+                items = [pod_owned_by(target_job_uid)] if capture_target else []
+                return FakeResponse({"items": items})
+            owner_uid = (
+                pod_cleanup_sequence.pop(0)
+                if pod_cleanup_sequence
+                else cleanup_pod_uids[-1]
+                if cleanup_pod_uids
+                else None
+            )
+            return FakeResponse(
+                {"items": [] if owner_uid is None else [pod_owned_by(owner_uid)]}
+            )
+        if "/jobs/" in url:
+            state["job_gets"] += 1
+            if state["job_gets"] == 1:
+                return FakeResponse(target_job())
+            if cleanup_job_state == "present":
+                return FakeResponse(target_job())
+            if cleanup_job_state == "rebound":
+                return FakeResponse(target_job(uid="33333333-3333-4333-8333-333333333333"))
+            assert cleanup_job_state == "absent"
+            raise urllib.error.HTTPError(
+                url,
+                404,
+                "Not Found",
+                hdrs=None,
+                fp=io.BytesIO(b"{}"),
+            )
+        raise AssertionError(f"unexpected probe URL: {url}")
+
+    def fake_open(path: str, *, encoding: str) -> io.StringIO:
+        assert path.endswith("/token")
+        assert encoding == "utf-8"
+        return io.StringIO("service-account-token")
+
+    def fake_monotonic() -> float:
+        clock["now"] += 0.01
+        return clock["now"]
+
+    def fake_sleep(seconds: float) -> None:
+        clock["now"] += seconds
+        threading.Event().wait(0.001)
+
+    request_input = {
+        "token": "signed-test-jwt",
+        "body": {
+            "repo_ref": "smoke-repo",
+            "commands": ["python timeout.py"],
+            "network_policy": "deny",
+        },
+        "sandbox_namespace": smoke.DEFAULT_SANDBOX_NAMESPACE,
+        "cleanup_grace_seconds": 1,
+    }
+    stdout = io.StringIO()
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "443")
+    monkeypatch.setattr("builtins.open", fake_open)
+    monkeypatch.setattr(ssl, "create_default_context", lambda **kwargs: object())
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(smoke.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(smoke.time, "sleep", fake_sleep)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request_input)))
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    try:
+        exec(smoke.SANDBOX_CLEANUP_UID_PROBE_SCRIPT, {"__name__": "__main__"})
+    finally:
+        assert not any(
+            thread.name == "sandbox-cleanup-probe" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+    envelope = json.loads(stdout.getvalue())
+    assert isinstance(envelope, dict)
+    assert "signed-test-jwt" not in stdout.getvalue()
+    assert "service-account-token" not in stdout.getvalue()
+    return envelope, state
+
+
+def test_embedded_cleanup_probe_requires_two_consecutive_clean_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envelope, state = _execute_embedded_cleanup_probe(
+        monkeypatch,
+        cleanup_pod_uids=(
+            None,
+            "11111111-1111-4111-8111-111111111111",
+            None,
+            None,
+        ),
+    )
+
+    assert envelope["cleanup"]["target_job_absent"] is True
+    assert envelope["cleanup"]["target_owned_pods"] == 0
+    assert envelope["cleanup"]["poll_attempts"] == 4
+    assert state == {"job_gets": 5, "pod_lists": 6}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"cleanup_job_state": "present"}, "cleanup deadline expired"),
+        (
+            {
+                "cleanup_pod_uids": (
+                    "11111111-1111-4111-8111-111111111111",
+                )
+            },
+            "cleanup deadline expired",
+        ),
+        ({"cleanup_job_state": "rebound"}, "rebound to a different UID"),
+        ({"capture_target": False}, "completed before Job UID capture"),
+        ({"request_error": True}, "request failed inside cleanup probe"),
+    ],
+    ids=[
+        "job-persists",
+        "target-owner-pod-persists",
+        "job-name-rebound",
+        "capture-absent",
+        "request-thread-error",
+    ],
+)
+def test_embedded_cleanup_probe_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=match):
+        _execute_embedded_cleanup_probe(monkeypatch, **kwargs)
+
+
+def test_embedded_cleanup_probe_ignores_pod_owned_by_different_uid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envelope, _ = _execute_embedded_cleanup_probe(
+        monkeypatch,
+        cleanup_pod_uids=(
+            "99999999-9999-4999-8999-999999999999",
+            "99999999-9999-4999-8999-999999999999",
+        ),
+    )
+
+    assert envelope["cleanup"]["target_owned_pods"] == 0
+    assert envelope["cleanup"]["poll_attempts"] == 2
+
+
+def test_cleanup_probe_executor_timeout_covers_maximum_schema_grace() -> None:
+    executor = RecordingExecutor()
+
+    body, evidence = smoke._repo_checks_request_with_cleanup_evidence(
+        executor,
+        kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+        bearer_token="test-bearer-token",
+        payload={
+            "repo_ref": "smoke-repo",
+            "commands": ["python timeout.py"],
+            "network_policy": "deny",
+        },
+        sandbox_namespace=smoke.DEFAULT_SANDBOX_NAMESPACE,
+        expected_status=200,
+        cleanup_grace_seconds=120,
+    )
+
+    assert body["exit_codes"] == [smoke.SANDBOX_TIMEOUT_RETURN_CODE]
+    assert evidence["target_owned_pods"] == 0
+    assert executor.command_timeouts[-1] == 185
+
+
+@pytest.mark.parametrize("invalid_grace", [True, 0, 121])
+def test_cleanup_probe_rejects_out_of_contract_grace(invalid_grace: int | bool) -> None:
+    executor = RecordingExecutor()
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="integer between 1 and 120"):
+        smoke._repo_checks_request_with_cleanup_evidence(
+            executor,
+            kubectl=["kubectl"],
+            bearer_token="test-bearer-token",
+            payload={"commands": ["python timeout.py"]},
+            sandbox_namespace=smoke.DEFAULT_SANDBOX_NAMESPACE,
+            expected_status=200,
+            cleanup_grace_seconds=invalid_grace,
+        )
+    assert executor.commands == []
+
+
+@pytest.mark.parametrize(
+    "executor",
+    [
+        RecordingExecutor(cleanup_job_absent=False),
+        RecordingExecutor(cleanup_owned_pods=1),
+    ],
+    ids=["target-job-remains", "target-owner-uid-pod-remains"],
+)
+def test_sandbox_cleanup_evidence_fails_closed_on_target_residuals(
+    executor: RecordingExecutor,
+) -> None:
+    with pytest.raises(
+        smoke.LiveKindHelmSmokeError,
+        match="did not prove exact Job and owner-UID Pod absence",
+    ):
+        _verify_sandbox_with_executor(executor)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {},
+        [],
+        {
+            "probe": "sandbox_cleanup_uid_probe",
+            "target_job_name": "hallu-sandbox-timeout",
+            "target_job_uid": "invalid uid",
+            "target_job_absent": True,
+            "target_owned_pods": 0,
+            "poll_attempts": 1,
+        },
+    ],
+    ids=["missing", "non-object", "invalid-uid"],
+)
+def test_sandbox_cleanup_evidence_rejects_malformed_identity(evidence: object) -> None:
+    executor = RecordingExecutor(cleanup_evidence_override=evidence)
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="cleanup UID evidence|did not prove"):
+        _verify_sandbox_with_executor(executor)
+
+
+def test_sandbox_global_inventory_rejects_owner_pod_after_jobs_are_absent() -> None:
+    executor = RecordingExecutor(
+        residual_sandbox_jobs=0,
+        residual_sandbox_pods=1,
+    )
+
+    with pytest.raises(
+        smoke.LiveKindHelmSmokeError,
+        match="left residual Kubernetes pods",
+    ):
+        _verify_sandbox_with_executor(executor)
+
+    command_text = [" ".join(command) for command in executor.commands]
+    assert any(
+        "get jobs --selector hallu-defense.openai.com/sandbox=true" in command
+        for command in command_text
+    )
+    assert any(
+        "get pods --selector hallu-defense.openai.com/sandbox=true" in command
+        for command in command_text
+    )
+
+
 def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     executor = RecordingExecutor()
 
@@ -1052,13 +1951,51 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     }
     assert result["migration_count"] == smoke.EXPECTED_MIGRATION_COUNT
     assert result["bootstrap_jobs"] == {
-        "migrations": True,
-        "sandbox-fixture": True,
-        "vault-bootstrap": True,
+        "revision_1": {
+            "migrations": {
+                "complete": True,
+                "job": "hallu-defense-migrations-1",
+                "revision": 1,
+            },
+            "sandbox-fixture": {
+                "complete": True,
+                "job": "hallu-defense-sandbox-fixture-1",
+                "revision": 1,
+            },
+            "vault-bootstrap": {
+                "complete": True,
+                "job": "hallu-defense-vault-bootstrap-1",
+                "revision": 1,
+            },
+        },
+        "revision_2": {
+            "migrations": {
+                "complete": True,
+                "job": "hallu-defense-migrations-2",
+                "revision": 2,
+            },
+            "vault-bootstrap": {
+                "complete": True,
+                "job": "hallu-defense-vault-bootstrap-2",
+                "revision": 2,
+            },
+        },
     }
+    assert result["fixture_readiness"] == {
+        "job": "hallu-defense-sandbox-fixture-1",
+        "pod": "hallu-defense-sandbox-fixture-pod",
+        "ready": True,
+        "revision": 1,
+        "restarts": 0,
+    }
+    assert result["helm_history"] == [
+        {"revision": 1, "status": "superseded"},
+        {"revision": 2, "status": "deployed"},
+    ]
     assert result["sandbox_namespace"] == smoke.DEFAULT_SANDBOX_NAMESPACE
     assert result["helm_secret_boundary"] == {
         "manifest_secret_objects": 0,
+        "revisions_checked": [1, 2],
         "sensitive_value_fields": 0,
         "precreated_secret_references": {
             "runtime": "hallu-defense-runtime",
@@ -1083,13 +2020,13 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
         "docker build --file infra/docker/opensearch.Dockerfile" in item for item in command_text
     )
     assert any("kind load docker-image" in item for item in command_text)
+    run_ids = {str(image).split(":kind-", maxsplit=1)[1] for image in result["images"]}
+    assert len(run_ids) == 1
     assert result["images"] == [
-        smoke.API_IMAGE,
-        smoke.CONSOLE_IMAGE,
-        smoke.SANDBOX_IMAGE,
-        smoke.PGVECTOR_IMAGE,
-        smoke.OPENSEARCH_IMAGE,
+        f"{repository}:kind-{next(iter(run_ids))}"
+        for repository in smoke.SCRATCH_IMAGE_REPOSITORIES.values()
     ]
+    assert str(result["cluster"]).startswith(f"{smoke.DEFAULT_CLUSTER}-")
     create_index = next(
         index for index, item in enumerate(command_text) if item.startswith("kind create")
     )
@@ -1111,7 +2048,26 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert any(item.startswith("helm lint") for item in command_text)
     assert any(item.startswith("helm template") for item in command_text)
     assert any(item.startswith("helm upgrade --install") for item in command_text)
-    assert any("--rollback-on-failure" in item for item in command_text)
+    assert sum(item.startswith("helm upgrade") for item in command_text) == 2
+    assert any(
+        item.startswith("helm upgrade hallu-defense")
+        and "sandbox.fixture.enabled=false" in item
+        for item in command_text
+    )
+    assert all("--rollback-on-failure" not in item for item in command_text)
+    assert all("--wait-for-jobs" not in item for item in command_text)
+    upgrade_timeouts = [
+        timeout
+        for argv, timeout in zip(
+            executor.commands, executor.command_timeouts, strict=True
+        )
+        if argv[:2] == ["helm", "upgrade"]
+    ]
+    assert upgrade_timeouts == [
+        smoke.HELM_EXECUTOR_TIMEOUT_SECONDS,
+        smoke.HELM_EXECUTOR_TIMEOUT_SECONDS,
+    ]
+    assert any("--timeout=660s" in argv for argv in executor.commands)
     assert all("--atomic" not in item for item in command_text)
     preflight_index = next(
         index
@@ -1129,13 +2085,68 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
         if item.startswith("kind load docker-image")
     )
     assert preflight_index < preflight_apply_index < image_load_index
-    assert any("wait --for=condition=complete" in item for item in command_text)
+    assert not any("wait --for=condition=complete" in item for item in command_text)
+    fixture_ready_index = next(
+        index
+        for index, item in enumerate(command_text)
+        if "get pods --selector=app.kubernetes.io/component=sandbox-fixture," in item
+        and "release-revision=1" in item
+    )
+    revision_one_job_indices = [
+        index
+        for index, item in enumerate(command_text)
+        if "get jobs --selector=app.kubernetes.io/component=" in item
+        and "release-revision=1" in item
+    ]
+    assert len(revision_one_job_indices) == 3
+    assert fixture_ready_index < min(revision_one_job_indices)
+    second_upgrade_index = next(
+        index
+        for index, item in enumerate(command_text)
+        if item.startswith("helm upgrade hallu-defense")
+        and "--install" not in item
+    )
+    revision_two_migration_job_index = next(
+        index
+        for index, item in enumerate(command_text)
+        if "get jobs --selector=app.kubernetes.io/component=migrations," in item
+        and "release-revision=2" in item
+    )
+    revision_two_migration_pod_index = next(
+        index
+        for index, item in enumerate(command_text)
+        if "get pods --selector=app.kubernetes.io/component=migrations," in item
+        and "release-revision=2" in item
+    )
+    revision_two_migration_log_index = next(
+        index
+        for index, item in enumerate(command_text)
+        if "logs --selector=app.kubernetes.io/component=migrations," in item
+        and "release-revision=2" in item
+    )
+    second_rollout_index = next(
+        index
+        for index, item in enumerate(command_text)
+        if index > second_upgrade_index and "rollout status" in item
+    )
+    assert (
+        second_upgrade_index
+        < revision_two_migration_job_index
+        < revision_two_migration_pod_index
+        < revision_two_migration_log_index
+        < second_rollout_index
+    )
     assert any("rollout status deployment/hallu-defense-worker" in item for item in command_text)
     assert any("rollout status deployment/hallu-defense-vault" in item for item in command_text)
     assert any("rollout status deployment/hallu-defense-redis" in item for item in command_text)
     assert any("app.kubernetes.io/component=vault-bootstrap" in item for item in command_text)
     assert any(
-        "SELECT version FROM schema_migrations ORDER BY version;" in item for item in command_text
+        "COALESCE(checksum_sha256, '<NULL>')" in item for item in command_text
+    )
+    assert result["migration_checksums"] == smoke.EXPECTED_MIGRATION_CHECKSUMS
+    assert (
+        result["migration_checksum_aggregate"]
+        == smoke.EXPECTED_MIGRATION_CHECKSUM_AGGREGATE
     )
     assert any("http://127.0.0.1:8000/health" in item for item in command_text)
     assert any("http://127.0.0.1:8000/ready" in item for item in command_text)
@@ -1190,11 +2201,20 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
         "observed_generation": 1,
         "exact_backend_manifest_accepted": True,
         "equivalent_quantities_accepted": True,
-        "malicious_jobs_denied": 11,
+        "malicious_jobs_denied": 15,
     }
     assert result["sandbox"]["egress_blocked_by_kindnet"] is True
     assert result["sandbox"]["batched_commands"] == 2
     assert result["sandbox"]["residual_jobs"] == 0
+    assert result["sandbox"]["residual_pods"] == 0
+    assert result["sandbox"]["cleanup"] == {
+        "probe": "sandbox_cleanup_uid_probe",
+        "target_job_name": "hallu-sandbox-timeout",
+        "target_job_uid": "11111111-1111-4111-8111-111111111111",
+        "target_job_absent": True,
+        "target_owned_pods": 0,
+        "poll_attempts": 2,
+    }
     assert result["sandbox"]["api_workspace_read_only"] is True
     assert result["sandbox"]["rbac"] == {
         "application_namespace_denied": {
@@ -1248,9 +2268,10 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
             "vault_token_file_read": True,
         },
         "migrations": {
-            "applied_migrations": smoke.EXPECTED_MIGRATION_COUNT,
+            "newly_applied_migrations": 0,
             "postgres_dsn_file_read": True,
             "raw_secret_env_absent": True,
+            "revision": 2,
             "restarts": 0,
         },
     }
@@ -1277,7 +2298,9 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     }
     assert sum("hybrid_lifecycle_tombstone_probe" in item for item in command_text) == 1
     assert any(
-        "--selector=app.kubernetes.io/component=migrations --container=migrations" in item
+        "--selector=app.kubernetes.io/component=migrations," in item
+        and "release-revision=2" in item
+        and "--container=migrations" in item
         for item in command_text
     )
     application_egress = result["application_egress"]
@@ -1301,6 +2324,39 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
             "probe_pod_deleted": True,
         },
     }
+    allowlist_scripts = [
+        argv[-1]
+        for argv in executor.commands
+        if argv[-2:-1] == ["-c"] and "application_ingress_allowlist_probe" in argv[-1]
+    ]
+    assert len(allowlist_scripts) == 3
+    decoded_allowlists: list[dict[str, bool]] = []
+    for script in allowlist_scripts:
+        tree = ast.parse(script)
+        expected_assignment = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "expected"
+                for target in node.targets
+            )
+        )
+        assert isinstance(expected_assignment.value, ast.Call)
+        assert isinstance(expected_assignment.value.func, ast.Attribute)
+        assert expected_assignment.value.func.attr == "loads"
+        assert isinstance(expected_assignment.value.func.value, ast.Name)
+        assert expected_assignment.value.func.value.id == "json"
+        assert len(expected_assignment.value.args) == 1
+        encoded = ast.literal_eval(expected_assignment.value.args[0])
+        decoded = json.loads(encoded)
+        assert isinstance(decoded, dict)
+        decoded_allowlists.append(decoded)
+    assert decoded_allowlists == [
+        {"api": True, "console": False, "worker": False},
+        {"api": False, "console": True, "worker": False},
+        {"api": True, "console": False, "worker": True},
+    ]
     assert set(application_egress["policies"]) == {
         "api",
         "worker",
@@ -1334,7 +2390,14 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert any("delete pod hallu-network-ingress-probe" in item for item in command_text)
     assert set(result["workloads"]) == set(smoke.EXPECTED_WORKLOAD_COMPONENTS)
     assert all(item["restarts"] == 0 for item in result["workloads"].values())
-    assert result["cleanup"] == {"cluster_deleted": True, "verified_absent": True}
+    assert result["cleanup"] == {
+        "baseline_clusters_before": [],
+        "cluster_deleted": True,
+        "scratch_images_deleted": result["images"],
+        "scratch_images_verified_absent": True,
+        "unrelated_clusters_after": [],
+        "verified_absent": True,
+    }
     assert any(
         "--as system:serviceaccount:hallu-defense:hallu-defense-api" in item
         for item in command_text
@@ -1345,10 +2408,14 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert admission_commands
     assert all("--dry-run=server" in argv for argv in admission_commands)
     assert any("hallu-defense.openai.com/sandbox=true" in item for item in command_text)
-    assert command_text[-2:] == [
-        "kind delete cluster --name hallu-defense-smoke",
-        "kind get clusters",
-    ]
+    assert any(
+        item == f"kind delete cluster --name {result['cluster']}" for item in command_text
+    )
+    assert all(
+        "--kubeconfig" in argv for argv in executor.commands if argv[:1] == ["kubectl"]
+    )
+    assert not executor.docker_images
+    assert not executor.kind_clusters
     secrets_by_name = {
         str(manifest["metadata"]["name"]): manifest["stringData"]
         for manifest in executor.secret_manifests
@@ -1456,6 +2523,10 @@ def test_sandbox_admission_probes_cover_known_escalations() -> None:
         "hallu-sandbox-admission-unmasked",
         "hallu-sandbox-admission-controls",
         "hallu-sandbox-admission-entrypoint",
+        "hallu-sandbox-admission-lifecycle",
+        "hallu-sandbox-admission-startup-probe",
+        "hallu-sandbox-admission-liveness-probe",
+        "hallu-sandbox-admission-readiness-probe",
         "hallu-sandbox-admission-groups",
         "hallu-sandbox-admission-selector",
         "hallu-sandbox-admission-finalizer",
@@ -1476,6 +2547,10 @@ def test_sandbox_admission_probes_cover_known_escalations() -> None:
     assert '"hostUsers": false' in serialized["hallu-sandbox-admission-unmasked"]
     assert "hostPort" in serialized["hallu-sandbox-admission-controls"]
     assert "bypass" in serialized["hallu-sandbox-admission-entrypoint"]
+    assert "postStart" in serialized["hallu-sandbox-admission-lifecycle"]
+    assert "startupProbe" in serialized["hallu-sandbox-admission-startup-probe"]
+    assert "livenessProbe" in serialized["hallu-sandbox-admission-liveness-probe"]
+    assert "readinessProbe" in serialized["hallu-sandbox-admission-readiness-probe"]
     assert "supplementalGroups" in serialized["hallu-sandbox-admission-groups"]
     assert "manualSelector" in serialized["hallu-sandbox-admission-selector"]
     assert "finalizers" in serialized["hallu-sandbox-admission-finalizer"]
@@ -1670,14 +2745,10 @@ def test_live_kind_helm_smoke_rejects_incomplete_migrations_and_cleans_up() -> N
             executor=executor,
         )
 
-    assert executor.commands[-2] == [
-        "kind",
-        "delete",
-        "cluster",
-        "--name",
-        smoke.DEFAULT_CLUSTER,
-    ]
-    assert executor.commands[-1] == ["kind", "get", "clusters"]
+    assert ["kind", "delete", "cluster", "--name", smoke.DEFAULT_CLUSTER] in executor.commands
+    assert ["kind", "get", "clusters"] in executor.commands
+    assert not executor.docker_images
+    assert not executor.kind_clusters
 
 
 def test_live_kind_helm_smoke_collects_diagnostics_and_cleans_up_on_install_failure() -> None:
@@ -1692,10 +2763,10 @@ def test_live_kind_helm_smoke_collects_diagnostics_and_cleans_up_on_install_fail
 
     command_text = [" ".join(command) for command in executor.commands]
     assert any("get all,pvc --output=wide" in item for item in command_text)
-    assert command_text[-2:] == [
-        "kind delete cluster --name hallu-defense-smoke",
-        "kind get clusters",
-    ]
+    assert "kind delete cluster --name hallu-defense-smoke" in command_text
+    assert "kind get clusters" in command_text
+    assert not executor.docker_images
+    assert not executor.kind_clusters
 
 
 def test_live_kind_helm_smoke_fails_when_successful_body_cannot_clean_up() -> None:
@@ -1718,6 +2789,183 @@ def test_live_kind_helm_smoke_preserves_primary_failure_when_cleanup_also_fails(
             namespace=smoke.DEFAULT_NAMESPACE,
             executor=executor,
         )
+
+
+def test_temporary_directory_cleanup_never_masks_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_factory = smoke.tempfile.TemporaryDirectory
+
+    class CleanupErrorDirectory:
+        def __init__(self, *, prefix: str) -> None:
+            self._delegate = original_factory(prefix=prefix)
+            self.name = self._delegate.name
+
+        def cleanup(self) -> None:
+            self._delegate.cleanup()
+            raise PermissionError("injected temporary cleanup failure")
+
+    def temporary_directory(*, prefix: str):  # type: ignore[no-untyped-def]
+        if prefix == "hallu-kind-bootstrap-":
+            return CleanupErrorDirectory(prefix=prefix)
+        return original_factory(prefix=prefix)
+
+    monkeypatch.setattr(smoke.tempfile, "TemporaryDirectory", temporary_directory)
+    executor = RecordingExecutor(fail_prefix=("helm", "upgrade"))
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="injected command failure"):
+        smoke.run_smoke(
+            cluster=smoke.DEFAULT_CLUSTER,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            executor=executor,
+        )
+
+
+def test_kind_create_failure_never_deletes_an_unowned_cluster() -> None:
+    executor = RecordingExecutor(fail_prefix=("kind", "create", "cluster"))
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="injected command failure"):
+        smoke.run_smoke(
+            cluster=smoke.DEFAULT_CLUSTER,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            executor=executor,
+        )
+
+    assert not any(argv[:3] == ["kind", "delete", "cluster"] for argv in executor.commands)
+    assert not any(argv[:3] == ["docker", "image", "rm"] for argv in executor.commands)
+
+
+def test_cleanup_ignores_unrelated_concurrent_cluster_creation() -> None:
+    executor = ConcurrentClusterExecutor(existing_clusters=("baseline-cluster",))
+
+    result = smoke.run_smoke(
+        cluster=smoke.DEFAULT_CLUSTER,
+        namespace=smoke.DEFAULT_NAMESPACE,
+        executor=executor,
+    )
+
+    assert result["cleanup"]["baseline_clusters_before"] == ["baseline-cluster"]
+    assert result["cleanup"]["unrelated_clusters_after"] == [
+        "baseline-cluster",
+        "unrelated-concurrent-cluster",
+    ]
+    assert smoke.DEFAULT_CLUSTER not in executor.kind_clusters
+
+
+def test_live_smoke_refuses_to_overwrite_existing_scratch_image() -> None:
+    images = smoke._scratch_image_references("collision")
+    protected_image = images["api"]
+    executor = RecordingExecutor(existing_images=(protected_image,))
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="refusing to overwrite"):
+        smoke.run_smoke(
+            cluster=smoke.DEFAULT_CLUSTER,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            images=images,
+            executor=executor,
+        )
+
+    assert protected_image in executor.docker_images
+    assert not any(argv[:3] == ["docker", "image", "rm"] for argv in executor.commands)
+
+
+def test_scratch_image_preflight_fails_closed_on_daemon_error() -> None:
+    executor = DockerInspectFailingExecutor()
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="could not prove.*absent"):
+        smoke.run_smoke(
+            cluster=smoke.DEFAULT_CLUSTER,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            executor=executor,
+        )
+
+    assert not any(argv[:3] == ["kind", "create", "cluster"] for argv in executor.commands)
+
+
+def test_scratch_image_cleanup_fails_closed_on_remove_error() -> None:
+    image = "hallu-defense-api:kind-cleanup-error"
+    executor = DockerRemoveFailingExecutor(existing_images=(image,))
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="image cleanup failed"):
+        smoke._remove_scratch_images(executor, [image])
+
+
+def test_scratch_image_cleanup_attempts_every_exact_tag_after_one_failure() -> None:
+    first = "hallu-defense-api:kind-cleanup-many"
+    second = "hallu-defense-console:kind-cleanup-many"
+    executor = SelectiveDockerRemoveFailingExecutor(
+        failing_image=first,
+        existing_images=(first, second),
+    )
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="image cleanup failed"):
+        smoke._remove_scratch_images(executor, [first, second])
+
+    removals = [argv[3] for argv in executor.commands if argv[:3] == ["docker", "image", "rm"]]
+    inspections = [
+        argv[3] for argv in executor.commands if argv[:3] == ["docker", "image", "inspect"]
+    ]
+    assert removals == [first, second]
+    assert inspections == [first, second]
+    assert first in executor.docker_images
+    assert second not in executor.docker_images
+
+
+def test_live_smoke_rejects_checksum_drift_with_complete_migration_count() -> None:
+    executor = RecordingExecutor(migration_checksums_valid=False)
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="exact checksums"):
+        smoke.run_smoke(
+            cluster=smoke.DEFAULT_CLUSTER,
+            namespace=smoke.DEFAULT_NAMESPACE,
+            executor=executor,
+        )
+
+    assert not executor.docker_images
+    assert not executor.kind_clusters
+
+
+def test_fixture_readiness_must_be_observed_before_completion() -> None:
+    executor = RecordingExecutor(fixture_ready=False)
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="never observed Ready"):
+        smoke._wait_for_fixture_pod_ready(
+            executor,
+            kubectl=["kubectl", "--namespace", smoke.DEFAULT_SANDBOX_NAMESPACE],
+            revision=1,
+            attempts=1,
+            interval_seconds=0,
+        )
+
+
+@pytest.mark.parametrize(
+    "executor",
+    [
+        RecordingExecutor(fixture_probe_valid=False),
+        RecordingExecutor(fixture_owner_valid=False),
+    ],
+)
+def test_fixture_readiness_requires_exact_probe_and_owner(
+    executor: RecordingExecutor,
+) -> None:
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="never observed Ready"):
+        smoke._wait_for_fixture_pod_ready(
+            executor,
+            kubectl=["kubectl", "--namespace", smoke.DEFAULT_SANDBOX_NAMESPACE],
+            revision=1,
+            attempts=1,
+            interval_seconds=0,
+        )
+
+
+def test_run_id_contract_produces_concurrent_safe_names() -> None:
+    first = smoke._scratch_image_references("a1b2c3")
+    second = smoke._scratch_image_references("d4e5f6")
+
+    assert set(first.values()).isdisjoint(second.values())
+    assert all(":kind-a1b2c3" in image for image in first.values())
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="lowercase DNS-safe"):
+        smoke._validated_run_id("INVALID_RUN")
 
 
 def test_live_kind_helm_smoke_rejects_invalid_cluster_name() -> None:

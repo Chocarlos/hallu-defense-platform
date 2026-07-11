@@ -1,8 +1,342 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "hallu-defense Helm values",
+  "description": "Closed production and disposable-kind configuration contract.",
   "type": "object",
-  "required": ["console"],
+  "additionalProperties": false,
+  "required": [
+    "global",
+    "nameOverride",
+    "fullnameOverride",
+    "oidc",
+    "cors",
+    "outboundHttps",
+    "ragIndex",
+    "opensearch",
+    "postgres",
+    "vault",
+    "provider",
+    "otel",
+    "rateLimit",
+    "networkPolicy",
+    "sandbox",
+    "api",
+    "console",
+    "worker",
+    "migrations",
+    "kindDependencies",
+    "secrets"
+  ],
   "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["imagePullPolicy", "tmpSizeLimit"],
+      "properties": {
+        "imagePullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "tmpSizeLimit": { "type": "string", "const": "64Mi" }
+      }
+    },
+    "nameOverride": { "$ref": "#/definitions/dnsLabelOrEmpty" },
+    "fullnameOverride": { "$ref": "#/definitions/dnsLabelOrEmpty" },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "audience", "jwksPath"],
+      "properties": {
+        "issuer": { "$ref": "#/definitions/httpsUrlOrEmpty" },
+        "audience": { "$ref": "#/definitions/boundedString" },
+        "jwksPath": { "type": "string", "const": "/run/hallu-defense/keycloak-jwks.json" }
+      }
+    },
+    "cors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowOrigins"],
+      "properties": {
+        "allowOrigins": { "$ref": "#/definitions/httpsOrigins" }
+      }
+    },
+    "outboundHttps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedOrigins"],
+      "properties": {
+        "allowedOrigins": { "$ref": "#/definitions/httpsOrigins" }
+      }
+    },
+    "ragIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "timeoutSeconds"],
+      "properties": {
+        "backend": { "type": "string", "const": "hybrid" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 60 }
+      }
+    },
+    "opensearch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "indexName",
+        "authorizationSecretName",
+        "caPath",
+        "caSecretName",
+        "caSecretKey"
+      ],
+      "properties": {
+        "endpoint": {
+          "anyOf": [
+            { "type": "string", "const": "" },
+            { "$ref": "#/definitions/httpsOrigin" },
+            { "type": "string", "const": "http://hallu-defense-opensearch:9200" }
+          ]
+        },
+        "indexName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "authorizationSecretName": { "$ref": "#/definitions/logicalSecretOrEmpty" },
+        "caPath": { "type": "string", "const": "/run/hallu-defense/opensearch-ca.pem" },
+        "caSecretName": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+        "caSecretKey": { "$ref": "#/definitions/secretKey" }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caPath", "caSecretName", "caSecretKey", "kindInsecureTlsEnabled"],
+      "properties": {
+        "caPath": { "type": "string", "const": "/run/hallu-defense/postgres-ca.pem" },
+        "caSecretName": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+        "caSecretKey": { "$ref": "#/definitions/secretKey" },
+        "kindInsecureTlsEnabled": { "type": "boolean" }
+      }
+    },
+    "vault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "mount", "caPath", "caSecretName", "caSecretKey"],
+      "properties": {
+        "address": { "$ref": "#/definitions/httpsOriginOrEmpty" },
+        "mount": { "$ref": "#/definitions/logicalSecret" },
+        "caPath": { "type": "string", "const": "/run/hallu-defense/vault-ca.pem" },
+        "caSecretName": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+        "caSecretKey": { "$ref": "#/definitions/secretKey" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "model", "openaiCompatibleBaseUrl", "apiKeySecretName"],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["", "openai", "openai-compatible", "ollama"]
+        },
+        "model": { "$ref": "#/definitions/boundedString" },
+        "openaiCompatibleBaseUrl": { "$ref": "#/definitions/httpsUrlOrEmpty" },
+        "apiKeySecretName": { "$ref": "#/definitions/logicalSecretOrEmpty" }
+      }
+    },
+    "otel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "exporter", "endpoint"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "exporter": { "type": "string", "const": "otlp" },
+        "endpoint": { "$ref": "#/definitions/httpsUrlOrEmpty" }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "redis"],
+      "properties": {
+        "backend": { "type": "string", "const": "redis" },
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["urlSecretName", "timeoutSeconds", "caPath", "caSecretName", "caSecretKey"],
+          "properties": {
+            "urlSecretName": { "$ref": "#/definitions/logicalSecret" },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 30 },
+            "caPath": { "type": "string", "const": "/run/hallu-defense/redis-ca.pem" },
+            "caSecretName": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "caSecretKey": { "$ref": "#/definitions/secretKey" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kubernetesApi", "ingress", "api", "console", "worker", "migrations"],
+      "properties": {
+        "kubernetesApi": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/cidrPortPeer" }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["api", "worker", "console"],
+          "properties": {
+            "api": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["callers", "metricsScrapers"],
+              "properties": {
+                "callers": { "$ref": "#/definitions/ingressPeers" },
+                "metricsScrapers": { "$ref": "#/definitions/ingressPeers" }
+              }
+            },
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["metricsScrapers"],
+              "properties": {
+                "metricsScrapers": { "$ref": "#/definitions/ingressPeers" }
+              }
+            },
+            "console": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["callers"],
+              "properties": {
+                "callers": { "$ref": "#/definitions/ingressPeers" }
+              }
+            }
+          }
+        },
+        "api": { "$ref": "#/definitions/externalPolicy" },
+        "console": { "$ref": "#/definitions/externalPolicy" },
+        "worker": { "$ref": "#/definitions/externalPolicy" },
+        "migrations": { "$ref": "#/definitions/externalPolicy" }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "namespace",
+        "tenantId",
+        "image",
+        "commandTimeoutSeconds",
+        "pollIntervalSeconds",
+        "jobTtlSeconds",
+        "apiRequestTimeoutSeconds",
+        "cleanupGraceSeconds",
+        "setupGraceSeconds",
+        "resources",
+        "workspace",
+        "fixture"
+      ],
+      "properties": {
+        "backend": { "type": "string", "const": "kubernetes" },
+        "namespace": { "$ref": "#/definitions/dnsLabelOrEmpty" },
+        "tenantId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^(?:|[A-Za-z0-9](?:[-A-Za-z0-9_.]*[A-Za-z0-9])?)$"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reference", "pullPolicy"],
+          "properties": {
+            "reference": { "$ref": "#/definitions/imageReferenceOrEmpty" },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "commandTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 900 },
+        "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
+        "jobTtlSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "apiRequestTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "cleanupGraceSeconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "setupGraceSeconds": { "type": "integer", "minimum": 5, "maximum": 60 },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpu", "memoryMb", "pidsLimit"],
+          "properties": {
+            "cpu": { "$ref": "#/definitions/cpuQuantity" },
+            "memoryMb": { "type": "integer", "minimum": 64, "maximum": 32768 },
+            "pidsLimit": { "type": "integer", "minimum": 16, "maximum": 4096 }
+          }
+        },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mountPath",
+            "apiExistingClaim",
+            "existingClaim",
+            "createClaim",
+            "storage",
+            "accessModes"
+          ],
+          "properties": {
+            "mountPath": { "type": "string", "const": "/workspace" },
+            "apiExistingClaim": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "existingClaim": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "createClaim": { "type": "boolean" },
+            "storage": { "$ref": "#/definitions/storageQuantity" },
+            "accessModes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": ["ReadWriteOnce", "ReadWriteMany"]
+              }
+            }
+          }
+        },
+        "fixture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "repositoryName"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "repositoryName": { "$ref": "#/definitions/dnsLabel" }
+          }
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas", "image", "service", "podAnnotations", "resources"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "image": { "$ref": "#/definitions/workloadImage" },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["port"],
+          "properties": {
+            "port": { "type": "integer", "const": 8000 }
+          }
+        },
+        "podAnnotations": { "$ref": "#/definitions/apiPrometheusAnnotations" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
     "console": {
       "type": "object",
       "additionalProperties": false,
@@ -16,41 +350,459 @@
         "resources"
       ],
       "properties": {
-        "replicas": {
-          "type": "integer",
-          "const": 1
-        },
-        "image": {
-          "type": "object"
-        },
-        "publicOrigin": {
-          "type": "string"
-        },
-        "apiOrigin": {
-          "type": "string"
-        },
+        "replicas": { "type": "integer", "const": 1 },
+        "image": { "$ref": "#/definitions/workloadImage" },
+        "publicOrigin": { "$ref": "#/definitions/httpsOriginOrEmpty" },
+        "apiOrigin": { "$ref": "#/definitions/httpsOriginOrEmpty" },
         "oidc": {
           "type": "object",
           "additionalProperties": false,
           "required": ["issuer", "clientId", "apiAudience"],
           "properties": {
-            "issuer": {
-              "type": "string"
-            },
-            "clientId": {
-              "type": "string"
-            },
-            "apiAudience": {
-              "type": "string"
-            }
+            "issuer": { "$ref": "#/definitions/httpsUrlOrEmpty" },
+            "clientId": { "$ref": "#/definitions/boundedString" },
+            "apiAudience": { "$ref": "#/definitions/boundedString" }
           }
         },
         "service": {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["port"],
+          "properties": {
+            "port": { "type": "integer", "const": 3000 }
+          }
         },
-        "resources": {
-          "type": "object"
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "replicas",
+        "image",
+        "command",
+        "metricsPort",
+        "setupGraceSeconds",
+        "podAnnotations",
+        "resources"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean", "const": true },
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "image": { "$ref": "#/definitions/workloadImage" },
+        "command": {
+          "type": "array",
+          "const": [
+            "python",
+            "-m",
+            "hallu_defense.worker",
+            "--metrics-host",
+            "0.0.0.0",
+            "--metrics-port",
+            "9090"
+          ]
+        },
+        "metricsPort": { "type": "integer", "const": 9090 },
+        "setupGraceSeconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "podAnnotations": { "$ref": "#/definitions/workerPrometheusAnnotations" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "migrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "expectedCount",
+        "expectedChecksums",
+        "waitTimeoutSeconds",
+        "image",
+        "command"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean", "const": true },
+        "expectedCount": { "type": "integer", "const": 14 },
+        "expectedChecksums": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "000_schema_migrations.sql",
+            "001_rag_evidence_chunks.sql",
+            "002_rag_corpus_grants.sql",
+            "003_audit_ledger.sql",
+            "004_approval_queue.sql",
+            "005_eval_reports.sql",
+            "006_ingestion_outbox.sql",
+            "007_ingestion_lease_fencing.sql",
+            "008_schema_migration_checksums.sql",
+            "009_drop_unsafe_ivfflat.sql",
+            "010_add_retrieved_at.sql",
+            "011_rag_lifecycle_outbox.sql",
+            "012_rag_tenant_deletion_fence.sql",
+            "013_audit_history_integrity.sql"
+          ],
+          "properties": {
+            "000_schema_migrations.sql": { "type": "string", "const": "1b95184e2da2027271f0faa7396e8e77d59c38f4f22779b1c1ba3ef8b288c9f7" },
+            "001_rag_evidence_chunks.sql": { "type": "string", "const": "d83ab44c8292b637aeb50bddda4852734e661fd622c97cf280ef1910fdcd9665" },
+            "002_rag_corpus_grants.sql": { "type": "string", "const": "1f71be2ff06b0099bac08338b66ed727b2e2c76d61975e9ba37b3bcd95eaf957" },
+            "003_audit_ledger.sql": { "type": "string", "const": "622afd56f9005bbe6617dd70a773aaeaf274ba981dcac08b3386db24144c8a38" },
+            "004_approval_queue.sql": { "type": "string", "const": "5b9de7132204a849f84448407f1c34ec5b65dd3f4e2064a6e03d8dfeb234b2fc" },
+            "005_eval_reports.sql": { "type": "string", "const": "1174b785a36ec7ab20c3d7ea4a44b5ecbf8c72aa5eb26aeeebffedfe86c7008a" },
+            "006_ingestion_outbox.sql": { "type": "string", "const": "65c5261eef78ef85d87d3d4c0a0a53801215908bd6976d4d1b2315adffad3d22" },
+            "007_ingestion_lease_fencing.sql": { "type": "string", "const": "5444d0b3bacbc10aaa25f58af903a732545caccbe0f534bf1d4aed7e412e406f" },
+            "008_schema_migration_checksums.sql": { "type": "string", "const": "bf79b45a1015f553f6f4516761d541bc1f4106c2f40bf52969e6c18fd951651f" },
+            "009_drop_unsafe_ivfflat.sql": { "type": "string", "const": "aec207e341e290b9ce881d0cb29efc8c5ff87d62760e08f949b8afb6e1fa2ab7" },
+            "010_add_retrieved_at.sql": { "type": "string", "const": "c3e1d88a7b6dd489beba1d22604e4b8244d214212be9992b3e8afe2aec4cf3b5" },
+            "011_rag_lifecycle_outbox.sql": { "type": "string", "const": "c76a3072243cbc620bd7aad9785edc9e08e95a626b3f08645c223b2ff0bd1d84" },
+            "012_rag_tenant_deletion_fence.sql": { "type": "string", "const": "4e854001f82516e3b989f7fb9f8c8693e2c5ff40e38f443d1311ba9bf12083e8" },
+            "013_audit_history_integrity.sql": { "type": "string", "const": "2b0481c79513dd9f6aa3541808aa6aefabddb8e5396f6cb046f0434c23464dd6" }
+          }
+        },
+        "waitTimeoutSeconds": { "type": "integer", "minimum": 30, "maximum": 600 },
+        "image": { "$ref": "#/definitions/workloadImage" },
+        "command": {
+          "type": "array",
+          "const": ["python", "scripts/dev/apply_postgres_migrations.py"]
         }
+      }
+    },
+    "kindDependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "vault", "pgvector", "opensearch", "redis"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "vault": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "image", "resources"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": {
+              "type": "string",
+              "const": "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54"
+            },
+            "resources": { "$ref": "#/definitions/resources" }
+          }
+        },
+        "pgvector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "image", "storage", "resources"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": { "$ref": "#/definitions/imageReference" },
+            "storage": { "$ref": "#/definitions/storageQuantity" },
+            "resources": { "$ref": "#/definitions/resources" }
+          }
+        },
+        "opensearch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "image", "storage", "resources"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": { "$ref": "#/definitions/imageReference" },
+            "storage": { "$ref": "#/definitions/storageQuantity" },
+            "resources": { "$ref": "#/definitions/resources" }
+          }
+        },
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "image", "resources"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": {
+              "type": "string",
+              "const": "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["server", "guard"],
+              "properties": {
+                "server": { "$ref": "#/definitions/resources" },
+                "guard": { "$ref": "#/definitions/resources" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "bootstrap", "migrations", "kindPostgres", "kindVault", "kindRedisTls"],
+      "properties": {
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "keycloakJwksKey", "vaultTokenKey", "postgresDsnKey"],
+          "properties": {
+            "name": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "keycloakJwksKey": { "$ref": "#/definitions/secretKey" },
+            "vaultTokenKey": { "$ref": "#/definitions/secretKey" },
+            "postgresDsnKey": { "$ref": "#/definitions/secretKey" }
+          }
+        },
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "vaultTokenKey"],
+          "properties": {
+            "name": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "vaultTokenKey": { "$ref": "#/definitions/secretKey" }
+          }
+        },
+        "migrations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "postgresDsnKey"],
+          "properties": {
+            "name": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "postgresDsnKey": { "$ref": "#/definitions/secretKey" }
+          }
+        },
+        "kindPostgres": { "$ref": "#/definitions/secretNameReference" },
+        "kindVault": { "$ref": "#/definitions/secretNameReference" },
+        "kindRedisTls": { "$ref": "#/definitions/secretNameReference" }
+      }
+    }
+  },
+  "definitions": {
+    "boundedString": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "dnsLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"
+    },
+    "dnsLabelOrEmpty": {
+      "type": "string",
+      "maxLength": 63,
+      "pattern": "^(?:|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"
+    },
+    "dnsSubdomainOrEmpty": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^(?:|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*)$"
+    },
+    "secretKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "logicalSecret": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+    },
+    "logicalSecretOrEmpty": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^(?:|[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*)$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 512,
+      "pattern": "^/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?)*(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[A-Za-z0-9._~!$&'()*+,;=:%/-]*)?$"
+    },
+    "httpsUrlOrEmpty": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(?:|https://[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?)*(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/[A-Za-z0-9._~!$&'()*+,;=:%/-]*)?)$"
+    },
+    "httpsOrigin": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?)*(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$"
+    },
+    "httpsOriginOrEmpty": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(?:|https://[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?)*(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?)$"
+    },
+    "httpsOrigins": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/httpsOrigin" }
+    },
+    "imageReference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9._/@:+-]+$"
+    },
+    "imageReferenceOrEmpty": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:|[A-Za-z0-9._/@:+-]+)$"
+    },
+    "workloadImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference"],
+      "properties": {
+        "reference": { "$ref": "#/definitions/imageReferenceOrEmpty" }
+      }
+    },
+    "cpuQuantity": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^(?:[1-9][0-9]*m|0\\.[0-9]*[1-9][0-9]*|[1-9][0-9]*(?:\\.[0-9]+)?)$"
+    },
+    "memoryQuantity": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi)$"
+    },
+    "storageQuantity": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$"
+    },
+    "resourcePair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memory"],
+      "properties": {
+        "cpu": { "$ref": "#/definitions/cpuQuantity" },
+        "memory": { "$ref": "#/definitions/memoryQuantity" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": { "$ref": "#/definitions/resourcePair" },
+        "limits": { "$ref": "#/definitions/resourcePair" }
+      }
+    },
+    "cidr": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/32$"
+        },
+        {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 47,
+          "pattern": "^(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?:(?::[0-9a-f]{1,4}){1,6})|:(?:(?::[0-9a-f]{1,4}){1,7}|:))/128$"
+        }
+      ]
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "cidrPortPeer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr", "port"],
+      "properties": {
+        "cidr": { "$ref": "#/definitions/cidr" },
+        "port": { "$ref": "#/definitions/port" }
+      }
+    },
+    "namedCidrPortPeer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "cidr", "port"],
+      "properties": {
+        "name": { "$ref": "#/definitions/dnsLabel" },
+        "cidr": { "$ref": "#/definitions/cidr" },
+        "port": { "$ref": "#/definitions/port" }
+      }
+    },
+    "externalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["external"],
+      "properties": {
+        "external": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/definitions/namedCidrPortPeer" }
+        }
+      }
+    },
+    "ingressPeer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "namespace", "podLabelKey", "podLabelValue"],
+      "properties": {
+        "name": { "$ref": "#/definitions/dnsLabel" },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^(?:\\$release|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)$"
+        },
+        "podLabelKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*/)?[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+        },
+        "podLabelValue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[A-Za-z0-9](?:[-A-Za-z0-9_.]*[A-Za-z0-9])?$"
+        }
+      }
+    },
+    "ingressPeers": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/definitions/ingressPeer" }
+    },
+    "apiPrometheusAnnotations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prometheus.io/scrape", "prometheus.io/path", "prometheus.io/port"],
+      "properties": {
+        "prometheus.io/scrape": { "type": "string", "const": "true" },
+        "prometheus.io/path": { "type": "string", "const": "/metrics" },
+        "prometheus.io/port": { "type": "string", "const": "8000" }
+      }
+    },
+    "workerPrometheusAnnotations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prometheus.io/scrape", "prometheus.io/path", "prometheus.io/port"],
+      "properties": {
+        "prometheus.io/scrape": { "type": "string", "const": "true" },
+        "prometheus.io/path": { "type": "string", "const": "/metrics" },
+        "prometheus.io/port": { "type": "string", "const": "9090" }
+      }
+    },
+    "secretNameReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/definitions/dnsSubdomainOrEmpty" }
       }
     }
   }

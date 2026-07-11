@@ -441,7 +441,7 @@ jobs:
   kind-helm-live:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     env:
       HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
     steps:
@@ -461,18 +461,23 @@ jobs:
           KUBECTL_VERSION: v1.36.1
           KUBECTL_SHA256: 629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7
         run: |
-          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
-          echo "${HELM_SHA256}  helm-${HELM_VERSION}-linux-amd64.tar.gz" | sha256sum --check
-          tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz"
-          sudo install linux-amd64/helm /usr/local/bin/helm
+          helm_archive="$RUNNER_TEMP/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          helm_extract="$RUNNER_TEMP/helm-${HELM_VERSION}"
+          curl -fsSL --output "$helm_archive" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "${HELM_SHA256}" "$helm_archive" | sha256sum --check
+          mkdir -p "$helm_extract"
+          tar -xzf "$helm_archive" -C "$helm_extract"
+          sudo install "$helm_extract/linux-amd64/helm" /usr/local/bin/helm
 
-          curl -fsSLo kind-linux-amd64 "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
-          echo "${KIND_SHA256}  kind-linux-amd64" | sha256sum --check
-          sudo install kind-linux-amd64 /usr/local/bin/kind
+          kind_binary="$RUNNER_TEMP/kind-linux-amd64"
+          curl -fsSL --output "$kind_binary" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          printf '%s  %s\n' "${KIND_SHA256}" "$kind_binary" | sha256sum --check
+          sudo install "$kind_binary" /usr/local/bin/kind
 
-          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          echo "${KUBECTL_SHA256}  kubectl" | sha256sum --check
-          sudo install kubectl /usr/local/bin/kubectl
+          kubectl_binary="$RUNNER_TEMP/kubectl"
+          curl -fsSL --output "$kubectl_binary" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          printf '%s  %s\n' "${KUBECTL_SHA256}" "$kubectl_binary" | sha256sum --check
+          sudo install "$kubectl_binary" /usr/local/bin/kubectl
 
           helm version --short
           kind version
@@ -486,9 +491,71 @@ jobs:
       - name: Run kind/Helm live installation smoke
         env:
           HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED: "true"
-          HALLU_DEFENSE_LIVE_KIND_HELM_CLUSTER: ${{ vars.HALLU_DEFENSE_LIVE_KIND_HELM_CLUSTER || 'hallu-defense-smoke' }}
+          HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
           HALLU_DEFENSE_LIVE_KIND_HELM_NAMESPACE: ${{ vars.HALLU_DEFENSE_LIVE_KIND_HELM_NAMESPACE || 'hallu-defense' }}
         run: python scripts/dev/live_kind_helm_smoke.py
+      - name: Teardown only the exact scratch kind cluster and image tags
+        if: always()
+        env:
+          HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set +e
+          failures=0
+          cluster="hallu-defense-smoke-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+          clusters_before="$(kind get clusters 2>&1)"
+          if [ "$?" -ne 0 ]; then
+            echo "could not inventory kind clusters before cleanup: ${clusters_before}" >&2
+            failures=1
+          elif printf '%s\n' "${clusters_before}" | grep -Fxq "${cluster}"; then
+            if ! kind delete cluster --name "${cluster}"; then
+              echo "failed to delete exact scratch cluster: ${cluster}" >&2
+              failures=1
+            fi
+          fi
+
+          images=(
+            "hallu-defense-api:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+            "hallu-defense-console:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+            "hallu-defense-sandbox:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+            "hallu-defense-pgvector:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+            "hallu-defense-opensearch:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+          )
+          images_before="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>&1)"
+          if [ "$?" -ne 0 ]; then
+            echo "could not inventory Docker images before cleanup: ${images_before}" >&2
+            failures=1
+          else
+            for image in "${images[@]}"; do
+              if printf '%s\n' "${images_before}" | grep -Fxq "${image}"; then
+                if ! docker image rm "${image}"; then
+                  echo "failed to remove exact scratch image tag: ${image}" >&2
+                  failures=1
+                fi
+              fi
+            done
+          fi
+
+          clusters_after="$(kind get clusters 2>&1)"
+          if [ "$?" -ne 0 ]; then
+            echo "could not verify kind cluster cleanup: ${clusters_after}" >&2
+            failures=1
+          elif printf '%s\n' "${clusters_after}" | grep -Fxq "${cluster}"; then
+            echo "scratch kind cluster still exists: ${cluster}" >&2
+            failures=1
+          fi
+          images_after="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>&1)"
+          if [ "$?" -ne 0 ]; then
+            echo "could not verify Docker image cleanup: ${images_after}" >&2
+            failures=1
+          else
+            for image in "${images[@]}"; do
+              if printf '%s\n' "${images_after}" | grep -Fxq "${image}"; then
+                echo "scratch image tag still exists: ${image}" >&2
+                failures=1
+              fi
+            done
+          fi
+          exit "${failures}"
 
   eval-reports-live:
     runs-on: ubuntu-24.04

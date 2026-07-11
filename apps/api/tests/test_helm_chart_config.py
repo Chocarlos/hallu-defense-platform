@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
+import shutil
+import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import yaml
+from jsonschema import Draft7Validator
 
 
 def _repo_root() -> Path:
@@ -37,6 +43,7 @@ SECURITY_WORKFLOW_PATH = check_helm_chart.SECURITY_WORKFLOW_PATH
 KIND_VALUES_PATH = check_helm_chart.KIND_VALUES_PATH
 KIND_VAULT_BOOTSTRAP_PATH = check_helm_chart.KIND_VAULT_BOOTSTRAP_PATH
 VALUES_PATH = check_helm_chart.VALUES_PATH
+VALUES_SCHEMA_PATH = check_helm_chart.VALUES_SCHEMA_PATH
 WORKER_RUNTIME_PATH = check_helm_chart.WORKER_RUNTIME_PATH
 load_template_texts = check_helm_chart.load_template_texts
 load_yaml_file = check_helm_chart.load_yaml_file
@@ -66,8 +73,344 @@ def _current_inputs() -> dict[str, object]:
     }
 
 
+def _values_schema() -> dict[str, object]:
+    payload = json.loads(VALUES_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _merged_kind_values() -> dict[str, object]:
+    merged = copy.deepcopy(load_yaml_file(VALUES_PATH))
+
+    def merge(target: dict[str, object], override: dict[str, object]) -> None:
+        for key, value in override.items():
+            current = target.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                merge(current, value)
+            else:
+                target[key] = copy.deepcopy(value)
+
+    merge(merged, load_yaml_file(KIND_VALUES_PATH))
+    return merged
+
+
 def test_helm_chart_validates_current_repository() -> None:
     validate_helm_chart(**_current_inputs())
+
+
+def test_values_schema_is_draft7_and_closes_every_object_shape() -> None:
+    schema = _values_schema()
+
+    assert schema["$schema"] in {
+        "http://json-schema.org/draft-07/schema#",
+        "https://json-schema.org/draft-07/schema#",
+    }
+    Draft7Validator.check_schema(schema)
+    pending: list[tuple[str, object]] = [("$", schema)]
+    object_paths: list[str] = []
+    while pending:
+        path, node = pending.pop()
+        if isinstance(node, dict):
+            if node.get("type") == "object" or isinstance(node.get("properties"), dict):
+                object_paths.append(path)
+                assert node.get("additionalProperties") is False, path
+            for key, child in node.items():
+                pending.append((f"{path}/{key}", child))
+        elif isinstance(node, list):
+            for index, child in enumerate(node):
+                pending.append((f"{path}/{index}", child))
+    assert len(object_paths) >= 40
+
+
+@pytest.mark.parametrize(
+    ("profile", "values_factory"),
+    [
+        ("base", lambda: load_yaml_file(VALUES_PATH)),
+        ("kind", _merged_kind_values),
+    ],
+)
+def test_values_schema_accepts_complete_baseline_profiles(
+    profile: str,
+    values_factory: Callable[[], dict[str, object]],
+) -> None:
+    errors = sorted(
+        Draft7Validator(_values_schema()).iter_errors(values_factory()),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+
+    assert not errors, (
+        f"{profile} values failed Draft 7 validation: "
+        + "; ".join(
+            f"/{'/'.join(str(part) for part in error.absolute_path)}: {error.message}"
+            for error in errors
+        )
+    )
+
+
+def test_values_schema_rejects_unknown_top_level_and_nested_keys() -> None:
+    validator = Draft7Validator(_values_schema())
+    values = _merged_kind_values()
+    values["workre"] = {"enabled": True}
+    values["worker"]["metricPort"] = 9090
+    values["sandbox"]["cleanupGraceSecond"] = 10
+
+    locations = {
+        "/" + "/".join(str(part) for part in error.absolute_path)
+        for error in validator.iter_errors(values)
+    }
+    assert "/" in locations
+    assert "/worker" in locations
+    assert "/sandbox" in locations
+
+
+@pytest.mark.parametrize(
+    ("path", "invalid"),
+    [
+        (("worker", "enabled"), False),
+        (("worker", "replicas"), -1),
+        (("worker", "metricsPort"), 0),
+        (("worker", "metricsPort"), 65_536),
+        (("worker", "command"), "python -m hallu_defense.worker"),
+        (("worker", "setupGraceSeconds"), 0),
+        (("api", "service", "port"), 0),
+        (("api", "replicas"), -1),
+        (("migrations", "expectedCount"), 13),
+        (("sandbox", "setupGraceSeconds"), 4),
+        (("sandbox", "setupGraceSeconds"), 61),
+        (("sandbox", "cleanupGraceSeconds"), 0),
+        (("sandbox", "cleanupGraceSeconds"), 121),
+        (("sandbox", "cleanupGraceSeconds"), "10"),
+        (("provider", "apiKeySecretName"), "a/../b"),
+        (("vault", "mount"), "secret/../root"),
+        (("rateLimit", "redis", "urlSecretName"), "a//b"),
+        (("vault", "address"), "https://vault.example:65536"),
+        (("provider", "openaiCompatibleBaseUrl"), "https://a..b/v1"),
+        (("provider", "openaiCompatibleBaseUrl"), "https://a-.b/v1"),
+        (("provider", "openaiCompatibleBaseUrl"), f"https://{'a' * 64}.b/v1"),
+        (("networkPolicy", "kubernetesApi", 0, "cidr"), "::::/128"),
+        (("kindDependencies", "vault", "image"), "busybox:latest"),
+        (("kindDependencies", "redis", "image"), "busybox:latest"),
+        (("networkPolicy", "ingress", "api", "callers", 0, "podLabelKey"), "a//b"),
+        (("networkPolicy", "ingress", "api", "callers", 0, "podLabelKey"), "a/b/c"),
+        (
+            ("networkPolicy", "ingress", "api", "callers", 0, "podLabelKey"),
+            "A.example/key",
+        ),
+    ],
+)
+def test_values_schema_rejects_invalid_types_ports_and_ranges(
+    path: tuple[str | int, ...],
+    invalid: object,
+) -> None:
+    values = _merged_kind_values()
+    target = values
+    for segment in path[:-1]:
+        target = target[segment]
+    target[path[-1]] = invalid
+
+    errors = list(Draft7Validator(_values_schema()).iter_errors(values))
+    assert errors
+    assert any(tuple(error.absolute_path) == path for error in errors)
+
+
+def test_values_schema_pins_exact_migration_checksum_inventory() -> None:
+    values = load_yaml_file(VALUES_PATH)
+    checksums = values["migrations"]["expectedChecksums"]
+    checksums["000_schema_migrations.sql"] = "0" * 64
+    checksums["999_typo.sql"] = "1" * 64
+
+    errors = list(Draft7Validator(_values_schema()).iter_errors(values))
+    assert errors
+    rendered = "\n".join(error.message for error in errors)
+    assert "999_typo.sql" in rendered
+    assert "1b95184e" in rendered
+
+
+@pytest.mark.parametrize(
+    ("release", "overrides", "expected_marker"),
+    [
+        (
+            "hallu-defense",
+            ("--set", "worker.enabeld=true"),
+            "worker",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "worker.metricsPort=0"),
+            "metricsport",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "worker.enabled=false"),
+            "enabled",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "sandbox.cleanupGraceSeconds=0"),
+            "cleanupgraceseconds",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "sandbox.cleanupGraceSeconds=121"),
+            "cleanupgraceseconds",
+        ),
+        (
+            "hallu-defense",
+            ("--set-string", "sandbox.cleanupGraceSeconds=oops"),
+            "cleanupgraceseconds",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "sandbox.cleanupGraceSecond=10"),
+            "sandbox",
+        ),
+        (
+            "hallu-defense",
+            ("--set-string", "kindDependencies.pgvector.image=postgres:latest"),
+            "exact local repository",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "kindDependencies.redis.enabled=false"),
+            "requires vault, pgvector, opensearch, and redis fixtures",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "global.imagePullPolicy=Always"),
+            "imagepullpolicy=ifnotpresent",
+        ),
+        (
+            "hallu-defense",
+            ("--set", "sandbox.image.pullPolicy=Always"),
+            "pullpolicy=ifnotpresent",
+        ),
+        (
+            "hallu-defense",
+            ("--set-string", "kindDependencies.vault.image=busybox:latest"),
+            "vault/image",
+        ),
+        (
+            "hallu-defense",
+            ("--set-string", "kindDependencies.redis.image=busybox:latest"),
+            "redis/image",
+        ),
+        (
+            "hallu-defense",
+            (
+                "--set-string",
+                "console.publicOrigin=https://console.kind.invalid:65536",
+                "--set-string",
+                "cors.allowOrigins[0]=https://console.kind.invalid:65536",
+            ),
+            "publicorigin",
+        ),
+        (
+            "hallu-defense",
+            ("--set-string", "networkPolicy.kubernetesApi[0].cidr=::::/128"),
+            "cidr",
+        ),
+        (
+            "hallu-defense",
+            ("--set-string", "provider.apiKeySecretName=a/../b"),
+            "apikeysecretname",
+        ),
+        (
+            "hallu-defense",
+            (
+                "--set-string",
+                "networkPolicy.ingress.api.callers[0].podLabelKey=a//b",
+            ),
+            "podlabelkey",
+        ),
+        (
+            "hallu-defense-release-name-deliberate-long",
+            (),
+            "at most 38",
+        ),
+    ],
+)
+def test_helm_template_fails_closed_for_typos_and_dangerous_values(
+    release: str,
+    overrides: tuple[str, ...],
+    expected_marker: str,
+) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("Helm is unavailable")
+
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            release,
+            str(CHART_PATH.parent),
+            "--namespace",
+            "hallu-defense",
+            "--values",
+            str(KIND_VALUES_PATH),
+            *overrides,
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    detail = f"{result.stdout}\n{result.stderr}".lower()
+    assert result.returncode != 0
+    assert expected_marker.lower() in detail
+
+
+@pytest.mark.parametrize(
+    "component",
+    ["migrations", "vault-bootstrap", "sandbox-fixture"],
+)
+def test_rendered_revision_jobs_reject_semantic_ttl_drift(component: str) -> None:
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.skip("Helm is unavailable")
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "hallu-defense",
+            str(CHART_PATH.parent),
+            "--namespace",
+            "hallu-defense",
+            "--values",
+            str(KIND_VALUES_PATH),
+        ],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    documents = list(yaml.safe_load_all(result.stdout))
+    target = next(
+        document
+        for document in documents
+        if isinstance(document, dict)
+        and document.get("kind") == "Job"
+        and document.get("metadata", {})
+        .get("labels", {})
+        .get("app.kubernetes.io/component")
+        == component
+    )
+    target["spec"]["ttlSecondsAfterFinished"] = 601
+    target.setdefault("metadata", {}).setdefault("annotations", {})[
+        "test-only-original-ttl"
+    ] = "ttlSecondsAfterFinished: 600"
+
+    with pytest.raises(
+        HelmChartConfigError,
+        match=rf"rendered {component} Job must set ttlSecondsAfterFinished=600",
+    ):
+        check_helm_chart._validate_rendered_manifest(yaml.safe_dump_all(documents))
 
 
 def test_helm_chart_rejects_missing_worker_template() -> None:
@@ -77,6 +420,49 @@ def test_helm_chart_rejects_missing_worker_template() -> None:
     inputs["templates"] = templates
 
     with pytest.raises(HelmChartConfigError, match="worker-deployment"):
+        validate_helm_chart(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("template_name", "error_marker"),
+    [
+        ("migration-job.yaml", "migration Job"),
+        ("vault-bootstrap-job.yaml", "Vault bootstrap Job"),
+        ("sandbox-fixture-job.yaml", "sandbox fixture Job"),
+    ],
+)
+def test_helm_chart_rejects_revision_job_ttl_drift(
+    template_name: str,
+    error_marker: str,
+) -> None:
+    inputs = _current_inputs()
+    templates = dict(inputs["templates"])
+    original = templates[template_name]
+    templates[template_name] = original.replace(
+        "ttlSecondsAfterFinished: 600",
+        "ttlSecondsAfterFinished: 601",
+        1,
+    )
+    assert templates[template_name] != original
+    inputs["templates"] = templates
+
+    with pytest.raises(HelmChartConfigError, match=error_marker):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_rejects_missing_api_cleanup_grace_mapping() -> None:
+    inputs = _current_inputs()
+    templates = dict(inputs["templates"])
+    helpers = templates["_helpers.tpl"]
+    cleanup_block = (
+        "- name: HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS\n"
+        "  value: {{ .Values.sandbox.cleanupGraceSeconds | quote }}\n"
+    )
+    assert cleanup_block in helpers
+    templates["_helpers.tpl"] = helpers.replace(cleanup_block, "", 1)
+    inputs["templates"] = templates
+
+    with pytest.raises(HelmChartConfigError, match="cleanup grace environment"):
         validate_helm_chart(**inputs)
 
 
@@ -187,6 +573,31 @@ def test_helm_chart_requires_worker_authenticated_metrics_port() -> None:
     inputs["templates"] = templates
 
     with pytest.raises(HelmChartConfigError, match="metrics integration"):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_requires_worker_setup_grace_on_both_probes() -> None:
+    inputs = _current_inputs()
+    templates = dict(inputs["templates"])
+    templates["worker-deployment.yaml"] = templates["worker-deployment.yaml"].replace(
+        "initialDelaySeconds: {{ .Values.worker.setupGraceSeconds }}",
+        "initialDelaySeconds: 1",
+    )
+    inputs["templates"] = templates
+
+    with pytest.raises(HelmChartConfigError, match="worker authenticated metrics"):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_requires_fixture_pod_readiness_evidence() -> None:
+    inputs = _current_inputs()
+    templates = dict(inputs["templates"])
+    templates["sandbox-fixture-job.yaml"] = templates[
+        "sandbox-fixture-job.yaml"
+    ].replace("readinessProbe:", "removedReadinessProbe:")
+    inputs["templates"] = templates
+
+    with pytest.raises(HelmChartConfigError, match="sandbox fixture Job"):
         validate_helm_chart(**inputs)
 
 

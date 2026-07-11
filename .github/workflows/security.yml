@@ -35,6 +35,21 @@ jobs:
       - run: test "$(npm --version)" = "11.16.0"
       - run: npm ci
       - run: python scripts/ci/check_python_reproducibility.py
+      - name: Install pinned Helm for security chart gates
+        env:
+          HELM_VERSION: v4.2.2
+          HELM_SHA256: 9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6
+        run: |
+          archive="$RUNNER_TEMP/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          extract_dir="$RUNNER_TEMP/helm-${HELM_VERSION}"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "${HELM_SHA256}" "$archive" | sha256sum --check
+          mkdir -p "$extract_dir"
+          tar -xzf "$archive" -C "$extract_dir"
+          sudo install "$extract_dir/linux-amd64/helm" /usr/local/bin/helm
+          test "$(helm version --short)" = "v4.2.2+gb05881c"
       - name: Install pinned Gitleaks
         shell: bash
         run: |

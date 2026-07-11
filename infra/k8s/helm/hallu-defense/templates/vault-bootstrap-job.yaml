@@ -6,6 +6,7 @@ metadata:
   labels:
     {{- include "hallu-defense.labels" . | nindent 4 }}
     app.kubernetes.io/component: vault-bootstrap
+    hallu-defense.openai.com/release-revision: {{ .Release.Revision | quote }}
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: {{ .Values.migrations.waitTimeoutSeconds }}
@@ -15,6 +16,7 @@ spec:
       labels:
         {{- include "hallu-defense.labels" . | nindent 8 }}
         app.kubernetes.io/component: vault-bootstrap
+        hallu-defense.openai.com/release-revision: {{ .Release.Revision | quote }}
     spec:
       restartPolicy: OnFailure
       automountServiceAccountToken: false

@@ -115,6 +115,9 @@ sandbox:
   pollIntervalSeconds: 0.25
   jobTtlSeconds: 60
   apiRequestTimeoutSeconds: 5
+  # Additional post-DELETE convergence budget. The Kubernetes backend must use
+  # it to prove that the exact Job and every Pod owned by its UID are absent.
+  cleanupGraceSeconds: 10
   # Bounded allowance for scheduling and the verified PVC-to-emptyDir copy;
   # each command still has its own commandTimeoutSeconds budget.
   setupGraceSeconds: 15
@@ -191,6 +194,9 @@ worker:
     - --metrics-port
     - "9090"
   metricsPort: 9090
+  # Bound the initial dependency/readiness grace period; the readiness command
+  # still performs the authoritative PostgreSQL/OpenSearch checks.
+  setupGraceSeconds: 10
   podAnnotations:
     prometheus.io/scrape: "true"
     prometheus.io/path: /metrics
@@ -206,6 +212,24 @@ worker:
 migrations:
   enabled: true
   expectedCount: 14
+  # SHA-256 over the normalized UTF-8 SQL text recorded by the migration
+  # applier. The chart gate derives this inventory from infra/rag/pgvector and
+  # fails on any count, filename, or checksum drift.
+  expectedChecksums:
+    000_schema_migrations.sql: 1b95184e2da2027271f0faa7396e8e77d59c38f4f22779b1c1ba3ef8b288c9f7
+    001_rag_evidence_chunks.sql: d83ab44c8292b637aeb50bddda4852734e661fd622c97cf280ef1910fdcd9665
+    002_rag_corpus_grants.sql: 1f71be2ff06b0099bac08338b66ed727b2e2c76d61975e9ba37b3bcd95eaf957
+    003_audit_ledger.sql: 622afd56f9005bbe6617dd70a773aaeaf274ba981dcac08b3386db24144c8a38
+    004_approval_queue.sql: 5b9de7132204a849f84448407f1c34ec5b65dd3f4e2064a6e03d8dfeb234b2fc
+    005_eval_reports.sql: 1174b785a36ec7ab20c3d7ea4a44b5ecbf8c72aa5eb26aeeebffedfe86c7008a
+    006_ingestion_outbox.sql: 65c5261eef78ef85d87d3d4c0a0a53801215908bd6976d4d1b2315adffad3d22
+    007_ingestion_lease_fencing.sql: 5444d0b3bacbc10aaa25f58af903a732545caccbe0f534bf1d4aed7e412e406f
+    008_schema_migration_checksums.sql: bf79b45a1015f553f6f4516761d541bc1f4106c2f40bf52969e6c18fd951651f
+    009_drop_unsafe_ivfflat.sql: aec207e341e290b9ce881d0cb29efc8c5ff87d62760e08f949b8afb6e1fa2ab7
+    010_add_retrieved_at.sql: c3e1d88a7b6dd489beba1d22604e4b8244d214212be9992b3e8afe2aec4cf3b5
+    011_rag_lifecycle_outbox.sql: c76a3072243cbc620bd7aad9785edc9e08e95a626b3f08645c223b2ff0bd1d84
+    012_rag_tenant_deletion_fence.sql: 4e854001f82516e3b989f7fb9f8c8693e2c5ff40e38f443d1311ba9bf12083e8
+    013_audit_history_integrity.sql: 2b0481c79513dd9f6aa3541808aa6aefabddb8e5396f6cb046f0434c23464dd6
   waitTimeoutSeconds: 600
   image:
     reference: ""

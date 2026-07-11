@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/component: worker
 spec:
   replicas: {{ .Values.worker.replicas }}
+  progressDeadlineSeconds: {{ add (int .Values.migrations.waitTimeoutSeconds) (int .Values.worker.setupGraceSeconds) }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
@@ -126,7 +127,7 @@ spec:
 
                   command = Path("/proc/1/cmdline").read_bytes()
                   raise SystemExit(0 if b"hallu_defense.worker" in command else 1)
-            initialDelaySeconds: 20
+            initialDelaySeconds: {{ add (int .Values.worker.setupGraceSeconds) 10 }}
             periodSeconds: 30
             timeoutSeconds: 5
           readinessProbe:
@@ -136,7 +137,7 @@ spec:
                 - -m
                 - hallu_defense.worker
                 - --check-ready
-            initialDelaySeconds: 10
+            initialDelaySeconds: {{ .Values.worker.setupGraceSeconds }}
             periodSeconds: 20
             timeoutSeconds: 5
           resources:

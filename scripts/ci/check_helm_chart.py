@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import ipaddress
 import json
 import re
@@ -9,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import yaml
+from jsonschema import Draft7Validator, SchemaError
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART_DIR = ROOT / "infra" / "k8s" / "helm" / "hallu-defense"
@@ -47,6 +50,12 @@ EXPECTED_MIGRATION_VERSIONS = tuple(
     path.name for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
 )
 EXPECTED_MIGRATION_COUNT = len(EXPECTED_MIGRATION_VERSIONS)
+EXPECTED_MIGRATION_CHECKSUMS = {
+    path.name: hashlib.sha256(
+        path.read_text(encoding="utf-8").encode("utf-8")
+    ).hexdigest()
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
+}
 REQUIRED_TEMPLATE_FILES = {
     "_helpers.tpl",
     "application-egress-network-policies.yaml",
@@ -147,7 +156,7 @@ def validate_helm_chart(
 ) -> None:
     errors: list[str] = []
     _validate_chart_metadata(chart, errors)
-    _validate_values_schema(errors)
+    _validate_values_schema(values, kind_values, errors)
     _validate_values(values, kind_values, errors)
     _validate_templates(templates, errors)
     _validate_migration_readiness_contract(
@@ -208,6 +217,142 @@ def run_helm_template_if_available(
         label="helm template",
     )
     _validate_rendered_manifest(template_result.stdout)
+    for label, release, overrides, expected_error in (
+        (
+            "kind unknown worker typo",
+            "hallu-defense",
+            ("--set", "worker.enabeld=true"),
+            "/worker",
+        ),
+        (
+            "kind invalid worker metrics port",
+            "hallu-defense",
+            ("--set", "worker.metricsPort=0"),
+            "/worker/metricsPort",
+        ),
+        (
+            "kind invalid worker metrics port type",
+            "hallu-defense",
+            ("--set-string", "worker.metricsPort=oops"),
+            "/worker/metricsPort",
+        ),
+        (
+            "kind excessive worker replicas",
+            "hallu-defense",
+            ("--set", "worker.replicas=65"),
+            "/worker/replicas",
+        ),
+        (
+            "kind excessive sandbox setup grace",
+            "hallu-defense",
+            ("--set", "sandbox.setupGraceSeconds=61"),
+            "/sandbox/setupGraceSeconds",
+        ),
+        (
+            "kind zero sandbox cleanup grace",
+            "hallu-defense",
+            ("--set", "sandbox.cleanupGraceSeconds=0"),
+            "/sandbox/cleanupGraceSeconds",
+        ),
+        (
+            "kind excessive sandbox cleanup grace",
+            "hallu-defense",
+            ("--set", "sandbox.cleanupGraceSeconds=121"),
+            "/sandbox/cleanupGraceSeconds",
+        ),
+        (
+            "kind invalid sandbox cleanup grace type",
+            "hallu-defense",
+            ("--set-string", "sandbox.cleanupGraceSeconds=oops"),
+            "/sandbox/cleanupGraceSeconds",
+        ),
+        (
+            "kind unknown sandbox cleanup typo",
+            "hallu-defense",
+            ("--set", "sandbox.cleanupGraceSecond=10"),
+            "/sandbox",
+        ),
+        (
+            "kind disabled required worker",
+            "hallu-defense",
+            ("--set", "worker.enabled=false"),
+            "/worker/enabled",
+        ),
+        (
+            "kind disabled required Redis fixture",
+            "hallu-defense",
+            ("--set", "kindDependencies.redis.enabled=false"),
+            "requires vault, pgvector, opensearch, and redis fixtures",
+        ),
+        (
+            "kind arbitrary Vault image",
+            "hallu-defense",
+            ("--set-string", "kindDependencies.vault.image=busybox:latest"),
+            "/kindDependencies/vault/image",
+        ),
+        (
+            "kind arbitrary Redis image",
+            "hallu-defense",
+            ("--set-string", "kindDependencies.redis.image=busybox:latest"),
+            "/kindDependencies/redis/image",
+        ),
+        (
+            "kind remote pull policy",
+            "hallu-defense",
+            ("--set", "global.imagePullPolicy=Always"),
+            "global.imagePullPolicy=IfNotPresent",
+        ),
+        (
+            "kind invalid HTTPS origin port",
+            "hallu-defense",
+            (
+                "--set-string",
+                "console.publicOrigin=https://console.kind.invalid:65536",
+                "--set-string",
+                "cors.allowOrigins[0]=https://console.kind.invalid:65536",
+            ),
+            "/console/publicOrigin",
+        ),
+        (
+            "kind invalid IPv6 host CIDR",
+            "hallu-defense",
+            ("--set-string", "networkPolicy.kubernetesApi[0].cidr=::::/128"),
+            "/networkPolicy/kubernetesApi/0/cidr",
+        ),
+        (
+            "kind traversing logical Secret path",
+            "hallu-defense",
+            ("--set-string", "provider.apiKeySecretName=a/../b"),
+            "/provider/apiKeySecretName",
+        ),
+        (
+            "kind invalid qualified Pod label key",
+            "hallu-defense",
+            (
+                "--set-string",
+                "networkPolicy.ingress.api.callers[0].podLabelKey=a//b",
+            ),
+            "/networkPolicy/ingress/api/callers/0/podLabelKey",
+        ),
+        (
+            "kind overlong release-derived name",
+            "hallu-defense-release-name-deliberate-long",
+            (),
+            "release-derived fullname must be at most 38 characters",
+        ),
+    ):
+        _run_helm_command_expect_failure(
+            [
+                executable,
+                "template",
+                release,
+                str(CHART_DIR),
+                *value_args,
+                *overrides,
+            ],
+            label=label,
+            expected_error=expected_error,
+        )
     production_args = _production_helm_value_args()
     production_result = _run_helm_command(
         [executable, "template", "hallu-defense", str(CHART_DIR), *production_args],
@@ -334,12 +479,12 @@ def run_helm_template_if_available(
         (
             "production invalid runtime Secret name",
             ("--set-string", "secrets.runtime.name=Invalid_Secret"),
-            "secrets.runtime.name must be a valid Kubernetes DNS subdomain",
+            "/secrets/runtime/name",
         ),
         (
             "production invalid runtime Secret key",
             ("--set-string", "secrets.runtime.postgresDsnKey=invalid/key"),
-            "must be a valid Kubernetes Secret data key",
+            "/secrets/runtime/postgresDsnKey",
         ),
         (
             "production reused runtime Secret for bootstrap",
@@ -372,32 +517,32 @@ def run_helm_template_if_available(
         (
             "production wildcard API egress",
             ("--set-string", "networkPolicy.api.external[0].cidr=203.0.113.1/0"),
-            "must identify exactly one host (/32 IPv4 or /128 IPv6)",
+            "/networkPolicy/api/external/0/cidr",
         ),
         (
             "production split-default API egress",
             ("--set-string", "networkPolicy.api.external[0].cidr=0.0.0.0/1"),
-            "must identify exactly one host (/32 IPv4 or /128 IPv6)",
+            "/networkPolicy/api/external/0/cidr",
         ),
         (
             "production broad IPv6 API egress",
             ("--set-string", "networkPolicy.api.external[0].cidr=2001:db8::/64"),
-            "must identify exactly one host (/32 IPv4 or /128 IPv6)",
+            "/networkPolicy/api/external/0/cidr",
         ),
         (
             "production insecure OpenSearch",
             ("--set-string", "opensearch.endpoint=http://opensearch.prod.invalid:9200"),
-            "production OpenSearch endpoint must use HTTPS",
+            "/opensearch/endpoint",
         ),
         (
             "production insecure Console public origin",
             ("--set-string", "console.publicOrigin=http://console.prod.invalid"),
-            "console.publicOrigin must be an exact canonical HTTPS origin",
+            "/console/publicOrigin",
         ),
         (
             "production noncanonical Console API origin",
             ("--set-string", "console.apiOrigin=https://api.prod.invalid/"),
-            "console.apiOrigin must be an exact canonical HTTPS origin",
+            "/console/apiOrigin",
         ),
         (
             "production mismatched Console issuer",
@@ -455,7 +600,7 @@ def run_helm_template_if_available(
     return {
         "status": "passed",
         "command": HELM_TEMPLATE_COMMAND,
-        "checks": ["helm lint", "helm template"],
+        "checks": ["helm lint", "helm template", "negative values"],
     }
 
 
@@ -551,7 +696,6 @@ def _production_helm_value_args(
             {
                 "networkPolicy.console.external[0].name": "console-oidc-egress-gateway",
                 "networkPolicy.console.external[0].cidr": "198.51.100.20/32",
-                "networkPolicy.console.external[0].port": "443",
             }
         )
     if include_api_ingress_callers:
@@ -588,6 +732,8 @@ def _production_helm_value_args(
     )
     if include_migrations_egress:
         args.extend(("--set", "networkPolicy.migrations.external[0].port=5432"))
+    if include_console_egress:
+        args.extend(("--set", "networkPolicy.console.external[0].port=443"))
     return args
 
 
@@ -656,7 +802,11 @@ def _validate_chart_metadata(chart: Mapping[str, object], errors: list[str]) -> 
         )
 
 
-def _validate_values_schema(errors: list[str]) -> None:
+def _validate_values_schema(
+    values: Mapping[str, object],
+    kind_values: Mapping[str, object],
+    errors: list[str],
+) -> None:
     try:
         payload = json.loads(VALUES_SCHEMA_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -667,33 +817,79 @@ def _validate_values_schema(errors: list[str]) -> None:
     if not isinstance(payload, Mapping):
         errors.append("values.schema.json must contain an object")
         return
+    if payload.get("$schema") != "https://json-schema.org/draft-07/schema#":
+        errors.append("values.schema.json must declare JSON Schema Draft 7")
+    try:
+        Draft7Validator.check_schema(payload)
+    except SchemaError as exc:
+        errors.append(f"values.schema.json is not valid Draft 7: {exc.message}")
+        return
+
     properties = _mapping(payload.get("properties"), "values.schema.properties", errors)
-    console = _mapping(properties.get("console"), "values.schema.console", errors)
-    console_properties = _mapping(
-        console.get("properties"), "values.schema.console.properties", errors
-    )
-    if console.get("additionalProperties") is not False:
+    actual_top_level = set(values)
+    if set(properties) != actual_top_level:
         errors.append(
-            "values.schema.json Console contract must reject unknown properties"
+            "values.schema.json must declare every and only top-level values key"
         )
-    if console_properties.get("replicas") != {"type": "integer", "const": 1}:
-        errors.append(
-            "values.schema.json must constrain console.replicas to integer const 1"
-        )
-    oidc = _mapping(
-        console_properties.get("oidc"), "values.schema.console.oidc", errors
-    )
-    oidc_properties = _mapping(
-        oidc.get("properties"), "values.schema.console.oidc.properties", errors
-    )
-    if oidc.get("additionalProperties") is not False or set(oidc_properties) != {
-        "issuer",
-        "clientId",
-        "apiAudience",
-    }:
-        errors.append(
-            "values.schema.json must expose only the Console OIDC identifiers"
-        )
+    required = payload.get("required")
+    if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
+        errors.append("values.schema.json root required must be an array")
+    elif set(required) != actual_top_level:
+        errors.append("values.schema.json must require every top-level values key")
+
+    for path, schema_node in _iter_schema_nodes(payload):
+        if schema_node.get("type") == "object" and schema_node.get(
+            "additionalProperties"
+        ) is not False:
+            errors.append(
+                "values.schema.json object schemas must reject unknown properties: "
+                + path
+            )
+
+    validator = Draft7Validator(payload)
+    for profile, document in (
+        ("base values", values),
+        ("kind merged values", _deep_merge(values, kind_values)),
+    ):
+        for validation_error in sorted(
+            validator.iter_errors(document), key=lambda item: list(item.absolute_path)
+        ):
+            path = ".".join(str(part) for part in validation_error.absolute_path)
+            location = f" at {path}" if path else ""
+            errors.append(
+                f"values.schema.json rejected {profile}{location}: "
+                f"{validation_error.message}"
+            )
+
+
+def _iter_schema_nodes(
+    value: object,
+    *,
+    path: str = "$",
+) -> Sequence[tuple[str, Mapping[str, object]]]:
+    nodes: list[tuple[str, Mapping[str, object]]] = []
+    if isinstance(value, Mapping):
+        nodes.append((path, value))
+        for key, child in value.items():
+            nodes.extend(_iter_schema_nodes(child, path=f"{path}.{key}"))
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for index, child in enumerate(value):
+            nodes.extend(_iter_schema_nodes(child, path=f"{path}[{index}]"))
+    return nodes
+
+
+def _deep_merge(
+    base: Mapping[str, object],
+    override: Mapping[str, object],
+) -> dict[str, object]:
+    merged = copy.deepcopy(dict(base))
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, Mapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
 
 
 def _validate_values(
@@ -772,6 +968,34 @@ def _validate_values(
         errors.append(
             "worker.enabled must default true now that the Batch 6 runtime exists"
         )
+    expected_worker_command = [
+        "python",
+        "-m",
+        "hallu_defense.worker",
+        "--metrics-host",
+        "0.0.0.0",
+        "--metrics-port",
+        "9090",
+    ]
+    if worker.get("replicas") != 1:
+        errors.append("values.worker.replicas must default to one active consumer")
+    if worker.get("command") != expected_worker_command:
+        errors.append("values.worker.command must use the exact ingestion worker CLI")
+    if worker.get("metricsPort") != 9090:
+        errors.append("values.worker.metricsPort must be the authenticated port 9090")
+    setup_grace = worker.get("setupGraceSeconds")
+    if (
+        not isinstance(setup_grace, int)
+        or isinstance(setup_grace, bool)
+        or not 1 <= setup_grace <= 300
+    ):
+        errors.append("values.worker.setupGraceSeconds must be between 1 and 300")
+    if worker.get("podAnnotations") != {
+        "prometheus.io/scrape": "true",
+        "prometheus.io/path": "/metrics",
+        "prometheus.io/port": "9090",
+    }:
+        errors.append("values.worker.podAnnotations must pin the Prometheus 9090 scrape")
     for component in ("api", "console", "worker", "migrations"):
         component_values = _mapping(
             values.get(component), f"values.{component}", errors
@@ -1093,6 +1317,14 @@ def _validate_values(
         errors.append(
             "values.sandbox.tenantId must default empty and be deployment-supplied"
         )
+    if sandbox_defaults.get("setupGraceSeconds") != 15:
+        errors.append(
+            "values.sandbox.setupGraceSeconds must default to the bounded 15-second fixture grace"
+        )
+    if sandbox_defaults.get("cleanupGraceSeconds") != 10:
+        errors.append(
+            "values.sandbox.cleanupGraceSeconds must default to the bounded 10-second cleanup grace"
+        )
     sandbox_image = _mapping(
         sandbox_defaults.get("image"), "values.sandbox.image", errors
     )
@@ -1284,6 +1516,16 @@ def _validate_values(
     if migrations.get("expectedCount") != EXPECTED_MIGRATION_COUNT:
         errors.append(
             f"values.migrations.expectedCount must be {EXPECTED_MIGRATION_COUNT}"
+        )
+    expected_checksums = _mapping(
+        migrations.get("expectedChecksums"),
+        "values.migrations.expectedChecksums",
+        errors,
+    )
+    if expected_checksums != EXPECTED_MIGRATION_CHECKSUMS:
+        errors.append(
+            "values.migrations.expectedChecksums must equal the exact canonical "
+            "SHA-256 inventory derived from infra/rag/pgvector"
         )
     wait_timeout = migrations.get("waitTimeoutSeconds")
     if (
@@ -1640,6 +1882,10 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         'include "hallu-defense.sandboxApiWorkspaceClaimName"',
         "kind: PersistentVolume",
         "automountServiceAccountToken: false",
+        "release-derived fullname must be at most 38 characters",
+        ":kind-<run-id> scratch tag",
+        "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS",
+        ".Values.sandbox.cleanupGraceSeconds",
     ):
         if marker not in combined:
             errors.append(f"Helm templates missing `{marker}`")
@@ -1683,6 +1929,8 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         ".Values.worker.podAnnotations",
         "containerPort: {{ .Values.worker.metricsPort }}",
         "name: metrics",
+        "progressDeadlineSeconds: {{ add (int .Values.migrations.waitTimeoutSeconds) (int .Values.worker.setupGraceSeconds) }}",
+        "initialDelaySeconds: {{ .Values.worker.setupGraceSeconds }}",
     ):
         if marker not in worker_template:
             errors.append(
@@ -1743,6 +1991,8 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "HALLU_DEFENSE_ENV",
         "HALLU_DEFENSE_POSTGRES_CA_CERT_PATH",
         "HALLU_DEFENSE_POSTGRES_KIND_INSECURE_TLS_ENABLED",
+        "hallu-defense.openai.com/release-revision: {{ .Release.Revision | quote }}",
+        "ttlSecondsAfterFinished: 600",
     ):
         if marker not in migration_template:
             errors.append(
@@ -1958,6 +2208,17 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
             errors.append(
                 f"apiEnv missing explicit OTLP configuration marker `{marker}`"
             )
+    cleanup_grace_block = (
+        "- name: HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS\n"
+        "  value: {{ .Values.sandbox.cleanupGraceSeconds | quote }}"
+    )
+    if cleanup_grace_block not in api_env:
+        errors.append(
+            "apiEnv must map sandbox.cleanupGraceSeconds to the exact Kubernetes "
+            "cleanup grace environment variable"
+        )
+    if "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS" in worker_env:
+        errors.append("workerEnv must not receive the Kubernetes sandbox cleanup grace")
     if "http://otel-collector:4318" in api_env:
         errors.append("apiEnv must not hardcode an undeployed OpenTelemetry Collector")
     application_policy = templates["application-egress-network-policies.yaml"]
@@ -2083,7 +2344,7 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "approvals/tool-call-commitment-key",
         "root-token",
         "ca.crt",
-        "ttlSecondsAfterFinished:",
+        "ttlSecondsAfterFinished: 600",
     ):
         if marker not in bootstrap_template:
             errors.append(f"kind Vault bootstrap Job missing `{marker}`")
@@ -2267,6 +2528,10 @@ def _validate_sandbox_templates(
         "quantity('1Mi'), quantity('2Mi')",
         "quantity('15Mi'), quantity('16Mi')",
         "(!has(c.ports) || c.ports.size() == 0)",
+        "!has(c.lifecycle)",
+        "!has(c.startupProbe)",
+        "!has(c.livenessProbe)",
+        "!has(c.readinessProbe)",
         "c.securityContext.procMount == 'Default'",
         "appArmorProfile.type != 'Unconfined'",
         "securityContext.sysctls.size() == 0",
@@ -2340,6 +2605,13 @@ def _validate_sandbox_templates(
         "app.kubernetes.io/component: sandbox-fixture",
         'include "hallu-defense.sandboxWorkspaceClaimName"',
         "prepare-sandbox-fixture",
+        "hallu-defense.openai.com/release-revision: {{ .Release.Revision | quote }}",
+        "HALLU_FIXTURE_READY_MARKER",
+        "HALLU_FIXTURE_READY_HOLD_SECONDS",
+        "readinessProbe:",
+        'marker.read_text(encoding="utf-8") == "ready\\n"',
+        "sizeLimit: 1Mi",
+        "ttlSecondsAfterFinished: 600",
     ):
         if marker not in fixture_template:
             errors.append(f"sandbox fixture Job missing `{marker}`")
@@ -2675,7 +2947,9 @@ def _validate_supporting_files(
         "cannot list Pods, read Pod logs, or delete Jobs in the application namespace",
         "API mounts only the first view with `readOnly: true`",
         "/repo/checks/run",
-        "zero residual Jobs",
+        "zero sandbox Jobs and zero sandbox Pods",
+        "ownerReferences[].uid",
+        "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS",
         "scripts/dev/live_kind_helm_smoke.py",
     ):
         if marker not in deployment_doc_text:
@@ -2695,6 +2969,20 @@ def _validate_supporting_files(
         errors.append("security-check must include check_helm_chart.py")
     if script not in security_workflow_text:
         errors.append("security workflow must run check_helm_chart.py")
+    for workflow_name, workflow_text in (
+        ("CI", ci_workflow_text),
+        ("security", security_workflow_text),
+    ):
+        for marker in (
+            "Install pinned Helm",
+            "HELM_VERSION: v4.2.2",
+            "HELM_SHA256: 9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6",
+            'test "$(helm version --short)" = "v4.2.2+gb05881c"',
+        ):
+            if marker not in workflow_text:
+                errors.append(
+                    f"{workflow_name} workflow must install pinned Helm before chart gates (`{marker}`)"
+                )
     if "kind-helm-live:" not in live_workflow_text:
         errors.append("live workflow must include kind-helm-live job")
     if "HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED" not in live_workflow_text:
@@ -2705,8 +2993,16 @@ def _validate_supporting_files(
         "KUBECTL_VERSION:",
         "vm.max_map_count=262144",
         'HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED: "true"',
+        "HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}",
         "github.event_name == 'workflow_dispatch'",
         "github.event_name == 'schedule'",
+        "Teardown only the exact scratch kind cluster and image tags",
+        'kind delete cluster --name "${cluster}"',
+        'docker image rm "${image}"',
+        "docker image ls --format",
+        'clusters_after="$(kind get clusters 2>&1)"',
+        'images_after="$(docker image ls',
+        'exit "${failures}"',
     ):
         if marker not in live_workflow_text:
             errors.append(f"kind-helm-live workflow missing `{marker}`")
@@ -2741,8 +3037,8 @@ def _validate_supporting_files(
         'SANDBOX_IMAGE = "hallu-defense-sandbox:ci"',
         'PGVECTOR_IMAGE = "hallu-defense-pgvector:ci"',
         'OPENSEARCH_IMAGE = "hallu-defense-opensearch:ci"',
-        '("infra/docker/pgvector.Dockerfile", PGVECTOR_IMAGE)',
-        '("infra/docker/opensearch.Dockerfile", OPENSEARCH_IMAGE)',
+        '("infra/docker/pgvector.Dockerfile", effective_images["pgvector"])',
+        '("infra/docker/opensearch.Dockerfile", effective_images["opensearch"])',
         'KIND_NETWORK_POLICY_PROVIDER = "kindnet"',
         'KIND_PLATFORM = "linux/amd64"',
         'KIND_NODE_IMAGE_ENV = "HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE"',
@@ -2764,16 +3060,22 @@ def _validate_supporting_files(
         '"--server-side",',
         '"--dry-run=server",',
         "_verify_kubernetes_sandbox(",
-        "_sandbox_admission_probe_manifests(namespace)",
+        "_sandbox_admission_probe_manifests(namespace, image=sandbox_image)",
         "hallu-sandbox-admission-source-rw",
         "http://127.0.0.1:8000/repo/checks/run",
         "SANDBOX_TIMEOUT_RETURN_CODE",
+        "SANDBOX_CLEANUP_GRACE_SECONDS = 10",
+        "SANDBOX_CLEANUP_UID_PROBE_SCRIPT",
+        "_repo_checks_request_with_cleanup_evidence(",
+        "_validate_sandbox_cleanup_evidence(",
+        "_assert_empty_sandbox_workload_inventory(",
         "egress-blocked",
         "SANDBOX_JOB_LABEL",
         "_kind_secret_manifests(",
         "_verify_helm_release_secret_boundary(",
-        '"helm",\n            "get",\n            "manifest"',
-        '"helm",\n            "get",\n            "values"',
+        '"get",\n                "manifest",',
+        '"get",\n                "values",',
+        'revision_args = ["--revision", str(revision)]',
         'f"{RELEASE_NAME}-bootstrap"',
         '"precreated_secrets"',
         "CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT",
@@ -2786,7 +3088,17 @@ def _validate_supporting_files(
         "_verify_runtime_secret_rotation(",
         '"runtime_secret_rotation"',
         "create_secret_manager(settings)",
-        '"--selector=app.kubernetes.io/component=migrations"',
+        "_job_selector(component='migrations', revision=revision)",
+        "EXPECTED_MIGRATION_CHECKSUMS",
+        "EXPECTED_MIGRATION_CHECKSUM_AGGREGATE",
+        "_wait_for_fixture_pod_ready(",
+        "_wait_for_revision_jobs(",
+        "_verify_migration_projected_secret_read(",
+        "_verify_helm_history(",
+        '"sandbox.fixture.enabled=false"',
+        '"--kubeconfig"',
+        "_ensure_scratch_images_absent(",
+        "_remove_scratch_images(",
         '"raw_secret_env_absent": True',
         '"migration Pod has {migration_restarts} container restarts"',
         "HYBRID_LIFECYCLE_TOMBSTONE_PROBE_SCRIPT",
@@ -2867,11 +3179,23 @@ def _validate_rendered_manifest(rendered: str) -> None:
         ("Deployment", "vault"),
         ("Deployment", "redis"),
         ("Job", "vault-bootstrap"),
+        ("Job", "sandbox-fixture"),
         ("StatefulSet", "pgvector"),
         ("StatefulSet", "opensearch"),
     ):
         if expected not in kinds_by_component:
             errors.append(f"rendered chart missing {expected[0]} for {expected[1]}")
+    for component in ("migrations", "vault-bootstrap", "sandbox-fixture"):
+        job = workloads.get(component)
+        spec = (
+            _mapping(job.get("spec"), f"rendered.{component}.spec", errors)
+            if job is not None
+            else {}
+        )
+        if spec.get("ttlSecondsAfterFinished") != 600:
+            errors.append(
+                f"rendered {component} Job must set ttlSecondsAfterFinished=600"
+            )
     if "unsigned_headers" in rendered or "value: memory" in rendered:
         errors.append(
             "rendered chart contains fail-open auth or memory backend markers"
@@ -4052,6 +4376,15 @@ def _validate_rendered_production_sandbox(rendered: str) -> None:
                 errors.append(
                     "production API must not enable the kind-only image exception"
                 )
+            if (
+                env_by_name.get(
+                    "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS", {}
+                ).get("value")
+                != "10"
+            ):
+                errors.append(
+                    "production API must receive the bounded Kubernetes cleanup grace"
+                )
             for name, expected in (
                 (
                     "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME",
@@ -5016,6 +5349,7 @@ def _validate_rendered_sandbox(
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_WORKSPACE_MOUNT_PATH": "/workspace",
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_NETWORK_POLICY_NAME": "hallu-defense-sandbox-deny-egress",
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_TENANT_ID": "kind-smoke-tenant",
+            "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS": "10",
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_KIND_LOCAL_IMAGE": "true",
             "HALLU_DEFENSE_OPA_ENABLED": "true",
             "HALLU_DEFENSE_OPA_PATH": "/usr/local/bin/opa",
