@@ -9,11 +9,14 @@ from scripts.ci.check_secrets_config import (
     DOCKER_COMPOSE_PATH,
     DOC_PATH,
     ENV_EXAMPLE_PATH,
+    LIVE_PROVIDER_VAULT_SMOKE_PATH,
     LIVE_VAULT_SECRETS_SMOKE_PATH,
     LIVE_WORKFLOW_PATH,
     MAKEFILE_PATH,
     POLICY_PATH,
+    PROVIDERS_PATH,
     SECURITY_PATH,
+    SECRETS_SERVICE_PATH,
     SecretsConfigError,
     load_policy,
     validate_policy,
@@ -75,6 +78,9 @@ def test_supporting_files_validate_local_vault_wiring() -> None:
         compose_text=DOCKER_COMPOSE_PATH.read_text(encoding="utf-8"),
         bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
         live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+        provider_smoke_text=LIVE_PROVIDER_VAULT_SMOKE_PATH.read_text(encoding="utf-8"),
+        providers_text=PROVIDERS_PATH.read_text(encoding="utf-8"),
+        secrets_service_text=SECRETS_SERVICE_PATH.read_text(encoding="utf-8"),
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
     )
@@ -89,6 +95,48 @@ def test_supporting_files_reject_missing_local_vault_service() -> None:
             compose_text="services: {}\n",
             bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
             live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+            provider_smoke_text=LIVE_PROVIDER_VAULT_SMOKE_PATH.read_text(encoding="utf-8"),
+            providers_text=PROVIDERS_PATH.read_text(encoding="utf-8"),
+            secrets_service_text=SECRETS_SERVICE_PATH.read_text(encoding="utf-8"),
+            makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
+            live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        )
+
+
+def test_supporting_files_reject_missing_provider_vault_smoke() -> None:
+    with pytest.raises(SecretsConfigError, match="live_provider_vault_smoke.py"):
+        validate_supporting_files(
+            env_example_text=ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+            docs_text=DOC_PATH.read_text(encoding="utf-8"),
+            security_text=SECURITY_PATH.read_text(encoding="utf-8"),
+            compose_text=DOCKER_COMPOSE_PATH.read_text(encoding="utf-8"),
+            bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
+            live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+            provider_smoke_text="",
+            providers_text=PROVIDERS_PATH.read_text(encoding="utf-8"),
+            secrets_service_text=SECRETS_SERVICE_PATH.read_text(encoding="utf-8"),
+            makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
+            live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        )
+
+
+def test_supporting_files_reject_unbounded_provider_response_reader() -> None:
+    providers_text = PROVIDERS_PATH.read_text(encoding="utf-8").replace(
+        "response.read(MAX_PROVIDER_HTTP_RESPONSE_BYTES + 1)",
+        "response.read()",
+    )
+
+    with pytest.raises(SecretsConfigError, match="bounded HTTP response marker"):
+        validate_supporting_files(
+            env_example_text=ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+            docs_text=DOC_PATH.read_text(encoding="utf-8"),
+            security_text=SECURITY_PATH.read_text(encoding="utf-8"),
+            compose_text=DOCKER_COMPOSE_PATH.read_text(encoding="utf-8"),
+            bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
+            live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+            provider_smoke_text=LIVE_PROVIDER_VAULT_SMOKE_PATH.read_text(encoding="utf-8"),
+            providers_text=providers_text,
+            secrets_service_text=SECRETS_SERVICE_PATH.read_text(encoding="utf-8"),
             makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
             live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
         )

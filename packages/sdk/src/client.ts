@@ -6,6 +6,8 @@ import type {
   AuditExportRequest,
   AuditExportResponse,
   Claim,
+  ClaimVerificationRequestV2,
+  ClaimVerificationResponseV2,
   ClaimVerdict,
   CorpusGrantDisableRequest,
   CorpusGrantHistoryDiffRequest,
@@ -39,7 +41,11 @@ import type {
   VerificationReplayRequest,
   VerificationReplayResponse,
   VerificationRun,
-  VerificationRunRequest
+  VerificationRunListRequest,
+  VerificationRunListResponse,
+  VerificationRunRequest,
+  VerificationRunRequestV2,
+  VerificationRunV2
 } from "@hallu-defense/contracts";
 
 export interface HalluDefenseClientOptions {
@@ -51,6 +57,10 @@ export interface HalluDefenseClientOptions {
   readonly token?: string;
   readonly timeoutMs?: number;
   readonly fetchImpl?: typeof fetch;
+}
+
+export interface HalluDefenseRequestOptions {
+  readonly timeoutMs?: number;
 }
 
 export class HalluDefenseError extends Error {
@@ -80,8 +90,16 @@ export class HalluDefenseClient {
     this.#traceId = options.traceId;
     this.#subjectId = options.subjectId;
     this.#roles = options.roles;
+    if (
+      options.token !== undefined &&
+      (options.token.length === 0 ||
+        options.token.length > 32_768 ||
+        !/^[A-Za-z0-9._~+/=-]+$/u.test(options.token))
+    ) {
+      throw new TypeError("Bearer token is invalid");
+    }
     this.#token = options.token;
-    this.#timeoutMs = options.timeoutMs ?? 10000;
+    this.#timeoutMs = validatedTimeoutMs(options.timeoutMs ?? 10000);
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     // Wrap fetch so browsers keep the required global binding even when callers
     // pass `window.fetch` explicitly.
@@ -92,10 +110,20 @@ export class HalluDefenseClient {
     return this.#post<VerificationRun>("/verification/run", request);
   }
 
+  async runVerificationV2(request: VerificationRunRequestV2): Promise<VerificationRunV2> {
+    return this.#post<VerificationRunV2>("/v2/verification/run", request);
+  }
+
   async replayVerification(
     request: VerificationReplayRequest
   ): Promise<VerificationReplayResponse> {
     return this.#post<VerificationReplayResponse>("/verification/replay", request);
+  }
+
+  async listVerificationRuns(
+    request: VerificationRunListRequest = {}
+  ): Promise<VerificationRunListResponse> {
+    return this.#post<VerificationRunListResponse>("/verification/runs/list", request);
   }
 
   async extractClaims(messageText: string): Promise<readonly Claim[]> {
@@ -167,6 +195,12 @@ export class HalluDefenseClient {
     return response.verdicts;
   }
 
+  async verifyClaimsV2(
+    request: ClaimVerificationRequestV2
+  ): Promise<ClaimVerificationResponseV2> {
+    return this.#post<ClaimVerificationResponseV2>("/v2/claims/verify", request);
+  }
+
   async validateToolInput(envelope: ToolCallEnvelope): Promise<ToolValidationResponse> {
     return this.#post<ToolValidationResponse>("/tools/validate-input", envelope);
   }
@@ -199,8 +233,15 @@ export class HalluDefenseClient {
     return this.#post<PolicyEvaluationResponse>("/policy/evaluate", request);
   }
 
-  async runRepoChecks(request: RepoChecksRunRequest): Promise<SandboxRun> {
-    return this.#post<SandboxRun>("/repo/checks/run", request);
+  async runRepoChecks(
+    request: RepoChecksRunRequest,
+    options: HalluDefenseRequestOptions = {}
+  ): Promise<SandboxRun> {
+    return this.#post<SandboxRun>(
+      "/repo/checks/run",
+      request,
+      options.timeoutMs === undefined ? this.#timeoutMs : validatedTimeoutMs(options.timeoutMs)
+    );
   }
 
   async listApprovals(request: ApprovalListRequest = {}): Promise<ApprovalListResponse> {
@@ -211,9 +252,13 @@ export class HalluDefenseClient {
     return this.#post<ApprovalDecisionResponse>("/approvals/decide", request);
   }
 
-  async #post<TResponse>(endpoint: string, body: unknown): Promise<TResponse> {
+  async #post<TResponse>(
+    endpoint: string,
+    body: unknown,
+    timeoutMs: number = this.#timeoutMs
+  ): Promise<TResponse> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.#fetchImpl(`${this.#baseUrl}${endpoint}`, {
         method: "POST",
@@ -245,23 +290,31 @@ export class HalluDefenseClient {
     const headers: Record<string, string> = {
       "content-type": "application/json"
     };
-    if (this.#tenantId !== undefined) {
-      headers["x-tenant-id"] = this.#tenantId;
-    }
     if (this.#traceId !== undefined) {
       headers["x-trace-id"] = this.#traceId;
     }
-    if (this.#subjectId !== undefined) {
-      headers["x-subject-id"] = this.#subjectId;
-    }
-    if (this.#roles !== undefined && this.#roles.length > 0) {
-      headers["x-roles"] = this.#roles.join(",");
-    }
     if (this.#token !== undefined) {
       headers.authorization = `Bearer ${this.#token}`;
+    } else {
+      if (this.#tenantId !== undefined) {
+        headers["x-tenant-id"] = this.#tenantId;
+      }
+      if (this.#subjectId !== undefined) {
+        headers["x-subject-id"] = this.#subjectId;
+      }
+      if (this.#roles !== undefined && this.#roles.length > 0) {
+        headers["x-roles"] = this.#roles.join(",");
+      }
     }
     return headers;
   }
+}
+
+function validatedTimeoutMs(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new TypeError("Request timeout must be a positive safe integer in milliseconds");
+  }
+  return value;
 }
 
 async function safeErrorMessage(response: Response): Promise<string> {

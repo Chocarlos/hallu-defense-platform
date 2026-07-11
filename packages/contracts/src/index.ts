@@ -44,6 +44,25 @@ export type VerdictAction =
   | "block"
   | "require_human_review";
 
+export type ContractSchemaVersionV2 = "2.0";
+
+export type VerdictStatusV2 =
+  | "supported"
+  | "unsupported"
+  | "contradicted"
+  | "insufficient_evidence"
+  | "not_verifiable"
+  | "requires_human_review"
+  | "blocked_by_policy";
+
+export type VerdictActionV2 =
+  | "allow"
+  | "repair"
+  | "abstain"
+  | "block"
+  | "ask_clarification"
+  | "require_approval";
+
 export type FinalDecision =
   | "allow"
   | "repaired"
@@ -101,6 +120,17 @@ export interface ClaimVerdict {
   readonly confidence: number;
   readonly evidence_ids: readonly string[];
   readonly action: VerdictAction;
+  readonly reason: string;
+  readonly validator_trace: Readonly<Record<string, unknown>>;
+}
+
+export interface ClaimVerdictV2 {
+  readonly schema_version: ContractSchemaVersionV2;
+  readonly claim_id: string;
+  readonly status: VerdictStatusV2;
+  readonly confidence: number;
+  readonly evidence_ids: readonly string[];
+  readonly action: VerdictActionV2;
   readonly reason: string;
   readonly validator_trace: Readonly<Record<string, unknown>>;
 }
@@ -234,7 +264,7 @@ export interface CorpusGrantHistoryRequest {
   readonly cursor?: string | null;
 }
 
-export interface CorpusGrantHistoryDiffRequest extends CorpusGrantHistoryRequest {}
+export type CorpusGrantHistoryDiffRequest = CorpusGrantHistoryRequest;
 
 export interface CorpusGrantHistoryDiff {
   readonly tenant_id: string;
@@ -285,6 +315,17 @@ export interface VerificationRunRequest {
   readonly message_id?: string;
 }
 
+export interface VerificationRunRequestV2 {
+  readonly schema_version: ContractSchemaVersionV2;
+  readonly tenant_id?: string | null;
+  readonly message_text: string;
+  readonly documents?: readonly DocumentInput[];
+  readonly tool_outputs?: readonly Evidence[];
+  readonly execution_artifacts?: Readonly<Record<string, unknown>>;
+  readonly task_type?: string;
+  readonly message_id?: string;
+}
+
 export interface VerificationRun {
   readonly trace_id: string;
   readonly tenant_id: string;
@@ -292,6 +333,38 @@ export interface VerificationRun {
   readonly claims: readonly Claim[];
   readonly evidence: readonly Evidence[];
   readonly verdicts: readonly ClaimVerdict[];
+  readonly final_decision: FinalDecision;
+  readonly final_text: string;
+  readonly policy_version: string;
+  readonly created_at: string;
+}
+
+export interface VerificationRunSummary {
+  readonly trace_id: string;
+  readonly final_decision: FinalDecision;
+  readonly created_at: string;
+}
+
+export interface VerificationRunListRequest {
+  readonly trace_id?: string | null;
+  readonly limit?: number;
+  readonly cursor?: string | null;
+}
+
+export interface VerificationRunListResponse {
+  readonly trace_id: string;
+  readonly runs: readonly VerificationRunSummary[];
+  readonly next_cursor: string | null;
+}
+
+export interface VerificationRunV2 {
+  readonly schema_version: ContractSchemaVersionV2;
+  readonly trace_id: string;
+  readonly tenant_id: string;
+  readonly input: Readonly<Record<string, unknown>>;
+  readonly claims: readonly Claim[];
+  readonly evidence: readonly Evidence[];
+  readonly verdicts: readonly ClaimVerdictV2[];
   readonly final_decision: FinalDecision;
   readonly final_text: string;
   readonly policy_version: string;
@@ -329,6 +402,9 @@ export interface ToolValidationResponse {
   readonly approval_required: boolean;
   readonly approval_id?: string | null;
   readonly sanitized_output?: Readonly<Record<string, unknown>> | null;
+  readonly trace_id?: string | null;
+  readonly policy_version?: string | null;
+  readonly matched_rules?: readonly string[];
 }
 
 export interface ApprovalRecord {
@@ -450,6 +526,17 @@ export interface ClaimVerificationResponse {
   readonly verdicts: readonly ClaimVerdict[];
 }
 
+export interface ClaimVerificationRequestV2 {
+  readonly schema_version: ContractSchemaVersionV2;
+  readonly claims: readonly Claim[];
+  readonly evidence?: readonly Evidence[];
+}
+
+export interface ClaimVerificationResponseV2 {
+  readonly schema_version: ContractSchemaVersionV2;
+  readonly verdicts: readonly ClaimVerdictV2[];
+}
+
 export interface EvalSmokeMetrics {
   readonly scenario_count: number;
   readonly final_decision_accuracy: number;
@@ -503,6 +590,7 @@ export interface EvalScenarioMetrics {
   readonly tool_contradiction_guard_rate: number;
   readonly repo_false_claim_block_rate: number;
   readonly repo_semantic_claim_decision_accuracy: number;
+  readonly blocking_precision: number;
   readonly sandbox_block_rate: number;
   readonly p95_latency_ms: number;
 }

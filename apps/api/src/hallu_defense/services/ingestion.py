@@ -7,7 +7,8 @@ from hallu_defense.domain.models import (
     DocumentIngestionRequest,
     DocumentIngestionResponse,
 )
-from hallu_defense.services.rag_access import RagAccessPolicy
+from hallu_defense.domain.rag_metadata import RagMetadataValidationError, validate_metadata
+from hallu_defense.services.rag_access import RagAccessDeniedError, RagAccessPolicy
 from hallu_defense.services.retrieval import HybridRetriever
 
 
@@ -67,6 +68,11 @@ class DocumentIngestionService:
         trace_id: str,
         document_count: int | None = None,
     ) -> DocumentIngestionResponse:
+        self._validate_prepared_documents(
+            documents,
+            corpus_id=corpus_id,
+            tenant_id=tenant_id,
+        )
         result = self._retriever.index_documents(tenant_id=tenant_id, documents=list(documents))
         warnings: list[str] = []
         if result.backend == "local":
@@ -83,3 +89,24 @@ class DocumentIngestionService:
             evidence_ids=result.evidence_ids,
             warnings=warnings,
         )
+
+    def _validate_prepared_documents(
+        self,
+        documents: Sequence[DocumentInput],
+        *,
+        corpus_id: str,
+        tenant_id: str,
+    ) -> None:
+        for document in documents:
+            try:
+                validate_metadata(document.metadata)
+            except RagMetadataValidationError as exc:
+                raise RagAccessDeniedError(str(exc)) from None
+            if document.metadata.get("corpus_id") != corpus_id:
+                raise RagAccessDeniedError(
+                    "Prepared RAG metadata corpus_id must match the ingestion request."
+                )
+            if document.metadata.get("owner_tenant_id") != tenant_id:
+                raise RagAccessDeniedError(
+                    "Prepared RAG metadata owner_tenant_id must match the authenticated tenant."
+                )

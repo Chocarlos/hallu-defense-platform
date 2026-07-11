@@ -1,0 +1,255 @@
+{{- if eq .Values.sandbox.backend "kubernetes" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "hallu-defense.sandboxAdmissionPolicyName" . }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ include "hallu-defense.sandboxNamespace" . }}
+    resourceRules:
+      - apiGroups:
+          - batch
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - jobs
+        scope: Namespaced
+  validations:
+    - expression: >-
+        request.userInfo.username ==
+        'system:serviceaccount:{{ .Release.Namespace }}:{{ include "hallu-defense.apiServiceAccountName" . }}'
+      message: Sandbox Jobs may be created only by the release API ServiceAccount.
+      reason: Forbidden
+    - expression: >-
+        request.namespace == '{{ include "hallu-defense.sandboxNamespace" . }}' &&
+        object.metadata.name.startsWith('hallu-sandbox-') &&
+        object.metadata.labels.size() == 2 &&
+        object.metadata.labels['hallu-defense.openai.com/sandbox'] == 'true' &&
+        object.metadata.labels['hallu-defense.openai.com/network-policy'] == 'deny-egress' &&
+        object.metadata.annotations.size() == 1 &&
+        object.metadata.annotations['hallu-defense.openai.com/requested-pids-limit'] == '{{ .Values.sandbox.resources.pidsLimit }}' &&
+        (!has(object.metadata.generateName) || object.metadata.generateName == '') &&
+        (!has(object.metadata.finalizers) || object.metadata.finalizers.size() == 0) &&
+        (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences.size() == 0) &&
+        object.spec.template.metadata.labels.size() == 6 &&
+        object.spec.template.metadata.labels['hallu-defense.openai.com/sandbox'] == 'true' &&
+        object.spec.template.metadata.labels['hallu-defense.openai.com/network-policy'] == 'deny-egress' &&
+        object.spec.template.metadata.labels['job-name'] == object.metadata.name &&
+        object.spec.template.metadata.labels['batch.kubernetes.io/job-name'] == object.metadata.name &&
+        object.spec.template.metadata.labels['controller-uid'] == string(object.metadata.uid) &&
+        object.spec.template.metadata.labels['batch.kubernetes.io/controller-uid'] == string(object.metadata.uid)
+      message: Sandbox Jobs require the exact managed metadata and API-generated Job labels.
+      reason: Forbidden
+    - expression: >-
+        object.spec.backoffLimit == 0 &&
+        object.spec.completions == 1 &&
+        object.spec.parallelism == 1 &&
+        object.spec.manualSelector == false &&
+        object.spec.selector.matchLabels.size() == 1 &&
+        object.spec.selector.matchLabels['batch.kubernetes.io/controller-uid'] == string(object.metadata.uid) &&
+        (!has(object.spec.selector.matchExpressions) || object.spec.selector.matchExpressions.size() == 0) &&
+        object.spec.suspend == false &&
+        object.spec.activeDeadlineSeconds >= 1 &&
+        object.spec.activeDeadlineSeconds <= {{ add (mul (int .Values.sandbox.commandTimeoutSeconds) 10) (int .Values.sandbox.setupGraceSeconds) }} &&
+        object.spec.ttlSecondsAfterFinished == {{ .Values.sandbox.jobTtlSeconds }}
+      message: Sandbox Jobs require the API-generated selector plus bounded execution and cleanup settings.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.restartPolicy == 'Never' &&
+        object.spec.template.spec.automountServiceAccountToken == false &&
+        (!has(object.spec.template.spec.serviceAccountName) ||
+          object.spec.template.spec.serviceAccountName == 'default') &&
+        object.spec.template.spec.enableServiceLinks == false &&
+        (!has(object.spec.template.spec.hostIPC) ||
+          object.spec.template.spec.hostIPC == false) &&
+        (!has(object.spec.template.spec.hostNetwork) ||
+          object.spec.template.spec.hostNetwork == false) &&
+        (!has(object.spec.template.spec.hostPID) ||
+          object.spec.template.spec.hostPID == false) &&
+        object.spec.template.spec.shareProcessNamespace == false &&
+        object.spec.template.spec.terminationGracePeriodSeconds >= 1 &&
+        object.spec.template.spec.terminationGracePeriodSeconds <= 5
+      message: Sandbox Pods cannot use service tokens, host namespaces, or unbounded termination.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.securityContext.runAsNonRoot == true &&
+        object.spec.template.spec.securityContext.runAsUser == 10001 &&
+        object.spec.template.spec.securityContext.runAsGroup == 10001 &&
+        object.spec.template.spec.securityContext.fsGroup == 10001 &&
+        object.spec.template.spec.securityContext.fsGroupChangePolicy == 'OnRootMismatch' &&
+        object.spec.template.spec.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        (!has(object.spec.template.spec.securityContext.sysctls) ||
+          object.spec.template.spec.securityContext.sysctls.size() == 0) &&
+        (!has(object.spec.template.spec.securityContext.supplementalGroups) ||
+          object.spec.template.spec.securityContext.supplementalGroups.size() == 0) &&
+        !has(object.spec.template.spec.securityContext.seLinuxOptions) &&
+        !has(object.spec.template.spec.securityContext.windowsOptions) &&
+        (!has(object.spec.template.spec.securityContext.appArmorProfile) ||
+          object.spec.template.spec.securityContext.appArmorProfile.type != 'Unconfined')
+      message: Sandbox Pods require the fixed non-root RuntimeDefault security context.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.containers.map(c, c.name) == ['runner', 'stdout', 'stderr'] &&
+        object.spec.template.spec.containers.all(c,
+          c.image == '{{ include "hallu-defense.sandboxImage" . }}' &&
+          c.imagePullPolicy == '{{ .Values.sandbox.image.pullPolicy }}' &&
+          c.securityContext.allowPrivilegeEscalation == false &&
+          c.securityContext.privileged == false &&
+          c.securityContext.readOnlyRootFilesystem == true &&
+          c.securityContext.runAsNonRoot == true &&
+          c.securityContext.runAsUser == 10001 &&
+          c.securityContext.runAsGroup == 10001 &&
+          c.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+          c.securityContext.capabilities.drop == ['ALL'] &&
+          (!has(c.securityContext.capabilities.add) ||
+            c.securityContext.capabilities.add.size() == 0) &&
+          (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') &&
+          !has(c.securityContext.seLinuxOptions) &&
+          !has(c.securityContext.windowsOptions) &&
+          (!has(c.securityContext.appArmorProfile) ||
+            c.securityContext.appArmorProfile.type != 'Unconfined') &&
+          (!has(c.ports) || c.ports.size() == 0) &&
+          (!has(c.volumeDevices) || c.volumeDevices.size() == 0))
+      message: Sandbox containers require the exact pinned image and hardened security context.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.containers.all(c,
+          (!has(c.stdin) || c.stdin == false) &&
+          (!has(c.tty) || c.tty == false) &&
+          (!has(c.stdinOnce) || c.stdinOnce == false)) &&
+        object.spec.template.spec.containers.filter(c, c.name == 'runner').all(c,
+          c.command == ['python', '/opt/hallu-defense/sandbox_runner.py'] &&
+          c.workingDir == '{{ .Values.sandbox.workspace.mountPath }}' &&
+          c.args.size() >= 4 && c.args.size() <= 259 &&
+          c.args[0] == '{{ .Values.sandbox.resources.pidsLimit }}' &&
+          c.args[1] == '50000' &&
+          c.args[2] == '536870912' &&
+          c.args[3] in ['python', 'pytest', 'npm', 'node']) &&
+        object.spec.template.spec.containers.filter(c, c.name == 'stdout').all(c,
+          c.command == ['python', '/opt/hallu-defense/sandbox_stream_exporter.py'] &&
+          c.args == ['/hallu-results/stdout', '/hallu-results/done'] &&
+          c.workingDir == '/tmp') &&
+        object.spec.template.spec.containers.filter(c, c.name == 'stderr').all(c,
+          c.command == ['python', '/opt/hallu-defense/sandbox_stream_exporter.py'] &&
+          c.args == ['/hallu-results/stderr', '/hallu-results/done'] &&
+          c.workingDir == '/tmp')
+      message: Sandbox containers require the image-baked runner/exporter entrypoints and bounded argv.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.containers.filter(c, c.name == 'runner').all(c,
+          c.resources.requests.size() == 2 &&
+          quantity(c.resources.requests['cpu']).compareTo(
+            quantity('{{ .Values.sandbox.resources.cpu }}')) == 0 &&
+          quantity(c.resources.requests['memory']).compareTo(
+            quantity('{{ .Values.sandbox.resources.memoryMb }}Mi')) == 0 &&
+          c.resources.limits.size() == 2 &&
+          quantity(c.resources.limits['cpu']).compareTo(
+            quantity('{{ .Values.sandbox.resources.cpu }}')) == 0 &&
+          quantity(c.resources.limits['memory']).compareTo(
+            quantity('{{ .Values.sandbox.resources.memoryMb }}Mi')) == 0) &&
+        object.spec.template.spec.containers.filter(c, c.name != 'runner').all(c,
+          c.resources.requests.size() == 2 &&
+          quantity(c.resources.requests['cpu']).compareTo(quantity('10m')) == 0 &&
+          quantity(c.resources.requests['memory']).compareTo(quantity('16Mi')) == 0 &&
+          c.resources.limits.size() == 2 &&
+          quantity(c.resources.limits['cpu']).compareTo(quantity('100m')) == 0 &&
+          quantity(c.resources.limits['memory']).compareTo(quantity('64Mi')) == 0)
+      message: Every sandbox container requires its exact bounded CPU and memory resources.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.containers.all(c,
+          (!has(c.envFrom) || c.envFrom.size() == 0) &&
+          c.env.all(e,
+            !has(e.valueFrom) &&
+            e.name in ['CI', 'HOME', 'PYTHONUNBUFFERED', 'HALLU_DEFENSE_NETWORK_POLICY'])) &&
+        object.spec.template.spec.containers.filter(c, c.name == 'runner').all(c,
+          c.env.size() == 4 &&
+          c.env.exists_one(e, e.name == 'CI' && e.value == 'true') &&
+          c.env.exists_one(e, e.name == 'HOME' && e.value == '/tmp') &&
+          c.env.exists_one(e, e.name == 'PYTHONUNBUFFERED' && e.value == '1') &&
+          c.env.exists_one(e, e.name == 'HALLU_DEFENSE_NETWORK_POLICY' && e.value == 'deny')) &&
+        object.spec.template.spec.containers.filter(c, c.name != 'runner').all(c,
+          c.env.size() == 2 &&
+          c.env.exists_one(e, e.name == 'HOME' && e.value == '/tmp') &&
+          c.env.exists_one(e, e.name == 'PYTHONUNBUFFERED' && e.value == '1'))
+      message: Sandbox container environment must contain only the literal non-secret allowlist.
+      reason: Forbidden
+    - expression: >-
+        object.spec.template.spec.volumes.size() == 4 &&
+        object.spec.template.spec.volumes.exists_one(v,
+          v.name == 'source' &&
+          has(v.persistentVolumeClaim) &&
+          v.persistentVolumeClaim.claimName == '{{ include "hallu-defense.sandboxWorkspaceClaimName" . }}') &&
+        object.spec.template.spec.volumes.exists_one(v,
+          v.name == 'workspace' && has(v.emptyDir) &&
+          has(v.emptyDir.sizeLimit) &&
+          quantity(v.emptyDir.sizeLimit).compareTo(quantity('512Mi')) == 0) &&
+        object.spec.template.spec.volumes.exists_one(v,
+          v.name == 'results' && has(v.emptyDir) &&
+          has(v.emptyDir.sizeLimit) &&
+          [quantity('1Mi'), quantity('2Mi'), quantity('3Mi'), quantity('4Mi'),
+           quantity('5Mi'), quantity('6Mi'), quantity('7Mi'), quantity('8Mi'),
+           quantity('9Mi'), quantity('10Mi'), quantity('11Mi'), quantity('12Mi'),
+           quantity('13Mi'), quantity('14Mi'), quantity('15Mi'), quantity('16Mi')].exists(q,
+            quantity(v.emptyDir.sizeLimit).compareTo(q) == 0)) &&
+        object.spec.template.spec.volumes.exists_one(v,
+          v.name == 'tmp' && has(v.emptyDir) && has(v.emptyDir.sizeLimit) &&
+          quantity(v.emptyDir.sizeLimit).compareTo(quantity('64Mi')) == 0) &&
+        object.spec.template.spec.volumes.all(v,
+          v.name in ['source', 'workspace', 'results', 'tmp'])
+      message: Sandbox Jobs may mount only the source PVC read-only plus bounded workspace/results/tmp emptyDirs.
+      reason: Forbidden
+    - expression: >-
+        (!has(object.spec.template.spec.initContainers) || object.spec.template.spec.initContainers.size() == 0) &&
+        (!has(object.spec.template.spec.ephemeralContainers) || object.spec.template.spec.ephemeralContainers.size() == 0) &&
+        object.spec.template.spec.containers[0].workingDir == '{{ .Values.sandbox.workspace.mountPath }}' &&
+        object.spec.template.spec.containers[0].volumeMounts.size() == 4 &&
+        object.spec.template.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'source' &&
+          m.mountPath == '/hallu-source' &&
+          m.readOnly == true &&
+          has(m.subPath) && m.subPath != '' && !m.subPath.startsWith('/') && !m.subPath.contains('..')) &&
+        object.spec.template.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'workspace' &&
+          m.mountPath == '{{ .Values.sandbox.workspace.mountPath }}' &&
+          (!has(m.readOnly) || m.readOnly == false) &&
+          !has(m.subPath)) &&
+        object.spec.template.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'results' && m.mountPath == '/hallu-results' && !has(m.subPath)) &&
+        object.spec.template.spec.containers[0].volumeMounts.exists_one(m,
+          m.name == 'tmp' && m.mountPath == '/tmp' && !has(m.subPath)) &&
+        object.spec.template.spec.containers.filter(c, c.name != 'runner').all(c,
+          c.workingDir == '/tmp' &&
+          c.volumeMounts.size() == 2 &&
+          c.volumeMounts.exists_one(m,
+            m.name == 'results' && m.mountPath == '/hallu-results' && !has(m.subPath)) &&
+          c.volumeMounts.exists_one(m,
+            m.name == 'tmp' && m.mountPath == '/tmp' && !has(m.subPath)))
+      message: Sandbox Jobs require a read-only source subPath, bounded writable emptyDir workspace, and no exporter workspace access.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "hallu-defense.sandboxAdmissionPolicyName" . }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+spec:
+  policyName: {{ include "hallu-defense.sandboxAdmissionPolicyName" . }}
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ include "hallu-defense.sandboxNamespace" . }}
+  validationActions:
+    - Deny
+{{- end }}

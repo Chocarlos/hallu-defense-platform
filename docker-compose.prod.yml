@@ -1,64 +1,249 @@
+x-hallu-api-production-environment: &hallu-api-production-environment
+  HALLU_DEFENSE_ENV: production
+  HALLU_DEFENSE_AUTH_REQUIRED: "true"
+  HALLU_DEFENSE_MAX_REQUEST_BODY_BYTES: "1048576"
+  HALLU_DEFENSE_REQUEST_BODY_TIMEOUT_SECONDS: "15"
+  HALLU_DEFENSE_AUTH_CLAIMS_MODE: oidc_jwt
+  HALLU_DEFENSE_OIDC_ISSUER: ${HALLU_DEFENSE_OIDC_ISSUER:?set the approved HTTPS OIDC issuer}
+  HALLU_DEFENSE_OIDC_AUDIENCE: ${HALLU_DEFENSE_OIDC_AUDIENCE:?set the OIDC audience}
+  HALLU_DEFENSE_OIDC_JWKS_PATH: /run/hallu-defense/keycloak-jwks.json
+  HALLU_DEFENSE_CORS_ALLOW_ORIGINS: ${HALLU_DEFENSE_CORS_ALLOW_ORIGINS:?set HTTPS console origins}
+  HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS: ${HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS:?set exact approved HTTPS origins}
+  HALLU_DEFENSE_SECRETS_BACKEND: vault
+  HALLU_DEFENSE_VAULT_ADDR: ${HALLU_DEFENSE_VAULT_ADDR:?set the approved HTTPS Vault address}
+  HALLU_DEFENSE_VAULT_MOUNT: secret
+  HALLU_DEFENSE_VAULT_TOKEN_FILE: /run/secrets/hallu_defense_vault_token
+  HALLU_DEFENSE_VAULT_CA_CERT_PATH: /run/hallu-defense/vault/ca.crt
+  HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME: observability/metrics-scrape-token
+  HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_BACKEND: redis
+  HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_MAX_REQUESTS: "120"
+  HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS: "60"
+  HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_URL_SECRET_NAME: quotas/tool-validation/redis-url
+  HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_TIMEOUT_SECONDS: "1"
+  HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_CA_PATH: /run/hallu-defense/redis/ca.crt
+  HALLU_DEFENSE_POSTGRES_DSN_FILE: /run/secrets/hallu_defense_postgres_dsn
+  HALLU_DEFENSE_POSTGRES_CA_CERT_PATH: /run/hallu-defense/postgres/ca.crt
+  HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+  HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: postgres
+  HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME: approvals/tool-call-commitment-key
+  HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
+  HALLU_DEFENSE_EVAL_REPORTS_BACKEND: postgres
+  HALLU_DEFENSE_PROVIDER_BACKEND: openai-compatible
+  HALLU_DEFENSE_PROVIDER_MODEL: ${HALLU_DEFENSE_PROVIDER_MODEL:?set the approved provider model}
+  HALLU_DEFENSE_OPENAI_COMPATIBLE_BASE_URL: ${HALLU_DEFENSE_OPENAI_COMPATIBLE_BASE_URL:?set the approved HTTPS provider gateway}
+  HALLU_DEFENSE_OPENAI_COMPATIBLE_API_KEY_SECRET_NAME: ${HALLU_DEFENSE_OPENAI_COMPATIBLE_API_KEY_SECRET_NAME:?set the provider credential secret name}
+  HALLU_DEFENSE_OPA_ENABLED: "true"
+  HALLU_DEFENSE_OPA_PATH: /usr/local/bin/opa
+  HALLU_DEFENSE_OPA_POLICY_DIR: /app/infra/opa/policies
+  HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid
+  HALLU_DEFENSE_OPENSEARCH_ENDPOINT: ${HALLU_DEFENSE_OPENSEARCH_ENDPOINT:?set the approved HTTPS OpenSearch endpoint}
+  HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: ${HALLU_DEFENSE_OPENSEARCH_INDEX_NAME:-hallu_evidence}
+  HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME: ${HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME:?set the Vault secret name containing the OpenSearch Authorization header}
+  HALLU_DEFENSE_OPENSEARCH_CA_CERT_PATH: /run/hallu-defense/opensearch/ca.crt
+  HALLU_DEFENSE_INGESTION_MODE: async
+  HALLU_DEFENSE_OTEL_ENABLED: "true"
+  HALLU_DEFENSE_OTEL_EXPORTER: otlp
+  HALLU_DEFENSE_OTEL_ENDPOINT: ${HALLU_DEFENSE_OTEL_ENDPOINT:?set the production OTLP endpoint}
+  HALLU_DEFENSE_SANDBOX_BACKEND: kubernetes
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_IMAGE: ${HALLU_DEFENSE_SANDBOX_KUBERNETES_IMAGE:?set the sandbox image pinned by sha256 digest}
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_NAMESPACE: ${HALLU_DEFENSE_SANDBOX_KUBERNETES_NAMESPACE:?set the dedicated sandbox namespace}
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_PVC_NAME: ${HALLU_DEFENSE_SANDBOX_KUBERNETES_PVC_NAME:?set the tenant-bound workspace PVC}
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_WORKSPACE_MOUNT_PATH: /workspace
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_NETWORK_POLICY_NAME: ${HALLU_DEFENSE_SANDBOX_KUBERNETES_NETWORK_POLICY_NAME:?set the default-deny NetworkPolicy}
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_TENANT_ID: ${HALLU_DEFENSE_SANDBOX_KUBERNETES_TENANT_ID:?set the single tenant bound to this release and PVC}
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_POLL_INTERVAL_SECONDS: "0.25"
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_JOB_TTL_SECONDS: "60"
+  HALLU_DEFENSE_SANDBOX_KUBERNETES_API_REQUEST_TIMEOUT_SECONDS: "5"
+  KUBERNETES_SERVICE_HOST: ${KUBERNETES_SERVICE_HOST:?set the approved Kubernetes API host}
+  KUBERNETES_SERVICE_PORT_HTTPS: ${KUBERNETES_SERVICE_PORT_HTTPS:?set the approved Kubernetes API HTTPS port}
+  HALLU_DEFENSE_ALLOWED_WORKSPACE: /workspace
+
+# The worker resolves only its Vault-backed OpenSearch authorization and metrics
+# bearer token; provider, OPA, sandbox, rate-limit, and OTLP stay isolated.
+x-hallu-worker-production-environment: &hallu-worker-production-environment
+  HALLU_DEFENSE_ENV: production
+  HALLU_DEFENSE_RUNTIME_ROLE: worker
+  HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS: ${HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS:?set exact approved HTTPS origins}
+  HALLU_DEFENSE_SECRETS_BACKEND: vault
+  HALLU_DEFENSE_VAULT_ADDR: ${HALLU_DEFENSE_VAULT_ADDR:?set the approved HTTPS Vault address}
+  HALLU_DEFENSE_VAULT_MOUNT: secret
+  HALLU_DEFENSE_VAULT_TOKEN_FILE: /run/secrets/hallu_defense_vault_token
+  HALLU_DEFENSE_VAULT_CA_CERT_PATH: /run/hallu-defense/vault/ca.crt
+  HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME: observability/metrics-scrape-token
+  HALLU_DEFENSE_POSTGRES_DSN_FILE: /run/secrets/hallu_defense_postgres_dsn
+  HALLU_DEFENSE_POSTGRES_CA_CERT_PATH: /run/hallu-defense/postgres/ca.crt
+  HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+  HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
+  HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid
+  HALLU_DEFENSE_OPENSEARCH_ENDPOINT: ${HALLU_DEFENSE_OPENSEARCH_ENDPOINT:?set the approved HTTPS OpenSearch endpoint}
+  HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: ${HALLU_DEFENSE_OPENSEARCH_INDEX_NAME:-hallu_evidence}
+  HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME: ${HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME:?set the Vault secret name containing the OpenSearch Authorization header}
+  HALLU_DEFENSE_OPENSEARCH_CA_CERT_PATH: /run/hallu-defense/opensearch/ca.crt
+  HALLU_DEFENSE_INGESTION_MODE: async
+  HALLU_DEFENSE_INGESTION_WORKER_ID: compose-production-ingestion-worker
+  HALLU_DEFENSE_INGESTION_WORKER_POLL_SECONDS: "2"
+  HALLU_DEFENSE_INGESTION_WORKER_BATCH_SIZE: "10"
+
+x-hallu-opensearch-bootstrap-production-environment: &hallu-opensearch-bootstrap-production-environment
+  HALLU_DEFENSE_ENV: production
+  HALLU_DEFENSE_RUNTIME_ROLE: opensearch-bootstrap
+  HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS: ${HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS:?set exact approved HTTPS origins including OpenSearch}
+  HALLU_DEFENSE_SECRETS_BACKEND: vault
+  HALLU_DEFENSE_VAULT_ADDR: ${HALLU_DEFENSE_VAULT_ADDR:?set the approved HTTPS Vault address}
+  HALLU_DEFENSE_VAULT_MOUNT: secret
+  HALLU_DEFENSE_VAULT_TOKEN_FILE: /run/secrets/hallu_defense_vault_token
+  HALLU_DEFENSE_VAULT_CA_CERT_PATH: /run/hallu-defense/vault/ca.crt
+  HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
+  HALLU_DEFENSE_RAG_INDEX_TIMEOUT_SECONDS: "5"
+  HALLU_DEFENSE_OPENSEARCH_ENDPOINT: ${HALLU_DEFENSE_OPENSEARCH_ENDPOINT:?set the approved HTTPS OpenSearch endpoint}
+  HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: ${HALLU_DEFENSE_OPENSEARCH_INDEX_NAME:-hallu_evidence}
+  HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME: ${HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME:?set the Vault secret name containing the OpenSearch Authorization header}
+  HALLU_DEFENSE_OPENSEARCH_CA_CERT_PATH: /run/hallu-defense/opensearch/ca.crt
+
+secrets:
+  hallu_runtime_vault_token:
+    file: ${HALLU_DEFENSE_RUNTIME_VAULT_TOKEN_FILE:?set the runtime Vault token file path}
+  hallu_bootstrap_vault_token:
+    file: ${HALLU_DEFENSE_BOOTSTRAP_VAULT_TOKEN_FILE:?set the bootstrap Vault token file path}
+  hallu_runtime_postgres_dsn:
+    file: ${HALLU_DEFENSE_POSTGRES_DSN_FILE:?set the runtime PostgreSQL DSN file path}
+  hallu_migrations_postgres_dsn:
+    file: ${HALLU_DEFENSE_POSTGRES_MIGRATION_DSN_FILE:?set the migration PostgreSQL DSN file path}
+
 services:
   api:
-    environment:
+    environment: !override
+      <<: *hallu-api-production-environment
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - source: hallu_runtime_vault_token
+        target: hallu_defense_vault_token
+      - source: hallu_runtime_postgres_dsn
+        target: hallu_defense_postgres_dsn
+    volumes: !override
+      - ${HALLU_DEFENSE_OIDC_JWKS_FILE:?set the host JWKS file path}:/run/hallu-defense/keycloak-jwks.json:ro
+      - ${HALLU_DEFENSE_VAULT_CA_CERT_HOST_PATH:?set the host Vault CA file path}:/run/hallu-defense/vault/ca.crt:ro
+      - ${HALLU_DEFENSE_POSTGRES_CA_CERT_HOST_PATH:?set the host PostgreSQL CA file path}:/run/hallu-defense/postgres/ca.crt:ro
+      - ${HALLU_DEFENSE_OPENSEARCH_CA_CERT_HOST_PATH:?set the host OpenSearch CA file path}:/run/hallu-defense/opensearch/ca.crt:ro
+      - ${HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_CA_HOST_PATH:?set the host Redis TLS CA file path}:/run/hallu-defense/redis/ca.crt:ro
+      - ${HALLU_DEFENSE_ALLOWED_WORKSPACE_HOST:?mount the same tenant-bound workspace as the sandbox PVC}:/workspace:ro
+      - ${HALLU_DEFENSE_SANDBOX_KUBERNETES_TOKEN_HOST_PATH:?set the dedicated ServiceAccount token file}:/var/run/secrets/kubernetes.io/serviceaccount/token:ro
+      - ${HALLU_DEFENSE_SANDBOX_KUBERNETES_CA_HOST_PATH:?set the Kubernetes CA file}:/var/run/secrets/kubernetes.io/serviceaccount/ca.crt:ro
+    depends_on: !override
+      opensearch-bootstrap:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
+    ports: !override
+      - 127.0.0.1:${HALLU_DEFENSE_API_PORT:-8000}:8000
+
+  ingestion-worker:
+    environment: !override
+      <<: *hallu-worker-production-environment
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - source: hallu_runtime_vault_token
+        target: hallu_defense_vault_token
+      - source: hallu_runtime_postgres_dsn
+        target: hallu_defense_postgres_dsn
+    volumes: !override
+      - ${HALLU_DEFENSE_VAULT_CA_CERT_HOST_PATH:?set the host Vault CA file path}:/run/hallu-defense/vault/ca.crt:ro
+      - ${HALLU_DEFENSE_POSTGRES_CA_CERT_HOST_PATH:?set the host PostgreSQL CA file path}:/run/hallu-defense/postgres/ca.crt:ro
+      - ${HALLU_DEFENSE_OPENSEARCH_CA_CERT_HOST_PATH:?set the host OpenSearch CA file path}:/run/hallu-defense/opensearch/ca.crt:ro
+    depends_on: !override
+      opensearch-bootstrap:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
+
+  opensearch-bootstrap:
+    command: !override
+      - python
+      - /app/scripts/dev/bootstrap_opensearch_template.py
+    environment: !override
+      <<: *hallu-opensearch-bootstrap-production-environment
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - source: hallu_bootstrap_vault_token
+        target: hallu_defense_vault_token
+    volumes: !override
+      - ${HALLU_DEFENSE_VAULT_CA_CERT_HOST_PATH:?set the host Vault CA file path}:/run/hallu-defense/vault/ca.crt:ro
+      - ${HALLU_DEFENSE_OPENSEARCH_CA_CERT_HOST_PATH:?set the host OpenSearch CA file path}:/run/hallu-defense/opensearch/ca.crt:ro
+    depends_on: !reset []
+    restart: "no"
+
+  postgres-migrations:
+    environment: !override
       HALLU_DEFENSE_ENV: production
-      HALLU_DEFENSE_AUTH_REQUIRED: "true"
-      HALLU_DEFENSE_AUTH_CLAIMS_MODE: oidc_jwt
-      HALLU_DEFENSE_OIDC_ISSUER: https://auth.example.invalid/realms/hallu-defense
-      HALLU_DEFENSE_OIDC_AUDIENCE: hallu-defense-api
-      HALLU_DEFENSE_OIDC_JWKS_PATH: /run/hallu-defense/keycloak-jwks.json
-      HALLU_DEFENSE_CORS_ALLOW_ORIGINS: https://console.example.invalid
-      HALLU_DEFENSE_SECRETS_BACKEND: vault
-      HALLU_DEFENSE_VAULT_ADDR: http://vault:8200
-      HALLU_DEFENSE_VAULT_MOUNT: secret
-      HALLU_DEFENSE_VAULT_TOKEN_ENV: HALLU_DEFENSE_RUNTIME_VAULT_TOKEN
-      HALLU_DEFENSE_RUNTIME_VAULT_TOKEN: ${HALLU_DEFENSE_RUNTIME_VAULT_TOKEN:?set HALLU_DEFENSE_RUNTIME_VAULT_TOKEN outside git}
-      HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME: observability/metrics-scrape-token
-      HALLU_DEFENSE_POSTGRES_DSN: ${HALLU_DEFENSE_POSTGRES_DSN:?set HALLU_DEFENSE_POSTGRES_DSN outside git}
-      HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
-      HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: postgres
-      HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
-      HALLU_DEFENSE_RAG_INDEX_BACKEND: pgvector
-      HALLU_DEFENSE_INGESTION_MODE: async
-      HALLU_DEFENSE_OTEL_ENABLED: "true"
-      HALLU_DEFENSE_OTEL_EXPORTER: otlp
-      HALLU_DEFENSE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
-      HALLU_DEFENSE_SANDBOX_BACKEND: docker
-      HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: hallu-defense-sandbox:ci
-      HALLU_DEFENSE_SANDBOX_DOCKER_PATH: docker
-    volumes:
-      - ./var/keycloak/jwks.json:/run/hallu-defense/keycloak-jwks.json:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - otel-collector
-      - postgres
-      - redis
-      - vault
+      HALLU_DEFENSE_POSTGRES_DSN_FILE: /run/secrets/hallu_defense_postgres_dsn
+      HALLU_DEFENSE_POSTGRES_CA_CERT_PATH: /run/hallu-defense/postgres/ca.crt
+    depends_on: !override
+      opensearch-bootstrap:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - source: hallu_migrations_postgres_dsn
+        target: hallu_defense_postgres_dsn
+    volumes: !override
+      - ${HALLU_DEFENSE_POSTGRES_CA_CERT_HOST_PATH:?set the host PostgreSQL CA file path}:/run/hallu-defense/postgres/ca.crt:ro
+    restart: "no"
 
   console:
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: https://api.example.invalid
+    environment: !override
+      HALLU_DEFENSE_ENV: production
+      HALLU_DEFENSE_CONSOLE_AUTH_MODE: oidc
+      HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: ${HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN:?set the canonical public HTTPS Console origin}
+      HALLU_DEFENSE_CONSOLE_API_ORIGIN: ${HALLU_DEFENSE_CONSOLE_API_ORIGIN:?set the canonical public HTTPS API origin}
+      HALLU_DEFENSE_CONSOLE_OIDC_ISSUER: ${HALLU_DEFENSE_CONSOLE_OIDC_ISSUER:?set the canonical public HTTPS realm issuer}
+      HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID: ${HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID:?set the public OIDC client id}
+      HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE: ${HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE:?set the API token audience}
+      HALLU_DEFENSE_CONSOLE_OIDC_TENANT_CLAIM: tenant_id
+      HALLU_DEFENSE_CONSOLE_OIDC_ROLES_CLAIM: roles
+      HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES: verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator
+    ports: !override
+      - 127.0.0.1:${HALLU_DEFENSE_CONSOLE_PORT:-3000}:3000
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /app/apps/console/.next/cache:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
-  prometheus:
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-    volumes:
-      - ./infra/prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
-      - ./var/prometheus/api-metrics.jwt:/run/secrets/hallu_defense_metrics_bearer_token:ro
-
-  grafana:
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER outside git}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD outside git}
-
-  postgres:
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER outside git}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD outside git}
-      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB outside git}
-
-  minio:
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER outside git}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD outside git}
+  # These services are intentionally local-development dependencies in the base
+  # file. Compose's reset tag removes them from the merged production model, so
+  # `up` cannot accidentally start dev credentials or plaintext data services.
+  prometheus: !reset null
+  grafana: !reset null
+  otel-collector: !reset null
+  postgres: !reset null
+  opensearch: !reset null
+  redis: !reset null
+  minio: !reset null
+  keycloak: !reset null
+  vault: !reset null

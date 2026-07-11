@@ -1,0 +1,2 @@
+# The code-agent sandbox intentionally contains only its test runner surface.
+pytest==9.1.1

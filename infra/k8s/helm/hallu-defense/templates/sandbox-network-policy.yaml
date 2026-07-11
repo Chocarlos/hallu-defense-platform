@@ -1,0 +1,19 @@
+{{- if eq .Values.sandbox.backend "kubernetes" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.sandboxNetworkPolicyName" . }}
+  namespace: {{ include "hallu-defense.sandboxNamespace" . }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+spec:
+  podSelector:
+    matchLabels:
+      hallu-defense.openai.com/network-policy: deny-egress
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []
+{{- end }}

@@ -384,7 +384,7 @@ kind.
    across all postgres tables with event `tenant_data_deletion`) +
    `scripts/dev/backup_restore_drill.py` (`pg_dump` via `compose exec -T
    postgres` -> Fernet encryption with dev `cryptography`, key from Vault ->
-   upload via `minio/mc` -> restore into scratch DB -> row / checksum parity ->
+   upload via bounded in-process SigV4 -> restore into scratch DB -> row / checksum parity ->
    report `var/backup-drills/<ts>.json`) + `scripts/dev/run_retention_execution.py`
    + `check_backup_retention_config.py` requiring the scripts + `backup-drill`
    job + MinIO wired.

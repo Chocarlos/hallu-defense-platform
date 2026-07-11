@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HalluDefenseClient, HalluDefenseError } from "../src/index.js";
 
 describe("HalluDefenseClient", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("sends tenant headers and returns verification runs", async () => {
     const requests: RequestInit[] = [];
     const fakeFetch: typeof fetch = async (_input, init) => {
@@ -44,6 +48,47 @@ describe("HalluDefenseClient", () => {
       "x-subject-id": "sdk-user",
       "x-roles": "reader,approval_reviewer"
     });
+  });
+
+  it("uses Bearer as the sole identity authority when a token is configured", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      capturedHeaders = init?.headers;
+      return new Response(JSON.stringify({ claims: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    const client = new HalluDefenseClient({
+      baseUrl: "https://api.example.test",
+      token: "signed.access.token",
+      tenantId: "spoofed-tenant",
+      subjectId: "spoofed-subject",
+      roles: ["spoofed-role"],
+      traceId: "tr_bearer",
+      fetchImpl: fakeFetch
+    });
+
+    await client.extractClaims("A supported claim.");
+
+    expect(capturedHeaders).toMatchObject({
+      authorization: "Bearer signed.access.token",
+      "content-type": "application/json",
+      "x-trace-id": "tr_bearer"
+    });
+    expect(capturedHeaders).not.toHaveProperty("x-tenant-id");
+    expect(capturedHeaders).not.toHaveProperty("x-subject-id");
+    expect(capturedHeaders).not.toHaveProperty("x-roles");
+  });
+
+  it("rejects malformed Bearer material before making a request", () => {
+    expect(
+      () =>
+        new HalluDefenseClient({
+          baseUrl: "https://api.example.test",
+          token: "valid-part\r\ninjected-header"
+        })
+    ).toThrow(TypeError);
   });
 
   it("throws typed errors for API failures", async () => {
@@ -96,6 +141,99 @@ describe("HalluDefenseClient", () => {
 
     expect(audit.trace_id).toBe("tr_audit");
     expect(audit.events[0]?.path).toBe("/claims/extract");
+  });
+
+  it("supports a bounded per-call timeout for long-running sandbox batches", async () => {
+    vi.useFakeTimers();
+    let capturedSignal: AbortSignal | null = null;
+    const fakeFetch: typeof fetch = (_input, init) => {
+      capturedSignal = init?.signal ?? null;
+      return new Promise((_resolve, reject) => {
+        capturedSignal?.addEventListener("abort", () => {
+          reject(new DOMException("request aborted", "AbortError"));
+        });
+      });
+    };
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      timeoutMs: 10,
+      fetchImpl: fakeFetch
+    });
+
+    const pending = client.runRepoChecks(
+      {
+        repo_ref: ".",
+        commands: ["python --version"],
+        network_policy: "deny"
+      },
+      { timeoutMs: 40 }
+    );
+    const rejection = expect(pending).rejects.toMatchObject({
+      status: 408,
+      endpoint: "/repo/checks/run",
+      message: "Request timed out"
+    });
+
+    await vi.advanceTimersByTimeAsync(11);
+    expect(capturedSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(29);
+    await rejection;
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it("rejects invalid request timeout overrides before sending a request", async () => {
+    const fakeFetch = vi.fn<typeof fetch>();
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      fetchImpl: fakeFetch
+    });
+
+    await expect(
+      client.runRepoChecks(
+        {
+          repo_ref: ".",
+          commands: ["python --version"],
+          network_policy: "deny"
+        },
+        { timeoutMs: 0 }
+      )
+    ).rejects.toThrow(TypeError);
+    expect(fakeFetch).not.toHaveBeenCalled();
+  });
+
+  it("lists paginated verification summaries without a client-controlled tenant", async () => {
+    let endpoint = "";
+    let body: unknown;
+    const fakeFetch: typeof fetch = async (input, init) => {
+      endpoint = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          trace_id: "tr_history_list",
+          runs: [
+            {
+              trace_id: "tr_completed_run",
+              final_decision: "repaired",
+              created_at: "2026-07-10T12:00:00Z"
+            }
+          ],
+          next_cursor: "eyJ2ZXJzaW9uIjoxfQ"
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      tenantId: "tenant-a",
+      fetchImpl: fakeFetch
+    });
+
+    const history = await client.listVerificationRuns({ limit: 10 });
+
+    expect(endpoint).toBe("http://api.local/verification/runs/list");
+    expect(body).toEqual({ limit: 10 });
+    expect(history.runs[0]?.trace_id).toBe("tr_completed_run");
+    expect(history.next_cursor).toBe("eyJ2ZXJzaW9uIjoxfQ");
   });
 
   it("publishes and lists eval reports through typed endpoints", async () => {
@@ -624,15 +762,87 @@ describe("HalluDefenseClient", () => {
     expect(replay.replayed_run.input["replay_of"]).toBe("tr_replay_source");
   });
 
+  it("uses explicit v2 contracts for verification and claim verdicts", async () => {
+    const endpoints: string[] = [];
+    const bodies: unknown[] = [];
+    const fakeFetch: typeof fetch = async (input, init) => {
+      const endpoint = String(input);
+      endpoints.push(endpoint);
+      bodies.push(JSON.parse(String(init?.body)));
+      if (endpoint.endsWith("/v2/claims/verify")) {
+        return new Response(
+          JSON.stringify({
+            schema_version: "2.0",
+            verdicts: [
+              {
+                schema_version: "2.0",
+                claim_id: "clm_v2",
+                status: "unsupported",
+                confidence: 0.4,
+                evidence_ids: [],
+                action: "abstain",
+                reason: "No evidence was found.",
+                validator_trace: {}
+              }
+            ]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          schema_version: "2.0",
+          trace_id: "tr_sdk_v2",
+          tenant_id: "tenant-a",
+          input: {},
+          claims: [],
+          evidence: [],
+          verdicts: [],
+          final_decision: "allow",
+          final_text: "ok",
+          policy_version: "test",
+          created_at: "2026-07-09T00:00:00Z"
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    };
+    const client = new HalluDefenseClient({
+      baseUrl: "http://api.local",
+      tenantId: "tenant-a",
+      fetchImpl: fakeFetch
+    });
+
+    const run = await client.runVerificationV2({
+      schema_version: "2.0",
+      message_text: "A versioned response."
+    });
+    const response = await client.verifyClaimsV2({
+      schema_version: "2.0",
+      claims: [],
+      evidence: []
+    });
+
+    expect(run.schema_version).toBe("2.0");
+    expect(response.verdicts[0]?.status).toBe("unsupported");
+    expect(endpoints).toEqual([
+      "http://api.local/v2/verification/run",
+      "http://api.local/v2/claims/verify"
+    ]);
+    expect(bodies).toEqual([
+      { schema_version: "2.0", message_text: "A versioned response." },
+      { schema_version: "2.0", claims: [], evidence: [] }
+    ]);
+  });
+
   it("binds injected browser fetch implementations", async () => {
-    let observedThis: unknown;
+    let invokedWithGlobalThis = false;
     const browserFetch = async function (
       this: unknown,
       _input: RequestInfo | URL,
       _init?: RequestInit
     ): Promise<Response> {
-      observedThis = this;
-      if (this !== globalThis) {
+      invokedWithGlobalThis = this === globalThis;
+      if (!invokedWithGlobalThis) {
         throw new TypeError("Illegal invocation");
       }
       return new Response(JSON.stringify({ claims: [] }), {
@@ -647,6 +857,6 @@ describe("HalluDefenseClient", () => {
     });
 
     await expect(client.extractClaims("hello world claim")).resolves.toEqual([]);
-    expect(observedThis).toBe(globalThis);
+    expect(invokedWithGlobalThis).toBe(true);
   });
 });

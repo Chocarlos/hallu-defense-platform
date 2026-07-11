@@ -97,11 +97,15 @@ class FakePool:
         self.contexts: list[FakeConnectionContext] = []
         self._rows = list(rows)
         self._execute_error = execute_error
+        self.closed = False
 
     def connection(self) -> FakeConnectionContext:
         context = FakeConnectionContext(self._rows, self._execute_error)
         self.contexts.append(context)
         return context
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class RecordingPoolFactory:
@@ -155,6 +159,16 @@ def test_execute_defaults_to_empty_parameters() -> None:
     assert pool.contexts[-1].connection.cursor_instance.execute_calls == [("SELECT 1", ())]
 
 
+def test_close_releases_initialized_pool_and_is_idempotent() -> None:
+    pool = FakePool()
+    provider = PooledPostgresProvider(dsn="postgresql://localhost/db", pool=pool)
+
+    provider.close()
+    provider.close()
+
+    assert pool.closed is True
+
+
 def test_fetch_all_returns_fake_rows_as_list_of_dicts() -> None:
     rows = [{"id": 1, "name": "alice"}, {"id": 2, "name": "bob"}]
     pool = FakePool(rows=rows)
@@ -187,6 +201,46 @@ def test_execute_returning_returns_returning_rows_in_committed_transaction() -> 
         ("INSERT INTO t (a) VALUES (%s) RETURNING id, version", ["value"])
     ]
     assert context.committed is True
+
+
+def test_transaction_reuses_one_connection_and_commits_all_operations() -> None:
+    rows = [{"affected_count": 2}]
+    pool = FakePool(rows=rows)
+    provider = PooledPostgresProvider(dsn="postgresql://localhost/db", pool=pool)
+
+    with provider.transaction() as transaction:
+        transaction.execute("DELETE FROM first WHERE tenant_id = %s", ["tenant-a"])
+        returned = transaction.execute_returning(
+            "DELETE FROM second WHERE tenant_id = %s RETURNING affected_count",
+            ["tenant-a"],
+        )
+
+    assert returned == rows
+    assert len(pool.contexts) == 1
+    context = pool.contexts[0]
+    assert context.connection.cursor_instance.execute_calls == [
+        ("DELETE FROM first WHERE tenant_id = %s", ["tenant-a"]),
+        (
+            "DELETE FROM second WHERE tenant_id = %s RETURNING affected_count",
+            ["tenant-a"],
+        ),
+    ]
+    assert context.committed is True
+    assert context.rolled_back is False
+
+
+def test_transaction_rolls_back_all_operations_when_body_fails() -> None:
+    pool = FakePool()
+    provider = PooledPostgresProvider(dsn="postgresql://localhost/db", pool=pool)
+
+    with pytest.raises(ValueError, match="audit append failed"):
+        with provider.transaction() as transaction:
+            transaction.execute("DELETE FROM first", ())
+            raise ValueError("audit append failed")
+
+    context = pool.contexts[0]
+    assert context.committed is False
+    assert context.rolled_back is True
 
 
 def test_driver_error_is_wrapped_in_provider_error_and_rolls_back() -> None:

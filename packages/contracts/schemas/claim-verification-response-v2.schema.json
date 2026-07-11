@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/claim-verification-response-v2.schema.json",
+  "title": "ClaimVerificationResponseV2",
+  "x-contract-version": "2.0",
+  "type": "object",
+  "required": ["schema_version", "verdicts"],
+  "properties": {
+    "schema_version": { "const": "2.0", "type": "string" },
+    "verdicts": {
+      "type": "array",
+      "items": { "$ref": "claim-verdict-v2.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

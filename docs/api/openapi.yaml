@@ -42,8 +42,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          description: Request Timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request Entity Too Large
           content:
             application/json:
               schema:
@@ -56,6 +68,80 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /ready:
+    get:
+      summary: Ready
+      operationId: ready_ready_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Ready Ready Get
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          description: Request Timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request Entity Too Large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unprocessable Entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service Unavailable
           content:
             application/json:
               schema:
@@ -144,12 +230,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -252,12 +350,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -360,12 +470,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -468,12 +590,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -582,12 +716,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -696,12 +842,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -810,12 +968,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -918,12 +1088,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1026,12 +1208,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1134,12 +1328,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1242,12 +1448,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1350,12 +1568,144 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /v2/claims/verify:
+    post:
+      summary: Verify Claims V2
+      operationId: verify_claims_v2_v2_claims_verify_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimVerificationRequestV2'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimVerificationResponseV2'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1458,12 +1808,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1566,12 +1928,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1584,6 +1958,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Internal Server Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Service Unavailable
   /tools/validate-output:
     post:
       summary: Validate Tool Output
@@ -1674,12 +2054,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1782,12 +2174,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1890,12 +2294,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -1998,12 +2414,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2106,12 +2534,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2214,12 +2654,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2322,12 +2774,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2430,12 +2894,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2448,6 +2924,132 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Internal Server Error
+  /verification/runs/list:
+    post:
+      summary: List Verification Runs
+      operationId: list_verification_runs_verification_runs_list_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationRunListRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRunListResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Service Unavailable
   /verification/run:
     post:
       summary: Run Verification
@@ -2538,12 +3140,144 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unprocessable Entity
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Internal Server Error
+  /v2/verification/run:
+    post:
+      summary: Run Verification V2
+      operationId: run_verification_v2_v2_verification_run_post
+      parameters:
+      - name: x-tenant-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Tenant-Id
+      - name: x-subject-id
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Subject-Id
+      - name: x-roles
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Roles
+      - name: x-auth-claims-signature
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Signature
+      - name: x-auth-claims-timestamp
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Auth-Claims-Timestamp
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationRunRequestV2'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRunV2'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2646,12 +3380,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Not Found
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Timeout
         '409':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
           description: Conflict
+        '413':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request Entity Too Large
         '422':
           content:
             application/json:
@@ -2962,6 +3708,7 @@ components:
       - claim_id
       - text
       title: Claim
+      x-contract-version: '1.0'
     ClaimClassificationRequest:
       properties:
         claims:
@@ -3082,6 +3829,50 @@ components:
       - action
       - reason
       title: ClaimVerdict
+      x-contract-version: '1.0'
+    ClaimVerdictV2:
+      properties:
+        schema_version:
+          type: string
+          const: '2.0'
+          title: Schema Version
+        claim_id:
+          type: string
+          title: Claim Id
+        status:
+          $ref: '#/components/schemas/VerdictStatusV2'
+        confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Confidence
+        evidence_ids:
+          items:
+            type: string
+          type: array
+          title: Evidence Ids
+        action:
+          $ref: '#/components/schemas/VerdictActionV2'
+        reason:
+          type: string
+          title: Reason
+        validator_trace:
+          additionalProperties: true
+          type: object
+          title: Validator Trace
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - claim_id
+      - status
+      - confidence
+      - evidence_ids
+      - action
+      - reason
+      - validator_trace
+      title: ClaimVerdictV2
+      x-contract-version: '2.0'
     ClaimVerificationRequest:
       properties:
         claims:
@@ -3099,6 +3890,29 @@ components:
       required:
       - claims
       title: ClaimVerificationRequest
+    ClaimVerificationRequestV2:
+      properties:
+        schema_version:
+          type: string
+          const: '2.0'
+          title: Schema Version
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - claims
+      title: ClaimVerificationRequestV2
+      x-contract-version: '2.0'
     ClaimVerificationResponse:
       properties:
         verdicts:
@@ -3110,6 +3924,24 @@ components:
       required:
       - verdicts
       title: ClaimVerificationResponse
+    ClaimVerificationResponseV2:
+      properties:
+        schema_version:
+          type: string
+          const: '2.0'
+          title: Schema Version
+        verdicts:
+          items:
+            $ref: '#/components/schemas/ClaimVerdictV2'
+          type: array
+          title: Verdicts
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - verdicts
+      title: ClaimVerificationResponseV2
+      x-contract-version: '2.0'
     CorpusGrant:
       properties:
         tenant_id:
@@ -3607,6 +4439,7 @@ components:
       properties:
         source_ref:
           type: string
+          minLength: 1
           title: Source Ref
         content:
           type: string
@@ -3614,7 +4447,6 @@ components:
           title: Content
         authority:
           $ref: '#/components/schemas/Authority'
-          default: internal
         metadata:
           additionalProperties: true
           type: object
@@ -3624,6 +4456,7 @@ components:
       required:
       - source_ref
       - content
+      - authority
       title: DocumentInput
     ErrorResponse:
       properties:
@@ -3823,8 +4656,8 @@ components:
           $ref: '#/components/schemas/EvidenceKind'
         source_ref:
           type: string
+          minLength: 1
           title: Source Ref
-          default: ''
         content:
           type: string
           minLength: 1
@@ -3835,7 +4668,6 @@ components:
           title: Structured Content
         authority:
           $ref: '#/components/schemas/Authority'
-          default: unknown
         freshness:
           $ref: '#/components/schemas/Freshness'
       additionalProperties: false
@@ -3843,8 +4675,13 @@ components:
       required:
       - evidence_id
       - kind
+      - source_ref
       - content
+      - structured_content
+      - authority
+      - freshness
       title: Evidence
+      x-contract-version: '1.0'
     EvidenceKind:
       type: string
       enum:
@@ -3930,9 +4767,11 @@ components:
           title: Published At
         staleness_class:
           $ref: '#/components/schemas/StalenessClass'
-          default: unknown
       additionalProperties: false
       type: object
+      required:
+      - retrieved_at
+      - staleness_class
       title: Freshness
     PolicyEvaluationRequest:
       properties:
@@ -4126,6 +4965,7 @@ components:
       - stderr
       - verdict
       title: SandboxRun
+      x-contract-version: '1.0'
     SourceSpan:
       properties:
         message_id:
@@ -4194,6 +5034,7 @@ components:
       required:
       - tool_name
       title: ToolCallEnvelope
+      x-contract-version: '1.0'
     ToolValidationResponse:
       properties:
         allowed:
@@ -4219,6 +5060,21 @@ components:
             type: object
           - type: 'null'
           title: Sanitized Output
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        policy_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Policy Version
+        matched_rules:
+          items:
+            type: string
+          type: array
+          title: Matched Rules
       type: object
       required:
       - allowed
@@ -4236,6 +5092,16 @@ components:
       - block
       - require_human_review
       title: VerdictAction
+    VerdictActionV2:
+      type: string
+      enum:
+      - allow
+      - repair
+      - abstain
+      - block
+      - ask_clarification
+      - require_approval
+      title: VerdictActionV2
     VerdictStatus:
       type: string
       enum:
@@ -4248,6 +5114,17 @@ components:
       - UNVERIFIABLE
       - OUT_OF_SCOPE
       title: VerdictStatus
+    VerdictStatusV2:
+      type: string
+      enum:
+      - supported
+      - unsupported
+      - contradicted
+      - insufficient_evidence
+      - not_verifiable
+      - requires_human_review
+      - blocked_by_policy
+      title: VerdictStatusV2
     VerificationReplayRequest:
       properties:
         trace_id:
@@ -4343,6 +5220,55 @@ components:
       - final_text
       - policy_version
       title: VerificationRun
+      x-contract-version: '1.0'
+    VerificationRunListRequest:
+      properties:
+        trace_id:
+          anyOf:
+          - type: string
+            maxLength: 160
+            minLength: 1
+          - type: 'null'
+          title: Trace Id
+        limit:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Limit
+          default: 20
+        cursor:
+          anyOf:
+          - type: string
+            maxLength: 2048
+            minLength: 1
+          - type: 'null'
+          title: Cursor
+      additionalProperties: false
+      type: object
+      title: VerificationRunListRequest
+    VerificationRunListResponse:
+      properties:
+        trace_id:
+          type: string
+          minLength: 1
+          title: Trace Id
+        runs:
+          items:
+            $ref: '#/components/schemas/VerificationRunSummary'
+          type: array
+          title: Runs
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - runs
+      - next_cursor
+      title: VerificationRunListResponse
     VerificationRunRequest:
       properties:
         tenant_id:
@@ -4381,3 +5307,127 @@ components:
       required:
       - message_text
       title: VerificationRunRequest
+    VerificationRunRequestV2:
+      properties:
+        schema_version:
+          type: string
+          const: '2.0'
+          title: Schema Version
+        tenant_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tenant Id
+        message_text:
+          type: string
+          minLength: 1
+          title: Message Text
+        documents:
+          items:
+            $ref: '#/components/schemas/DocumentInput'
+          type: array
+          title: Documents
+        tool_outputs:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Tool Outputs
+        execution_artifacts:
+          additionalProperties: true
+          type: object
+          title: Execution Artifacts
+        task_type:
+          type: string
+          title: Task Type
+          default: chat
+        message_id:
+          type: string
+          title: Message Id
+          default: draft
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - message_text
+      title: VerificationRunRequestV2
+      x-contract-version: '2.0'
+    VerificationRunSummary:
+      properties:
+        trace_id:
+          type: string
+          maxLength: 160
+          minLength: 1
+          title: Trace Id
+        final_decision:
+          $ref: '#/components/schemas/FinalDecision'
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - trace_id
+      - final_decision
+      - created_at
+      title: VerificationRunSummary
+      description: Safe, event-backed summary for the tenant verification history.
+    VerificationRunV2:
+      properties:
+        schema_version:
+          type: string
+          const: '2.0'
+          title: Schema Version
+        trace_id:
+          type: string
+          title: Trace Id
+        tenant_id:
+          type: string
+          title: Tenant Id
+        input:
+          additionalProperties: true
+          type: object
+          title: Input
+        claims:
+          items:
+            $ref: '#/components/schemas/Claim'
+          type: array
+          title: Claims
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+        verdicts:
+          items:
+            $ref: '#/components/schemas/ClaimVerdictV2'
+          type: array
+          title: Verdicts
+        final_decision:
+          $ref: '#/components/schemas/FinalDecision'
+        final_text:
+          type: string
+          title: Final Text
+        policy_version:
+          type: string
+          title: Policy Version
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      additionalProperties: false
+      type: object
+      required:
+      - schema_version
+      - trace_id
+      - tenant_id
+      - input
+      - claims
+      - evidence
+      - verdicts
+      - final_decision
+      - final_text
+      - policy_version
+      - created_at
+      title: VerificationRunV2
+      x-contract-version: '2.0'

@@ -6,17 +6,26 @@ async function openConsole(page: Page): Promise<void> {
 }
 
 test.describe("replay console flow", () => {
+  test("starts without the demo fixture when its local flag is absent", async ({ page }) => {
+    await openConsole(page);
+
+    const traceValue = page.locator(".metric", { hasText: "Trace" }).locator("strong");
+    await expect(traceValue).toHaveText("Sin run");
+    await expect(page.locator("body")).not.toContainText("tr_demo");
+    await expect(page.getByRole("button", { name: "Usar trace actual" })).toBeDisabled();
+  });
+
   test("replays a verification run created from the console", async ({ page }) => {
     await openConsole(page);
 
     const traceValue = page.locator(".metric", { hasText: "Trace" }).locator("strong");
-    await expect(traceValue).toHaveText("tr_demo");
+    await expect(traceValue).toHaveText("Sin run");
 
     await page
       .locator("form.verify-panel")
       .getByRole("button", { name: /Ejecutar|Ejecutando/ })
       .click();
-    await expect(traceValue).not.toHaveText("tr_demo", { timeout: 30_000 });
+    await expect(traceValue).toHaveText(/^tr_(?!demo$).+/, { timeout: 30_000 });
     const traceId = ((await traceValue.textContent()) ?? "").trim();
     expect(traceId).toMatch(/^tr_/);
 

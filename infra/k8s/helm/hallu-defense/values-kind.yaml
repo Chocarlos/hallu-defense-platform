@@ -1,0 +1,146 @@
+# Explicit kind-only dependencies. Production installs must provide managed
+# PostgreSQL/OpenSearch/Vault services and leave kindDependencies disabled.
+vault:
+  address: https://hallu-defense-vault:8200
+
+oidc:
+  issuer: https://auth.kind.invalid/realms/hallu-defense
+  audience: hallu-defense-api
+
+cors:
+  allowOrigins:
+    - https://console.kind.invalid
+
+outboundHttps:
+  allowedOrigins:
+    - https://hallu-defense-vault:8200
+    - https://auth.kind.invalid
+    - https://llm-gateway.kind.invalid
+
+ragIndex:
+  backend: hybrid
+
+opensearch:
+  endpoint: http://hallu-defense-opensearch:9200
+  authorizationSecretName: ""
+  caSecretName: ""
+
+postgres:
+  caSecretName: ""
+  kindInsecureTlsEnabled: true
+
+networkPolicy:
+  # Kind/kindnet-specific Service VIP. Production must validate its own CNI and
+  # Kubernetes API destination behavior explicitly.
+  kubernetesApi:
+    - cidr: 10.96.0.1/32
+      port: 443
+  ingress:
+    api:
+      callers:
+        - name: kind-api-caller
+          namespace: $release
+          podLabelKey: hallu-defense.openai.com/network-client
+          podLabelValue: api
+      metricsScrapers:
+        - name: kind-metrics-scraper
+          namespace: $release
+          podLabelKey: hallu-defense.openai.com/network-client
+          podLabelValue: metrics
+    worker:
+      metricsScrapers:
+        - name: kind-worker-metrics-scraper
+          namespace: $release
+          podLabelKey: hallu-defense.openai.com/network-client
+          podLabelValue: metrics
+    console:
+      callers:
+        - name: kind-console-caller
+          namespace: $release
+          podLabelKey: hallu-defense.openai.com/network-client
+          podLabelValue: console
+  api:
+    external: []
+  console:
+    external: []
+  worker:
+    external: []
+  migrations:
+    external: []
+
+provider:
+  backend: openai-compatible
+  model: kind-verification-model
+  openaiCompatibleBaseUrl: https://llm-gateway.kind.invalid/v1
+  apiKeySecretName: providers/openai/api-key
+
+otel:
+  # The chart does not deploy an OpenTelemetry Collector in kind. Avoid a
+  # permanent retry loop against a nonexistent service during deployment smoke.
+  enabled: false
+
+console:
+  publicOrigin: https://console.kind.invalid
+  apiOrigin: https://api.kind.invalid
+  oidc:
+    issuer: https://auth.kind.invalid/realms/hallu-defense
+    clientId: hallu-defense-console
+    apiAudience: hallu-defense-api
+  image:
+    reference: hallu-defense-console:ci
+
+api:
+  image:
+    reference: hallu-defense-api:ci
+
+worker:
+  image:
+    reference: hallu-defense-api:ci
+
+migrations:
+  image:
+    reference: hallu-defense-api:ci
+
+sandbox:
+  backend: kubernetes
+  namespace: hallu-defense-sandbox
+  tenantId: kind-smoke-tenant
+  image:
+    reference: hallu-defense-sandbox:ci
+    pullPolicy: IfNotPresent
+  commandTimeoutSeconds: 5
+  workspace:
+    apiExistingClaim: ""
+    existingClaim: ""
+    createClaim: true
+    accessModes:
+      - ReadWriteOnce
+  fixture:
+    enabled: true
+    repositoryName: smoke-repo
+
+kindDependencies:
+  enabled: true
+  vault:
+    enabled: true
+  pgvector:
+    enabled: true
+  opensearch:
+    enabled: true
+    image: hallu-defense-opensearch:ci
+  redis:
+    enabled: true
+
+secrets:
+  runtime:
+    name: hallu-defense-runtime
+  bootstrap:
+    name: hallu-defense-bootstrap
+  migrations:
+    name: hallu-defense-migrations
+  kindPostgres:
+    name: hallu-defense-postgres
+  kindVault:
+    name: hallu-defense-kind-vault
+  kindRedisTls:
+    name: hallu-defense-kind-redis-tls

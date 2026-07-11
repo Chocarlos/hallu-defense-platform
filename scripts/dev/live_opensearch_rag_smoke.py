@@ -95,6 +95,11 @@ def run_live_smoke(
     active_transport = transport or UrlLibOpenSearchTransport(config.endpoint)
 
     try:
+        cleanup_smoke_index(
+            transport=active_transport,
+            index_name=index_name,
+            timeout_seconds=config.timeout_seconds,
+        )
         bootstrap_opensearch_template(
             endpoint=config.endpoint,
             index_name=index_name,
@@ -221,12 +226,17 @@ def cleanup_smoke_index(
     timeout_seconds: float,
 ) -> None:
     safe_index_name = validate_smoke_index_name(index_name)
-    response = transport.request_json(
-        "DELETE",
-        f"/{safe_index_name}?ignore_unavailable=true",
-        {},
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        response = transport.request_json(
+            "DELETE",
+            f"/{safe_index_name}?ignore_unavailable=true",
+            {},
+            timeout_seconds=timeout_seconds,
+        )
+    except RagIndexTransportError as exc:
+        if "status 404" in str(exc):
+            return
+        raise
     if response.get("acknowledged") is False:
         raise RagIndexTransportError(f"OpenSearch did not acknowledge deleting {safe_index_name}")
 

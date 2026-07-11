@@ -6,25 +6,33 @@ services:
     environment:
       HALLU_DEFENSE_ENV: local
       HALLU_DEFENSE_AUTH_REQUIRED: "false"
+      HALLU_DEFENSE_MAX_REQUEST_BODY_BYTES: "1048576"
+      HALLU_DEFENSE_REQUEST_BODY_TIMEOUT_SECONDS: "15"
       HALLU_DEFENSE_ALLOWED_WORKSPACE: /workspace
       HALLU_DEFENSE_OTEL_ENABLED: "true"
       HALLU_DEFENSE_OTEL_SERVICE_NAME: hallu-defense-api
       HALLU_DEFENSE_OTEL_EXPORTER: otlp
       HALLU_DEFENSE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
-      HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
+      HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid
       HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200
       HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence
       HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@postgres:5432/hallu_defense
       HALLU_DEFENSE_INGESTION_MODE: sync
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/workspace:ro
     depends_on:
-      - otel-collector
-      - postgres
-      - redis
-      - opensearch
+      otel-collector:
+        condition: service_started
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      opensearch-bootstrap:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
 
   ingestion-worker:
     build:
@@ -33,12 +41,15 @@ services:
     command: ["python", "-m", "hallu_defense.worker"]
     environment:
       HALLU_DEFENSE_ENV: local
+      HALLU_DEFENSE_RUNTIME_ROLE: worker
       HALLU_DEFENSE_AUTH_REQUIRED: "false"
       HALLU_DEFENSE_ALLOWED_WORKSPACE: /workspace
-      HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
+      HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid
       HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200
       HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence
       HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@postgres:5432/hallu_defense
+      HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+      HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
       HALLU_DEFENSE_INGESTION_MODE: async
       HALLU_DEFENSE_INGESTION_WORKER_ID: compose-ingestion-worker
       HALLU_DEFENSE_INGESTION_WORKER_POLL_SECONDS: "2"
@@ -46,34 +57,80 @@ services:
     volumes:
       - .:/workspace:ro
     depends_on:
-      - postgres
-      - opensearch
+      postgres:
+        condition: service_started
+      opensearch-bootstrap:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
+
+  opensearch-bootstrap:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    command: ["python", "/app/scripts/dev/bootstrap_opensearch_template.py"]
+    environment:
+      HALLU_DEFENSE_ENV: local
+      HALLU_DEFENSE_RUNTIME_ROLE: opensearch-bootstrap
+      HALLU_DEFENSE_AUTH_REQUIRED: "false"
+      HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch
+      HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200
+      HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    restart: "no"
+
+  postgres-migrations:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    command: ["python", "/app/scripts/dev/apply_postgres_migrations.py"]
+    environment:
+      HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@postgres:5432/hallu_defense
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch-bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
 
   console:
     build:
       context: .
       dockerfile: infra/docker/console.Dockerfile
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      HALLU_DEFENSE_ENV: local
+      HALLU_DEFENSE_CONSOLE_AUTH_MODE: unsigned-local
+      HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: http://localhost:3000
+      HALLU_DEFENSE_CONSOLE_API_ORIGIN: http://localhost:8000
+      HALLU_DEFENSE_CONSOLE_ALLOW_INSECURE_LOCAL_HTTP: "true"
+      HALLU_DEFENSE_CONSOLE_ALLOW_UNSIGNED_LOCAL: "true"
+      HALLU_DEFENSE_CONSOLE_LOCAL_TENANT_ID: tenant-a
+      HALLU_DEFENSE_CONSOLE_LOCAL_SUBJECT_ID: console-reviewer
+      HALLU_DEFENSE_CONSOLE_LOCAL_ROLES: verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - api
 
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
       - api
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: hallu-defense-grafana:ci
+    build:
+      context: .
+      dockerfile: infra/docker/grafana.Dockerfile
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
@@ -81,90 +138,163 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /var/log/grafana:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       - prometheus
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.103.0
+    image: otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
     command:
       - --config=/etc/otelcol-contrib/config.yaml
     ports:
-      - "4317:4317"
-      - "4318:4318"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
     volumes:
       - ./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
       - ./var/otel:/otel-output
 
   postgres:
-    image: pgvector/pgvector:pg16
+    image: hallu-defense-pgvector:ci
+    build:
+      context: .
+      dockerfile: infra/docker/pgvector.Dockerfile
     environment:
       POSTGRES_USER: hallu
       POSTGRES_PASSWORD: hallu
       POSTGRES_DB: hallu_defense
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/rag/pgvector:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hallu -d hallu_defense"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   opensearch:
-    image: opensearchproject/opensearch:2.15.0
+    image: hallu-defense-opensearch:ci
+    build:
+      context: .
+      dockerfile: infra/docker/opensearch.Dockerfile
     environment:
       discovery.type: single-node
-      plugins.security.disabled: "true"
-      OPENSEARCH_INITIAL_ADMIN_PASSWORD: LocalOnly!Z9q7vN4p2
-      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      transport.host: 127.0.0.1
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m -Dorg.bouncycastle.native.cpu_variant=java"
     ports:
-      - "9200:9200"
-      - "9600:9600"
+      - "127.0.0.1:9200:9200"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /usr/share/opensearch/config:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=0700
+      - /usr/share/opensearch/logs:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    command: server /data --console-address ":9001"
+    image: hallu-defense-seaweedfs:ci
+    build:
+      context: .
+      dockerfile: infra/docker/seaweedfs.Dockerfile
+    command:
+      - mini
+      - -dir=/data
+      - -s3.port=9000
+      - -bucket=hallu-backups,hallu-primary,hallu-backup-replica
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      AWS_ACCESS_KEY_ID: ${HALLU_DEFENSE_MINIO_ACCESS_KEY:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${HALLU_DEFENSE_MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
     volumes:
-      - minio-data:/data
+      - seaweedfs-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.3
-    command: ["start-dev", "--import-realm"]
+    image: hallu-defense-keycloak:ci
+    build:
+      context: .
+      dockerfile: infra/docker/keycloak.Dockerfile
+    command:
+      - start
+      - --optimized
+      - --import-realm
+      - --http-enabled=true
+      - --hostname-strict=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700
+      - /opt/keycloak/data:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     volumes:
       - ./infra/security/keycloak:/opt/keycloak/data/import:ro
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/hallu_defense
+      KC_DB_USERNAME: hallu
+      KC_DB_PASSWORD: hallu
 
   vault:
-    image: hashicorp/vault:1.17
+    image: hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
     command:
       - server
       - -dev
       - -dev-listen-address=0.0.0.0:8200
       - -dev-root-token-id=${HALLU_DEFENSE_LOCAL_VAULT_DEV_ROOT_TOKEN:-dev-root}
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     cap_add:
       - IPC_LOCK
 
 volumes:
   postgres-data:
-  minio-data:
+  grafana-data:
+  seaweedfs-data:
   opensearch-data:

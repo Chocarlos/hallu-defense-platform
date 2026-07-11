@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -16,10 +15,20 @@ from hallu_defense.domain.models import (
     Freshness,
     StalenessClass,
 )
+from hallu_defense.domain.rag_metadata import (
+    RagMetadataValidationError,
+    canonical_json,
+    metadata_values_equal,
+    validate_metadata,
+    validate_metadata_filter,
+)
 from hallu_defense.services.content_security import ContentSecurityScanner
 from hallu_defense.services.rag_index import (
+    CORPUS_ID_METADATA_KEY,
+    DOCUMENT_REVISION_METADATA_KEY,
     RagChunk,
     RagIndexBackend,
+    RagIndexConfigurationError,
     RagIndexWriteResult,
     RagSearchRequest,
 )
@@ -91,7 +100,10 @@ class HybridRetriever:
         context_refs: list[str] | None = None,
     ) -> tuple[list[Evidence], dict[str, list[str]]]:
         chunks = list(self._chunk_documents(documents))
-        filters = metadata_filter or {}
+        try:
+            filters = dict(validate_metadata_filter(metadata_filter or {}))
+        except RagMetadataValidationError as exc:
+            raise RagIndexConfigurationError(str(exc)) from None
         refs = context_refs or []
         filtered_chunks = [
             evidence
@@ -125,7 +137,7 @@ class HybridRetriever:
         *,
         claim: Claim,
         tenant_id: str | None,
-        metadata_filter: dict[str, object],
+        metadata_filter: Mapping[str, object],
         context_refs: list[str],
         max_evidence_per_claim: int,
     ) -> list[Evidence]:
@@ -147,8 +159,14 @@ class HybridRetriever:
     def _chunk_documents(self, documents: list[DocumentInput]) -> list[Evidence]:
         chunks: list[Evidence] = []
         for document_index, document in enumerate(documents, start=1):
+            document_revision = self._document_revision(document)
+            retrieved_at = datetime.now(timezone.utc)
             for chunk_index, chunk in enumerate(self._split_document(document.content), start=1):
-                metadata = self._chunk_metadata(document.metadata, chunk)
+                metadata = self._chunk_metadata(
+                    document.metadata,
+                    chunk,
+                    document_revision=document_revision,
+                )
                 structured_content: dict[str, object] = {
                     "metadata": metadata,
                     "document_index": document_index,
@@ -164,7 +182,10 @@ class HybridRetriever:
                             source_ref=document.source_ref,
                             content=chunk.content,
                             authority=document.authority,
-                            freshness=self._freshness_from_metadata(metadata),
+                            freshness=self._freshness_from_metadata(
+                                metadata,
+                                retrieved_at=retrieved_at,
+                            ),
                             structured_content=structured_content,
                         )
                     )
@@ -262,12 +283,42 @@ class HybridRetriever:
         return f"{section_path[-1]}\n\n{block}"
 
     def _chunk_metadata(
-        self, document_metadata: dict[str, object], chunk: DocumentChunk
+        self,
+        document_metadata: dict[str, object],
+        chunk: DocumentChunk,
+        *,
+        document_revision: str | None,
     ) -> dict[str, object]:
         metadata = dict(document_metadata)
+        if document_revision is not None:
+            metadata[DOCUMENT_REVISION_METADATA_KEY] = document_revision
         if chunk.has_section:
             metadata.update(self._structure_metadata(chunk))
-        return metadata
+        try:
+            return dict(validate_metadata(metadata))
+        except RagMetadataValidationError as exc:
+            raise RagIndexConfigurationError(str(exc)) from None
+
+    def _document_revision(self, document: DocumentInput) -> str | None:
+        corpus_id = document.metadata.get(CORPUS_ID_METADATA_KEY)
+        if not isinstance(corpus_id, str) or not corpus_id.strip():
+            return None
+        supplied_revision = document.metadata.get(DOCUMENT_REVISION_METADATA_KEY)
+        if isinstance(supplied_revision, str) and supplied_revision.strip():
+            return supplied_revision
+        metadata = {
+            key: value
+            for key, value in document.metadata.items()
+            if key != DOCUMENT_REVISION_METADATA_KEY
+        }
+        identity = [
+            document.source_ref,
+            document.content,
+            document.authority.value,
+            canonical_json(metadata),
+        ]
+        encoded = canonical_json(identity)
+        return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
     def _structure_metadata(self, chunk: DocumentChunk) -> dict[str, object]:
         return {
@@ -306,7 +357,7 @@ class HybridRetriever:
             "document_index": self._int_metadata(evidence, "document_index"),
             "chunk_index": self._int_metadata(evidence, "chunk_index"),
         }
-        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        encoded = canonical_json(identity)
         return f"ev_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
 
     def _rank(self, claim: Claim, chunks: list[Evidence]) -> list[Evidence]:
@@ -427,7 +478,7 @@ class HybridRetriever:
         return 0
 
     def _metadata_matches(
-        self, metadata: dict[str, object], filters: dict[str, object]
+        self, metadata: dict[str, object], filters: Mapping[str, object]
     ) -> bool:
         for key, expected in filters.items():
             if key not in metadata:
@@ -438,17 +489,18 @@ class HybridRetriever:
         return True
 
     def _metadata_value_matches(self, actual: object, expected: object) -> bool:
-        if isinstance(expected, list):
-            return any(self._metadata_value_matches(actual, item) for item in expected)
-        if isinstance(actual, list):
-            return any(self._metadata_value_matches(item, expected) for item in actual)
-        return actual == expected
+        return metadata_values_equal(actual, expected)
 
-    def _freshness_from_metadata(self, metadata: dict[str, object]) -> Freshness:
+    def _freshness_from_metadata(
+        self,
+        metadata: dict[str, object],
+        *,
+        retrieved_at: datetime,
+    ) -> Freshness:
         published_at = self._parse_datetime(metadata.get("published_at"))
         staleness = self._explicit_staleness(metadata.get("staleness_class"))
         if staleness is None and published_at is not None:
-            age_days = (datetime.now(timezone.utc) - published_at).days
+            age_days = (retrieved_at - published_at).days
             if age_days <= 90:
                 staleness = StalenessClass.FRESH
             elif age_days <= 730:
@@ -456,8 +508,9 @@ class HybridRetriever:
             else:
                 staleness = StalenessClass.STALE
         return Freshness(
+            retrieved_at=retrieved_at,
             published_at=published_at,
-            staleness_class=staleness or StalenessClass.ACCEPTABLE,
+            staleness_class=staleness or StalenessClass.UNKNOWN,
         )
 
     def _explicit_staleness(self, value: object) -> StalenessClass | None:
@@ -479,6 +532,6 @@ class HybridRetriever:
         else:
             return None
 
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
+        if parsed.utcoffset() is None:
+            return None
         return parsed.astimezone(timezone.utc)

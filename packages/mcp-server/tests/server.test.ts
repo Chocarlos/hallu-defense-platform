@@ -7,6 +7,11 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+import { createContractSchemaValidator } from "../src/schema-validation.js";
+import { tools as toolDefinitions } from "../src/server.js";
 
 type ApiServer = {
   readonly baseUrl: string;
@@ -23,6 +28,7 @@ type JsonRpcResponse = {
 
 type RpcClient = {
   readonly request: (method: string, params?: unknown) => Promise<JsonRpcResponse>;
+  readonly notify: (method: string, params?: unknown) => void;
   readonly stop: () => Promise<void>;
 };
 
@@ -74,8 +80,13 @@ describe("hallu-defense MCP server API contract", () => {
   beforeAll(async () => {
     apiServer = await startApiServer();
     rpcClient = startRpcClient(apiServer.baseUrl);
-    const initialized = await rpcClient.request("initialize");
+    const initialized = await rpcClient.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "hallu-defense-tests", version: "1.0.0" }
+    });
     expect(initialized.error).toBeUndefined();
+    rpcClient.notify("notifications/initialized");
   }, 25000);
 
   afterAll(async () => {
@@ -105,6 +116,120 @@ describe("hallu-defense MCP server API contract", () => {
         "repair_response"
       ])
     );
+    for (const definition of toolDefinitions) {
+      const validateOutput = createContractSchemaValidator().compile(definition.outputSchema);
+      expect(
+        validateOutput({ trace_id: "tr_safe_tool_failure", error: "safe tool failure" }),
+        definition.name
+      ).toBe(true);
+      expect(validateOutput({ error: "missing trace" }), definition.name).toBe(false);
+    }
+  });
+
+  it("interoperates with the official MCP stdio client", async () => {
+    const api = requireApiServer(apiServer);
+    const serverEntrypoint = path.join(packageRoot, "dist", "server.js");
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [serverEntrypoint],
+      cwd: packageRoot,
+      env: {
+        ...definedEnvironment(process.env),
+        HALLU_DEFENSE_ENV: "test",
+        HALLU_DEFENSE_API_BASE_URL: api.baseUrl,
+        HALLU_DEFENSE_TENANT_ID: tenantId
+      },
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "hallu-defense-official-client-test", version: "1.0.0" });
+
+    try {
+      await client.connect(transport);
+      await client.ping();
+      const listed = await client.listTools();
+      expect(listed.tools.map((tool) => tool.name)).toContain("repair_response");
+      expect(listed.tools.every((tool) => tool.outputSchema !== undefined)).toBe(true);
+      const malformedInputs = [
+        { name: "verify_claims", value: { claims: [{}], evidence: [{}] } },
+        { name: "verify_claims", value: { claims: [], evidence: [] } },
+        { name: "ingest_documents", value: { documents: [] } },
+        {
+          name: "retrieve_evidence",
+          value: { claims: [], documents: [documentPayload] }
+        },
+        {
+          name: "retrieve_evidence",
+          value: { claims: [claimPayload], documents: [] }
+        },
+        { name: "run_repo_checks", value: { commands: [] } },
+        {
+          name: "repair_response",
+          value: { message_text: "valid text", documents: ["not-a-document"] }
+        },
+        {
+          name: "repair_response",
+          value: { message_text: "valid text", documents: [] }
+        },
+        {
+          name: "repair_response",
+          value: { tenant_id: "spoofed", message_text: "valid text" }
+        }
+      ] as const;
+      for (const malformed of malformedInputs) {
+        const definition = listed.tools.find((tool) => tool.name === malformed.name);
+        if (definition === undefined) {
+          throw new Error(`Official client did not list ${malformed.name}`);
+        }
+        const validateInput = createContractSchemaValidator().compile(definition.inputSchema);
+        expect(validateInput(malformed.value), malformed.name).toBe(false);
+      }
+
+      const malformedOutputs = [
+        { name: "verify_claims", value: { trace_id: "tr_bad", verdicts: [{}] } },
+        { name: "verify_claims", value: { trace_id: "tr_bad", verdicts: [] } },
+        {
+          name: "retrieve_evidence",
+          value: { trace_id: "tr_bad", evidence: [{}], claim_evidence_map: {} }
+        },
+        { name: "run_repo_checks", value: { trace_id: "tr_bad" } },
+        {
+          name: "repair_response",
+          value: { trace_id: "tr_bad", final_text: "", run: {} }
+        }
+      ] as const;
+      for (const malformed of malformedOutputs) {
+        const definition = listed.tools.find((tool) => tool.name === malformed.name);
+        if (definition?.outputSchema === undefined) {
+          throw new Error(`Official client did not expose ${malformed.name} outputSchema`);
+        }
+        const validateOutput = createContractSchemaValidator().compile(definition.outputSchema);
+        expect(validateOutput(malformed.value), malformed.name).toBe(false);
+      }
+
+      const emptyClaimsResult = await client.callTool({
+        name: "verify_claims",
+        arguments: { claims: [], evidence: [] }
+      });
+      expect(emptyClaimsResult.isError).toBe(true);
+      expect(requireRecord(emptyClaimsResult.structuredContent, "empty claims result")).toEqual(
+        expect.objectContaining({ trace_id: expect.stringMatching(/^tr_mcp_/u) })
+      );
+
+      const result = await client.callTool({
+        name: "repair_response",
+        arguments: {
+          message_text: "Full-time employees receive 15 days of paid vacation per year.",
+          documents: [documentPayload]
+        }
+      });
+      expect(result.isError).toBe(false);
+      expect(result.content[0]).toEqual(expect.objectContaining({ type: "text" }));
+      expect(requireRecord(result.structuredContent, "official client structuredContent")).toEqual(
+        expect.objectContaining({ trace_id: expect.stringMatching(/^tr_mcp_/u) })
+      );
+    } finally {
+      await client.close();
+    }
   });
 
   it("returns trace IDs and preserves MCP tenant context through audit events", async () => {
@@ -253,6 +378,12 @@ describe("hallu-defense MCP server API contract", () => {
     const observedTraces: string[] = [];
 
     for (const call of calls) {
+      const definition = toolDefinitions.find((tool) => tool.name === call.name);
+      if (definition === undefined) {
+        throw new Error(`Missing tool definition for ${call.name}`);
+      }
+      const validateInput = createContractSchemaValidator().compile(definition.inputSchema);
+      expect(validateInput(call.arguments), JSON.stringify(validateInput.errors)).toBe(true);
       const response = await rpc.request("tools/call", {
         name: call.name,
         arguments: call.arguments
@@ -260,6 +391,8 @@ describe("hallu-defense MCP server API contract", () => {
 
       expect(response.error, call.name).toBeUndefined();
       const structured = structuredContent(response.result, call.name);
+      const validateOutput = createContractSchemaValidator().compile(definition.outputSchema);
+      expect(validateOutput(structured), JSON.stringify(validateOutput.errors)).toBe(true);
       const traceId = requireString(structured, "trace_id", `${call.name} output`);
       expect(traceId.startsWith("tr_mcp_"), call.name).toBe(true);
       observedTraces.push(traceId);
@@ -297,8 +430,9 @@ describe("hallu-defense MCP server API contract", () => {
       }
     });
 
-    expect(response.error?.message).toContain("claim schema validation");
-    expect(response.error?.message).toContain("source_span");
+    const failure = requireToolFailure(response, "verify_claims");
+    expect(failure).toContain("claim schema validation");
+    expect(failure).toContain("source_span");
   });
 
   it("rejects invalid request-only tool contracts before proxying", async () => {
@@ -325,13 +459,44 @@ describe("hallu-defense MCP server API contract", () => {
         corpus_id: "hr"
       }
     });
+    const claimsResponse = await rpc.request("tools/call", {
+      name: "verify_claims",
+      arguments: { claims: [], evidence: [] }
+    });
+    const retrievalResponse = await rpc.request("tools/call", {
+      name: "retrieve_evidence",
+      arguments: { claims: [claimPayload], documents: [] }
+    });
+    const repairResponse = await rpc.request("tools/call", {
+      name: "repair_response",
+      arguments: { message_text: "valid text", documents: [] }
+    });
 
-    expect(repoResponse.error?.message).toContain("repo-checks-run-request schema validation");
-    expect(repoResponse.error?.message).toContain("must NOT have fewer than 1 items");
-    expect(policyResponse.error?.message).toContain("policy-evaluation-request schema validation");
-    expect(policyResponse.error?.message).toContain("action");
-    expect(ingestResponse.error?.message).toContain("document-ingestion-request schema validation");
-    expect(ingestResponse.error?.message).toContain("must NOT have fewer than 1 items");
+    expect(requireToolFailure(repoResponse, "run_repo_checks")).toContain(
+      "repo-checks-run-request schema validation"
+    );
+    expect(requireToolFailure(repoResponse, "run_repo_checks")).toContain(
+      "must NOT have fewer than 1 items"
+    );
+    expect(requireToolFailure(policyResponse, "explain_policy")).toContain(
+      "policy-evaluation-request schema validation"
+    );
+    expect(requireToolFailure(policyResponse, "explain_policy")).toContain("action");
+    expect(requireToolFailure(ingestResponse, "ingest_documents")).toContain(
+      "document-ingestion-request schema validation"
+    );
+    expect(requireToolFailure(ingestResponse, "ingest_documents")).toContain(
+      "must NOT have fewer than 1 items"
+    );
+    expect(requireToolFailure(claimsResponse, "verify_claims")).toContain(
+      "must contain at least one item"
+    );
+    expect(requireToolFailure(retrievalResponse, "retrieve_evidence")).toContain(
+      "must contain at least one item"
+    );
+    expect(requireToolFailure(repairResponse, "repair_response")).toContain(
+      "must contain at least one item"
+    );
   });
 
   it("rejects unsupported fields before calling the API", async () => {
@@ -344,24 +509,44 @@ describe("hallu-defense MCP server API contract", () => {
       }
     });
 
-    expect(response.error?.message).toContain("unsupported field: tenant_id");
+    expect(requireToolFailure(response, "repair_response")).toContain(
+      "contains an unsupported field"
+    );
   });
 });
 
 function structuredContent(value: unknown, context: string): Record<string, unknown> {
   const result = requireRecord(value, `${context} result`);
+  expect(result.isError, context).toBe(false);
+  const content = requireArray<Record<string, unknown>>(result, "content", `${context} result`);
+  expect(content[0]).toEqual(expect.objectContaining({ type: "text" }));
   return requireRecord(result.structuredContent, `${context} structuredContent`);
 }
 
+function requireToolFailure(response: JsonRpcResponse, context: string): string {
+  expect(response.error, context).toBeUndefined();
+  const result = requireRecord(response.result, `${context} result`);
+  expect(result.isError, context).toBe(true);
+  const structured = requireRecord(
+    result.structuredContent,
+    `${context} failure structuredContent`
+  );
+  expect(requireString(structured, "trace_id", `${context} failure structuredContent`)).toMatch(
+    /^tr_mcp_/u
+  );
+  return requireString(structured, "error", `${context} failure structuredContent`);
+}
+
 function startRpcClient(baseUrl: string): RpcClient {
-  const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  if (!existsSync(tsxCli)) {
-    throw new Error(`tsx CLI not found at ${tsxCli}`);
+  const serverEntrypoint = path.join(packageRoot, "dist", "server.js");
+  if (!existsSync(serverEntrypoint)) {
+    throw new Error(`built MCP server not found at ${serverEntrypoint}`);
   }
-  const child = spawn(process.execPath, [tsxCli, "src/server.ts"], {
+  const child = spawn(process.execPath, [serverEntrypoint], {
     cwd: packageRoot,
     env: {
       ...process.env,
+      HALLU_DEFENSE_ENV: "test",
       HALLU_DEFENSE_API_BASE_URL: baseUrl,
       HALLU_DEFENSE_TENANT_ID: tenantId
     },
@@ -428,6 +613,9 @@ function startRpcClient(baseUrl: string): RpcClient {
       });
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
       return response;
+    },
+    notify: (method: string, params?: unknown) => {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
     },
     stop: async () => {
       rl.close();
@@ -618,4 +806,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function definedEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  );
 }

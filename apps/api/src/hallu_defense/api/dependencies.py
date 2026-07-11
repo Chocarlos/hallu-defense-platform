@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import hmac
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi.routing import APIRoute
 
 from hallu_defense import __version__
 from hallu_defense.config import (
     AUTH_CLAIMS_MODE_OIDC_JWT,
     INGESTION_MODE_ASYNC,
+    RUNTIME_ROLE_API,
     Settings,
     load_settings,
 )
@@ -25,6 +27,7 @@ from hallu_defense.services import (
     PostgresIngestionJobQueue,
     PrometheusMetrics,
     RagAccessPolicy,
+    ReadinessService,
     ModelProvider,
     create_rag_index_backend,
     create_nli_adjudicator,
@@ -35,14 +38,15 @@ from hallu_defense.services import (
     SandboxRunner,
     SecretManager,
     TelemetryService,
-    ToolValidationRateLimiter,
     ToolSafetyService,
     VerificationOrchestrator,
     build_sandbox_execution_backend,
     create_eval_report_repository,
     create_ingestion_job_queue,
     create_model_provider,
+    create_readiness_service,
     create_secret_manager,
+    create_tool_validation_rate_limiter,
 )
 from hallu_defense.services.auth import (
     APPROVAL_REVIEWER_ROLE,
@@ -61,6 +65,7 @@ from hallu_defense.services.auth import (
 )
 from hallu_defense.services.postgres import build_postgres_provider
 from hallu_defense.services.secrets import SecretAccessError, SecretConfigurationError, SecretNotFoundError
+from hallu_defense.services.secret_token import RotatingSecretTokenVerifier
 from hallu_defense.services.oidc import (
     OidcJwksKeyNotFoundError,
     OidcJwksResolver,
@@ -91,6 +96,7 @@ ENDPOINT_ROLE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "POST /rag/corpus-grants/history": frozenset({RAG_WRITER_ROLE, VERIFIER_ROLE}),
     "POST /rag/corpus-grants/history/diff": frozenset({RAG_WRITER_ROLE, VERIFIER_ROLE}),
     "POST /claims/verify": frozenset({VERIFIER_ROLE}),
+    "POST /v2/claims/verify": frozenset({VERIFIER_ROLE}),
     "POST /response/repair": frozenset({VERIFIER_ROLE}),
     "POST /tools/validate-input": frozenset({TOOL_OPERATOR_ROLE}),
     "POST /tools/validate-output": frozenset({TOOL_OPERATOR_ROLE}),
@@ -101,36 +107,66 @@ ENDPOINT_ROLE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "POST /audit/export": frozenset({AUDITOR_ROLE}),
     "POST /evals/reports/publish": frozenset({EVAL_PUBLISHER_ROLE}),
     "POST /evals/reports/list": frozenset({AUDITOR_ROLE, VERIFIER_ROLE}),
+    "POST /verification/runs/list": frozenset({AUDITOR_ROLE, VERIFIER_ROLE}),
     "POST /verification/run": frozenset({VERIFIER_ROLE}),
+    "POST /v2/verification/run": frozenset({VERIFIER_ROLE}),
     "POST /verification/replay": frozenset({VERIFIER_ROLE}),
 }
+PUBLIC_PROBE_ROUTES = frozenset({"GET /health", "GET /ready"})
+_AUTH_DEPENDENCY_MARKER = "__hallu_auth_dependency__"
+_AUTH_ENDPOINT_MARKER = "__hallu_endpoint_key__"
+_AUTH_ROLES_MARKER = "__hallu_required_roles__"
 
 
-settings = load_settings()
+settings = load_settings(expected_runtime_role=RUNTIME_ROLE_API)
 _oidc_resolver_settings: Settings | None = None
 _oidc_resolver: OidcJwksResolver | None = None
 telemetry = TelemetryService.from_settings(settings)
 secret_manager = create_secret_manager(settings)
+tool_validation_rate_limiter = create_tool_validation_rate_limiter(settings, secret_manager)
+rag_index_backend = create_rag_index_backend(settings, secret_manager)
+readiness_service = create_readiness_service(
+    settings,
+    secret_manager,
+    tool_validation_rate_limiter=tool_validation_rate_limiter,
+    rag_index_backend=rag_index_backend,
+)
+metrics_collector = PrometheusMetrics(
+    service_name="hallu-defense-api",
+    service_version=__version__,
+    environment=settings.environment,
+)
 model_provider = create_model_provider(settings, secret_manager)
-nli_adjudicator = create_nli_adjudicator(settings, model_provider)
-rag_index_backend = create_rag_index_backend(settings)
+nli_adjudicator = create_nli_adjudicator(
+    settings,
+    model_provider,
+    observer=metrics_collector,
+)
 _POSTGRES_BACKENDS = {"postgres", "postgresql"}
 _needs_pg = (
     settings.audit_ledger_backend.strip().lower() in _POSTGRES_BACKENDS
     or settings.approval_queue_backend.strip().lower() in _POSTGRES_BACKENDS
+    or settings.corpus_grants_backend.strip().lower() in _POSTGRES_BACKENDS
     or settings.eval_reports_backend.strip().lower() in _POSTGRES_BACKENDS
     or settings.ingestion_mode.strip().lower() == INGESTION_MODE_ASYNC
 )
 _sql_provider = build_postgres_provider(settings) if _needs_pg else None
 audit_ledger = create_audit_ledger(settings, sql_provider=_sql_provider)
-approval_queue = create_approval_queue(settings, sql_provider=_sql_provider)
+approval_queue = create_approval_queue(
+    settings,
+    sql_provider=_sql_provider,
+    secret_manager=secret_manager,
+)
 eval_report_repository = create_eval_report_repository(settings, sql_provider=_sql_provider)
 ingestion_job_queue: PostgresIngestionJobQueue | None = (
     create_ingestion_job_queue(settings, sql_provider=_sql_provider)
     if settings.ingestion_mode.strip().lower() == INGESTION_MODE_ASYNC
     else None
 )
-corpus_grant_registry = create_corpus_grant_registry(settings)
+corpus_grant_registry = create_corpus_grant_registry(
+    settings,
+    postgres_connection=_sql_provider,
+)
 claim_extractor = ClaimExtractor()
 claim_classifier = ClaimClassifier()
 content_security_scanner = ContentSecurityScanner()
@@ -143,22 +179,15 @@ document_ingestor = DocumentIngestionService(hybrid_retriever, access_policy=rag
 claim_verifier = ClaimVerifier(nli_adjudicator=nli_adjudicator)
 response_repairer = ResponseRepairer()
 opa_policy_evaluator = OpaPolicyEvaluator(settings)
-metrics_collector = PrometheusMetrics(
-    service_name="hallu-defense-api",
-    service_version=__version__,
-    environment=settings.environment,
-)
 policy_engine = PolicyEngine(settings, opa_evaluator=opa_policy_evaluator, metrics=metrics_collector)
-tool_safety = ToolSafetyService()
-tool_validation_rate_limiter = ToolValidationRateLimiter(
-    max_requests=settings.tool_validation_rate_limit_max_requests,
-    window_seconds=settings.tool_validation_rate_limit_window_seconds,
+tool_safety = ToolSafetyService(
+    policy_engine=policy_engine,
+    content_scanner=content_security_scanner,
 )
 sandbox_execution_backend = build_sandbox_execution_backend(settings)
 sandbox_runner = SandboxRunner(settings, execution_backend=sandbox_execution_backend)
 orchestrator = VerificationOrchestrator(
     settings=settings,
-    audit=audit_ledger,
     extractor=claim_extractor,
     classifier=claim_classifier,
     retriever=hybrid_retriever,
@@ -177,6 +206,10 @@ def get_settings() -> Settings:
 
 def get_secret_manager() -> SecretManager:
     return secret_manager
+
+
+def get_readiness_service() -> ReadinessService:
+    return readiness_service
 
 
 def get_model_provider() -> ModelProvider:
@@ -268,10 +301,14 @@ def require_endpoint_roles(
         roles = ENDPOINT_ROLE_REQUIREMENTS[endpoint]
     except KeyError as exc:
         raise ValueError(f"No RBAC role requirement configured for endpoint {endpoint!r}.") from exc
-    return require_roles(*roles, enforce_when_auth_optional=enforce_when_auth_optional)
+    dependency = require_roles(*roles, enforce_when_auth_optional=enforce_when_auth_optional)
+    return _brand_auth_dependency(dependency, endpoint=endpoint, roles=roles)
 
 
 METRICS_BEARER_TOKEN_SUBJECT = "metrics-scraper"
+_metrics_token_verifier: RotatingSecretTokenVerifier | None = None
+_metrics_token_verifier_source: tuple[int, str] | None = None
+_metrics_token_verifier_lock = threading.Lock()
 
 
 def require_metrics_access() -> Callable[..., RequestContext]:
@@ -313,7 +350,79 @@ def require_metrics_access() -> Callable[..., RequestContext]:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         return context
 
+    return _brand_auth_dependency(
+        dependency,
+        endpoint="GET /metrics",
+        roles=ENDPOINT_ROLE_REQUIREMENTS["GET /metrics"],
+    )
+
+
+def _brand_auth_dependency(
+    dependency: Callable[..., RequestContext],
+    *,
+    endpoint: str,
+    roles: frozenset[str],
+) -> Callable[..., RequestContext]:
+    setattr(dependency, _AUTH_DEPENDENCY_MARKER, True)
+    setattr(dependency, _AUTH_ENDPOINT_MARKER, endpoint)
+    setattr(dependency, _AUTH_ROLES_MARKER, roles)
     return dependency
+
+
+def validate_endpoint_auth_coverage(route_objects: Sequence[object]) -> None:
+    """Fail closed when any business route lacks its exact RBAC dependency."""
+
+    errors: list[str] = []
+    seen: set[str] = set()
+    for route in route_objects:
+        if not isinstance(route, APIRoute):
+            continue
+        methods = sorted(
+            method
+            for method in (route.methods or set())
+            if method not in {"HEAD", "OPTIONS"}
+        )
+        if len(methods) != 1:
+            errors.append(
+                f"route {route.path!r} must expose exactly one auditable HTTP method"
+            )
+            continue
+        endpoint = f"{methods[0]} {route.path}"
+        branded = [
+            dependency.call
+            for dependency in route.dependant.dependencies
+            if dependency.call is not None
+            and getattr(dependency.call, _AUTH_DEPENDENCY_MARKER, False) is True
+        ]
+        if endpoint in PUBLIC_PROBE_ROUTES:
+            if branded:
+                errors.append(f"public probe {endpoint} must not carry a business RBAC marker")
+            continue
+        expected_roles = ENDPOINT_ROLE_REQUIREMENTS.get(endpoint)
+        if expected_roles is None:
+            errors.append(f"business route {endpoint} has no RBAC role requirement")
+            continue
+        if endpoint in seen:
+            errors.append(f"business route {endpoint} is registered more than once")
+        seen.add(endpoint)
+        if len(branded) != 1:
+            errors.append(
+                f"business route {endpoint} must carry exactly one branded auth dependency"
+            )
+            continue
+        dependency = branded[0]
+        if getattr(dependency, _AUTH_ENDPOINT_MARKER, None) != endpoint:
+            errors.append(f"business route {endpoint} auth dependency targets another endpoint")
+        if getattr(dependency, _AUTH_ROLES_MARKER, None) != expected_roles:
+            errors.append(f"business route {endpoint} auth dependency has incorrect roles")
+
+    orphaned = set(ENDPOINT_ROLE_REQUIREMENTS).difference(seen)
+    if orphaned:
+        errors.append(
+            "RBAC role matrix contains orphaned endpoints: " + ", ".join(sorted(orphaned))
+        )
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def _metrics_bearer_token_matches(authorization: str | None) -> bool:
@@ -323,13 +432,20 @@ def _metrics_bearer_token_matches(authorization: str | None) -> bool:
     token = _bearer_token(authorization)
     if token is None:
         return False
-    try:
-        expected = secret_manager.get_secret(secret_name.strip()).reveal()
-    except (SecretAccessError, SecretConfigurationError, SecretNotFoundError):
-        return False
-    if not expected:
-        return False
-    return hmac.compare_digest(token, expected)
+    return _metrics_bearer_token_verifier(secret_name.strip()).matches(token)
+
+
+def _metrics_bearer_token_verifier(secret_name: str) -> RotatingSecretTokenVerifier:
+    global _metrics_token_verifier, _metrics_token_verifier_source
+    source = (id(secret_manager), secret_name)
+    with _metrics_token_verifier_lock:
+        if _metrics_token_verifier is None or _metrics_token_verifier_source != source:
+            _metrics_token_verifier = RotatingSecretTokenVerifier(
+                secret_manager,
+                secret_name=secret_name,
+            )
+            _metrics_token_verifier_source = source
+        return _metrics_token_verifier
 
 
 def _bearer_token(authorization: str | None) -> str | None:
@@ -357,8 +473,16 @@ def _auth_claims_signature_secret() -> str | None:
 def _validate_oidc_claims(authorization: str | None) -> OidcPrincipalClaims:
     try:
         return OidcJwtValidator(settings, _oidc_jwks()).validate(authorization)
-    except OidcJwksKeyNotFoundError:
-        return OidcJwtValidator(settings, _oidc_jwks(force_refresh=True)).validate(authorization)
+    except OidcJwksKeyNotFoundError as exc:
+        resolver = _oidc_jwks_resolver()
+        try:
+            refreshed = resolver.resolve_unknown_kid(exc.kid)
+        except OidcJwtValidationError as refresh_error:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="OIDC JWKS configuration is invalid.",
+            ) from refresh_error
+        return OidcJwtValidator(settings, refreshed).validate(authorization)
 
 
 def _oidc_jwks(*, force_refresh: bool = False) -> dict[str, object]:

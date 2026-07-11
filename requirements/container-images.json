@@ -1,0 +1,30 @@
+{
+  "schema_version": "container-image-inventory.v1",
+  "verified_at": "2026-07-10",
+  "scanner": {
+    "action": "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25",
+    "version": "v0.72.0"
+  },
+  "images": [
+    {
+      "reference": "prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc",
+      "digest_kind": "manifest-list",
+      "sources": ["compose:prometheus"]
+    },
+    {
+      "reference": "otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108",
+      "digest_kind": "manifest-list",
+      "sources": ["compose:otel-collector"]
+    },
+    {
+      "reference": "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
+      "digest_kind": "oci-index",
+      "sources": ["compose:redis", "helm:kindDependencies.redis"]
+    },
+    {
+      "reference": "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54",
+      "digest_kind": "manifest-list",
+      "sources": ["compose:vault", "helm:kindDependencies.vault"]
+    }
+  ]
+}

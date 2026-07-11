@@ -1,12 +1,13 @@
 # RAG Backfill And Async Ingestion
 
-Batch 6 keeps document ingestion synchronous by default:
+Local/test development keeps document ingestion synchronous by default:
 
 ```text
 HALLU_DEFENSE_INGESTION_MODE=sync
 ```
 
-Set `HALLU_DEFENSE_INGESTION_MODE=async` only when
+Production and staging reject that setting and require
+`HALLU_DEFENSE_INGESTION_MODE=async`. Use async mode only when
 `HALLU_DEFENSE_POSTGRES_DSN` points at a migrated PostgreSQL database. Async
 mode fails closed without Postgres because the ingestion outbox is the durable
 source of truth for queued, running, retried, succeeded, and dead-lettered
@@ -44,9 +45,16 @@ HALLU_DEFENSE_INGESTION_WORKER_LOCK_TIMEOUT_SECONDS=300
 HALLU_DEFENSE_INGESTION_BACKFILL_PAGE_SIZE=100
 ```
 
-The worker claims jobs with `FOR UPDATE SKIP LOCKED`, records
-`ingestion_job_*` audit events, retries failures with exponential backoff, and
-dead-letters after the configured max attempts.
+The worker claims jobs with `FOR UPDATE SKIP LOCKED` and records
+`ingestion_job_*` audit events. Deterministic payload or application failures
+use exponential backoff and dead-letter after the configured max attempts.
+With the hybrid backend, a transport failure may mean OpenSearch accepted a
+write before PostgreSQL failed. Those jobs and jobs recovered after a worker
+crash remain durable `failed` reconciliation intents instead of becoming
+dead letters. They retry the two idempotent writes with an exponential delay
+capped at one hour until parity is restored or the tenant-deletion tombstone
+discards the work. This prevents a transient partial write from becoming a
+silent, permanently orphaned index document.
 
 ## Status
 
@@ -62,33 +70,32 @@ curl -sS http://localhost:8000/documents/ingest/status \
 
 Cross-tenant status lookups return `404`.
 
-## Backfill
+## Backfill safety gate
 
-Enqueue a corpus reindex job:
+Corpus reindex is currently disabled fail-closed for every real target backend.
+The CLI exits before opening PostgreSQL or enqueueing, and the worker reindexer
+rejects an already queued job before reading the first source page or writing a
+target. This is intentional: pgvector, OpenSearch, and hybrid writes reconcile
+a complete document revision on every `index_chunks` call. Streaming a revision
+across multiple pages would make each later page delete chunks written by its
+siblings, even when source and target use different storage.
 
-```bash
-python scripts/dev/run_rag_backfill.py \
-  --tenant-id tenant-a \
-  --corpus-id default
-```
+The gate requires all of the following before reindex can be enabled:
 
-Optionally process one batch inline after enqueue:
+- explicit, non-empty storage identities for both source and every target store;
+- no source/target storage-identity intersection;
+- an explicit `backfill_page_safe=True` capability on the target.
 
-```bash
-python scripts/dev/run_rag_backfill.py \
-  --tenant-id tenant-a \
-  --corpus-id default \
-  --run-worker-once
-```
-
-Backfill reads source chunks by tenant and `metadata.corpus_id`, then reindexes
-them through the configured target backend using the existing stable
-`evidence_id` natural key. Pgvector uses `ON CONFLICT (tenant_id, evidence_id)
-DO UPDATE`, so rerunning a reindex is idempotent.
+No current persistent backend declares that capability. A production reindex
+implementation must instead use a generational target (or equivalent staging
+namespace), stream upserts into that isolated generation, verify completeness,
+and atomically swap an alias/pointer under a corpus-scoped lock. Only after that
+commit protocol exists may the CLI enqueue work and documentation describe
+reindex reruns as idempotent.
 
 ## Live Smoke
 
-The live ingestion worker smoke is disabled by default:
+The crash/restart ingestion worker smoke is disabled by default:
 
 ```bash
 python scripts/dev/live_ingestion_worker_smoke.py
@@ -100,7 +107,40 @@ It runs only with:
 HALLU_DEFENSE_LIVE_INGESTION_WORKER_SMOKE_ENABLED=true
 ```
 
-The enabled smoke requires Compose Postgres/pgvector, applies migrations,
-simulates a stale claimed job, verifies worker recovery, repeats ingestion to
-prove idempotent upsert behavior, checks tenant-scoped retrieval, and removes
-only the smoke rows for the generated run id.
+The enabled smoke is restricted to a local or test runtime and requires a
+loopback PostgreSQL URL with permission to create databases. It creates a
+randomly named scratch database, applies every migration there, and drops it
+on both success and failure. It never applies, repairs, or otherwise changes
+the main database migration ledger. Cleanup also closes the connection pool
+before the database drop and checks that the scratch database no longer
+exists.
+
+This is a real process crash/recovery proof:
+
+1. The controller enqueues one document, then holds the same session-level
+   PostgreSQL advisory lock used by the pgvector revision writer.
+2. Worker A runs as `python -m hallu_defense.worker --once`. The smoke observes
+   its `RUNNING` row, lease token, and `pg_stat_activity` advisory-lock wait
+   before killing it. On Linux that `kill()` is SIGKILL, and a zero exit status
+   fails the smoke.
+3. The controller leaves the job untouched and waits until the lease deadline
+   has passed according to the real PostgreSQL clock. Only then does Worker B
+   start with the same worker id, reclaim the job, and receive a new fencing
+   token.
+4. While Worker B still owns the lease, the smoke proves that the old token
+   cannot perform heartbeat, completion, and failure transitions. It then
+   releases the pgvector barrier and requires Worker B to exit successfully.
+5. The final assertions require exactly one chunk, tenant-correct retrieval,
+   empty cross-tenant retrieval, one job, and exactly one terminal success
+   audit event. Exact tenant/trace/run cleanup must leave no footprint.
+
+Worker processes have fixed argv, bounded timeouts and output capture, and a
+minimal allowlisted environment. The DSN is passed only through the child
+environment; the DSN, document payload, and lease tokens are never included
+in argv or emitted by the smoke result/error path.
+
+`.github/workflows/live.yml` runs this smoke as a mandatory job against an
+isolated Compose project. Its teardown stops and removes only that job's
+PostgreSQL service, exact project volume, and exact project network; it does
+not use a global `docker compose down -v`, so existing developer services and
+volumes remain untouched.

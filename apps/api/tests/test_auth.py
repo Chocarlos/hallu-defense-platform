@@ -4,11 +4,12 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from hallu_defense.api import dependencies
+from hallu_defense.api.routes import router
 from hallu_defense.config import Settings
 from hallu_defense.main import app
 from hallu_defense.services.auth import (
@@ -144,6 +145,7 @@ def test_endpoint_role_matrix_covers_protected_routes() -> None:
         "POST /rag/corpus-grants/history": frozenset({"rag_writer", "verifier"}),
         "POST /rag/corpus-grants/history/diff": frozenset({"rag_writer", "verifier"}),
         "POST /claims/verify": frozenset({"verifier"}),
+        "POST /v2/claims/verify": frozenset({"verifier"}),
         "POST /response/repair": frozenset({"verifier"}),
         "POST /tools/validate-input": frozenset({"tool_operator"}),
         "POST /tools/validate-output": frozenset({"tool_operator"}),
@@ -154,9 +156,39 @@ def test_endpoint_role_matrix_covers_protected_routes() -> None:
         "POST /audit/export": frozenset({"auditor"}),
         "POST /evals/reports/publish": frozenset({"eval_publisher"}),
         "POST /evals/reports/list": frozenset({"auditor", "verifier"}),
+        "POST /verification/runs/list": frozenset({"auditor", "verifier"}),
         "POST /verification/run": frozenset({"verifier"}),
+        "POST /v2/verification/run": frozenset({"verifier"}),
         "POST /verification/replay": frozenset({"verifier"}),
     }
+    dependencies.validate_endpoint_auth_coverage(router.routes)
+
+
+def test_endpoint_role_coverage_rejects_new_unprotected_business_route() -> None:
+    unprotected = APIRouter()
+
+    @unprotected.post("/unguarded-regression")
+    def unguarded_regression() -> dict[str, bool]:
+        return {"unsafe": True}
+
+    with pytest.raises(RuntimeError, match="has no RBAC role requirement"):
+        dependencies.validate_endpoint_auth_coverage([*router.routes, *unprotected.routes])
+
+
+def test_endpoint_role_coverage_rejects_missing_branded_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claims_route = next(
+        route
+        for route in router.routes
+        if getattr(route, "path", None) == "/claims/extract"
+    )
+    dependency_call = claims_route.dependant.dependencies[0].call  # type: ignore[attr-defined]
+    assert dependency_call is not None
+    monkeypatch.setattr(dependency_call, "__hallu_auth_dependency__", False)
+
+    with pytest.raises(RuntimeError, match="exactly one branded auth dependency"):
+        dependencies.validate_endpoint_auth_coverage(router.routes)
 
 
 def test_signed_headers_mode_accepts_valid_gateway_signature() -> None:
@@ -387,15 +419,16 @@ def test_metrics_endpoint_denies_request_without_token_or_role_when_auth_require
 def test_metrics_endpoint_accepts_valid_bearer_token_when_auth_required(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    token = "scrape-secret-token-0123456789abcdef"
     monkeypatch.setattr(dependencies, "settings", _metrics_settings())
     monkeypatch.setattr(
         dependencies,
         "secret_manager",
-        _FakeMetricsSecretManager("scrape-secret-token"),
+        _FakeMetricsSecretManager(token),
     )
     client = TestClient(app)
 
-    response = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret-token"})
+    response = client.get("/metrics", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")

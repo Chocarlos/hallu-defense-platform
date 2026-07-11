@@ -4,7 +4,14 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+
+from hallu_defense.domain.rag_metadata import (
+    validate_document_freshness_metadata,
+    validate_metadata,
+    validate_metadata_filter,
+    validate_persistable_text,
+)
 
 
 class ClaimType(StrEnum):
@@ -70,6 +77,28 @@ class VerdictAction(StrEnum):
     ASK_CLARIFICATION = "ask_clarification"
     BLOCK = "block"
     REQUIRE_HUMAN_REVIEW = "require_human_review"
+
+
+V2_SCHEMA_VERSION: Literal["2.0"] = "2.0"
+
+
+class VerdictStatusV2(StrEnum):
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    CONTRADICTED = "contradicted"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    NOT_VERIFIABLE = "not_verifiable"
+    REQUIRES_HUMAN_REVIEW = "requires_human_review"
+    BLOCKED_BY_POLICY = "blocked_by_policy"
+
+
+class VerdictActionV2(StrEnum):
+    ALLOW = "allow"
+    REPAIR = "repair"
+    ABSTAIN = "abstain"
+    BLOCK = "block"
+    ASK_CLARIFICATION = "ask_clarification"
+    REQUIRE_APPROVAL = "require_approval"
 
 
 class FinalDecision(StrEnum):
@@ -141,13 +170,26 @@ class SourceSpan(BaseModel):
 class Freshness(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    retrieved_at: datetime
     published_at: datetime | None = None
-    staleness_class: StalenessClass = StalenessClass.UNKNOWN
+    staleness_class: StalenessClass
+
+    @field_validator("retrieved_at", "published_at")
+    @classmethod
+    def datetimes_must_be_timezone_aware(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("freshness datetimes must include a timezone offset")
+        return value
 
 
 class Claim(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "1.0"},
+    )
 
     claim_id: str
     text: str = Field(min_length=1)
@@ -160,19 +202,30 @@ class Claim(BaseModel):
 
 
 class Evidence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "1.0"},
+    )
 
     evidence_id: str
     kind: EvidenceKind
-    source_ref: str = ""
+    source_ref: str = Field(min_length=1)
     content: str = Field(min_length=1)
-    structured_content: dict[str, object] = Field(default_factory=dict)
-    authority: Authority = Authority.UNKNOWN
-    freshness: Freshness = Field(default_factory=Freshness)
+    structured_content: dict[str, object]
+    authority: Authority
+    freshness: Freshness
+
+    @field_validator("source_ref", "content")
+    @classmethod
+    def validate_persistent_text(cls, value: str) -> str:
+        return validate_persistable_text(value)
 
 
 class ClaimVerdict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "1.0"},
+    )
 
     claim_id: str
     status: VerdictStatus
@@ -183,13 +236,65 @@ class ClaimVerdict(BaseModel):
     validator_trace: dict[str, object] = Field(default_factory=dict)
 
 
+class ClaimVerdictV2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "2.0"},
+    )
+
+    schema_version: Literal["2.0"]
+    claim_id: str
+    status: VerdictStatusV2
+    confidence: float = Field(ge=0, le=1)
+    evidence_ids: list[str]
+    action: VerdictActionV2
+    reason: str
+    validator_trace: dict[str, object]
+
+    @model_validator(mode="after")
+    def validate_status_action_pair(self) -> ClaimVerdictV2:
+        if (
+            self.status is VerdictStatusV2.BLOCKED_BY_POLICY
+            and self.action is not VerdictActionV2.BLOCK
+        ):
+            raise ValueError("blocked_by_policy verdicts must use the block action")
+        if (
+            self.status is VerdictStatusV2.REQUIRES_HUMAN_REVIEW
+            and self.action is not VerdictActionV2.REQUIRE_APPROVAL
+        ):
+            raise ValueError(
+                "requires_human_review verdicts must use the require_approval action"
+            )
+        if (
+            self.action is VerdictActionV2.REQUIRE_APPROVAL
+            and self.status is not VerdictStatusV2.REQUIRES_HUMAN_REVIEW
+        ):
+            raise ValueError(
+                "require_approval actions must use the requires_human_review status"
+            )
+        return self
+
+
 class DocumentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_ref: str
+    source_ref: str = Field(min_length=1)
     content: str = Field(min_length=1)
-    authority: Authority = Authority.INTERNAL
+    authority: Authority
     metadata: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_rag_metadata(cls, value: dict[str, object]) -> dict[str, object]:
+        normalized: dict[str, object] = {}
+        normalized.update(validate_metadata(value))
+        validate_document_freshness_metadata(normalized)
+        return normalized
+
+    @field_validator("source_ref", "content")
+    @classmethod
+    def validate_persistent_text(cls, value: str) -> str:
+        return validate_persistable_text(value)
 
 
 class ClaimExtractionRequest(BaseModel):
@@ -226,6 +331,11 @@ class EvidenceRetrievalRequest(BaseModel):
     context_refs: list[str] = Field(default_factory=list)
     metadata_filter: dict[str, object] = Field(default_factory=dict)
     max_evidence_per_claim: int = Field(default=3, ge=1, le=10)
+
+    @field_validator("metadata_filter")
+    @classmethod
+    def validate_rag_metadata_filter(cls, value: dict[str, object]) -> dict[str, object]:
+        return dict(validate_metadata_filter(value))
 
 
 class EvidenceRetrievalResponse(BaseModel):
@@ -413,6 +523,27 @@ class ClaimVerificationResponse(BaseModel):
     verdicts: list[ClaimVerdict]
 
 
+class ClaimVerificationRequestV2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "2.0"},
+    )
+
+    schema_version: Literal["2.0"]
+    claims: list[Claim]
+    evidence: list[Evidence] = Field(default_factory=list)
+
+
+class ClaimVerificationResponseV2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "2.0"},
+    )
+
+    schema_version: Literal["2.0"]
+    verdicts: list[ClaimVerdictV2]
+
+
 class ResponseRepairRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -430,7 +561,11 @@ class ResponseRepairResponse(BaseModel):
 
 
 class ToolCallEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        json_schema_extra={"x-contract-version": "1.0"},
+    )
 
     tool_name: str = Field(min_length=1)
     input: dict[str, object] = Field(default_factory=dict)
@@ -449,10 +584,18 @@ class ToolValidationResponse(BaseModel):
     approval_required: bool = False
     approval_id: str | None = None
     sanitized_output: dict[str, object] | None = None
+    trace_id: str | None = None
+    policy_version: str | None = None
+    matched_rules: list[str] = Field(default_factory=list)
 
 
 class ApprovalRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    # Internal cryptographic binding to the original, unredacted tool envelope.
+    # PrivateAttr keeps it out of REST/OpenAPI/public serialization; approval
+    # storage persists it explicitly as opaque metadata.
+    _tool_call_commitment: str | None = PrivateAttr(default=None)
 
     approval_id: str
     tenant_id: str
@@ -537,7 +680,10 @@ class RepoChecksRunRequest(BaseModel):
 
 
 class SandboxRun(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "1.0"},
+    )
 
     repo_ref: str
     commands: list[str]
@@ -564,6 +710,32 @@ class AuditExportResponse(BaseModel):
     trace_id: str
     runs: list["VerificationRun"]
     events: list[AuditEvent] = Field(default_factory=list)
+
+
+class VerificationRunSummary(BaseModel):
+    """Safe, event-backed summary for the tenant verification history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(min_length=1, max_length=160)
+    final_decision: FinalDecision
+    created_at: datetime
+
+
+class VerificationRunListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str | None = Field(default=None, min_length=1, max_length=160)
+    limit: int = Field(default=20, ge=1, le=100)
+    cursor: str | None = Field(default=None, min_length=1, max_length=2048)
+
+
+class VerificationRunListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(min_length=1)
+    runs: list[VerificationRunSummary]
+    next_cursor: str | None
 
 
 class EvalReportMetrics(BaseModel):
@@ -639,7 +811,10 @@ class VerificationRunRequest(BaseModel):
 
 
 class VerificationRun(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "1.0"},
+    )
 
     trace_id: str
     tenant_id: str
@@ -651,6 +826,41 @@ class VerificationRun(BaseModel):
     final_text: str
     policy_version: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class VerificationRunRequestV2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "2.0"},
+    )
+
+    schema_version: Literal["2.0"]
+    tenant_id: str | None = None
+    message_text: str = Field(min_length=1)
+    documents: list[DocumentInput] = Field(default_factory=list)
+    tool_outputs: list[Evidence] = Field(default_factory=list)
+    execution_artifacts: dict[str, object] = Field(default_factory=dict)
+    task_type: str = "chat"
+    message_id: str = "draft"
+
+
+class VerificationRunV2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"x-contract-version": "2.0"},
+    )
+
+    schema_version: Literal["2.0"]
+    trace_id: str
+    tenant_id: str
+    input: dict[str, object]
+    claims: list[Claim]
+    evidence: list[Evidence]
+    verdicts: list[ClaimVerdictV2]
+    final_decision: FinalDecision
+    final_text: str
+    policy_version: str
+    created_at: datetime
 
 
 class VerificationReplayRequest(BaseModel):

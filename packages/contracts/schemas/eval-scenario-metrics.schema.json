@@ -16,6 +16,7 @@
     "tool_contradiction_guard_rate",
     "repo_false_claim_block_rate",
     "repo_semantic_claim_decision_accuracy",
+    "blocking_precision",
     "sandbox_block_rate",
     "p95_latency_ms"
   ],
@@ -35,6 +36,7 @@
     "tool_contradiction_guard_rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "repo_false_claim_block_rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "repo_semantic_claim_decision_accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+    "blocking_precision": { "type": "number", "minimum": 0, "maximum": 1 },
     "sandbox_block_rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "p95_latency_ms": { "type": "number", "minimum": 0 }
   },

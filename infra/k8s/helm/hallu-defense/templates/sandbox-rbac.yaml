@@ -1,0 +1,64 @@
+{{- if eq .Values.sandbox.backend "kubernetes" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "hallu-defense.apiServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "hallu-defense.apiServiceAccountName" . }}-sandbox
+  namespace: {{ include "hallu-defense.sandboxNamespace" . }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+rules:
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - create
+      - get
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - list
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "hallu-defense.apiServiceAccountName" . }}-sandbox
+  namespace: {{ include "hallu-defense.sandboxNamespace" . }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hallu-defense.apiServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "hallu-defense.apiServiceAccountName" . }}-sandbox
+{{- end }}

@@ -3,7 +3,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
 const API_BASE_URL = `http://127.0.0.1:${process.env.E2E_API_PORT ?? "18100"}`;
 const REVIEWER_HEADERS = {
   "content-type": "application/json",
-  "x-tenant-id": "console",
+  "x-tenant-id": "tenant-a",
   "x-subject-id": "e2e-reviewer",
   "x-roles": "approval_reviewer"
 };

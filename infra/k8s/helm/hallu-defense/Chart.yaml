@@ -4,3 +4,4 @@ description: Enterprise anti-hallucination platform runtime scaffold
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+kubeVersion: ">=1.34.0-0"

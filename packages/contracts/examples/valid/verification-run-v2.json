@@ -1,0 +1,30 @@
+{
+  "schema_version": "2.0",
+  "trace_id": "tr_contract_v2_0001",
+  "tenant_id": "tenant-a",
+  "input": {
+    "message_text": "Full-time employees receive 15 days of paid vacation per year.",
+    "task_type": "document_qa"
+  },
+  "claims": [],
+  "evidence": [],
+  "verdicts": [
+    {
+      "schema_version": "2.0",
+      "claim_id": "clm_policy",
+      "status": "blocked_by_policy",
+      "confidence": 1.0,
+      "evidence_ids": ["ev_policy"],
+      "action": "block",
+      "reason": "A versioned policy blocked the claim.",
+      "validator_trace": {
+        "policy_version": "2026-07-09",
+        "matched_rules": ["content_security_block"]
+      }
+    }
+  ],
+  "final_decision": "blocked",
+  "final_text": "The response was blocked.",
+  "policy_version": "2026-07-09",
+  "created_at": "2026-07-09T00:00:00Z"
+}

@@ -4,5 +4,8 @@
   "reason": "Tool call is high-risk and requires approval.",
   "approval_required": true,
   "approval_id": "apr_contract",
-  "sanitized_output": null
+  "sanitized_output": null,
+  "trace_id": "tr_contract_tool_validation",
+  "policy_version": "policy-contract-v1",
+  "matched_rules": ["high_risk_requires_human_review"]
 }

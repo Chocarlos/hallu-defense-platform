@@ -21,7 +21,9 @@ if str(ROOT) not in sys.path:
 
 check_traceability_matrix = importlib.import_module("scripts.ci.check_traceability_matrix")
 TRACEABILITY_PATH = check_traceability_matrix.TRACEABILITY_PATH
+PLAN_MASTER_PATH = check_traceability_matrix.PLAN_MASTER_PATH
 TraceabilityMatrixError = check_traceability_matrix.TraceabilityMatrixError
+extract_declared_requirement_ids = check_traceability_matrix.extract_declared_requirement_ids
 parse_traceability_matrix = check_traceability_matrix.parse_traceability_matrix
 validate_supporting_files = check_traceability_matrix.validate_supporting_files
 validate_traceability_matrix = check_traceability_matrix.validate_traceability_matrix
@@ -48,10 +50,41 @@ def test_traceability_matrix_parses_rows() -> None:
 
 
 def test_traceability_matrix_validates_committed_document() -> None:
-    rows = validate_traceability_matrix(TRACEABILITY_PATH.read_text(encoding="utf-8"))
+    rows = validate_traceability_matrix(
+        TRACEABILITY_PATH.read_text(encoding="utf-8"),
+        plan_text=PLAN_MASTER_PATH.read_text(encoding="utf-8"),
+    )
 
-    assert len(rows) >= 100
+    assert len(rows) >= 180
     assert any(row.requirement_id == "FND-003" for row in rows)
+
+
+def test_declared_requirement_ids_expand_master_plan_shorthand() -> None:
+    declared = extract_declared_requirement_ids(
+        "New EVAL-003/004/005, API-022/023, CTR-026 and CI-025/026."
+    )
+
+    assert declared == {
+        "API-022",
+        "API-023",
+        "CI-025",
+        "CI-026",
+        "CTR-026",
+        "EVAL-003",
+        "EVAL-004",
+        "EVAL-005",
+    }
+
+
+def test_traceability_matrix_rejects_master_plan_ids_missing_from_matrix() -> None:
+    with pytest.raises(
+        TraceabilityMatrixError,
+        match="master plan declares requirement IDs missing.*API-022",
+    ):
+        validate_traceability_matrix(
+            VALID_TABLE,
+            plan_text="M6 declares API-022 and CI-999.",
+        )
 
 
 def test_traceability_matrix_rejects_duplicate_ids() -> None:

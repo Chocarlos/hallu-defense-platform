@@ -1,0 +1,10 @@
+{
+  "schema_version": "2.0",
+  "tenant_id": "tenant-a",
+  "message_text": "Full-time employees receive 15 days of paid vacation per year.",
+  "documents": [],
+  "tool_outputs": [],
+  "execution_artifacts": {},
+  "task_type": "document_qa",
+  "message_id": "draft"
+}

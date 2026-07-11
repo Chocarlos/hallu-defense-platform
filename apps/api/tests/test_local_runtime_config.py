@@ -3,10 +3,17 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+from hallu_defense.config import (
+    RUNTIME_ROLE_OPENSEARCH_BOOTSTRAP,
+    RUNTIME_ROLE_WORKER,
+    load_settings,
+)
 
 
 def _repo_root() -> Path:
@@ -53,6 +60,42 @@ def test_local_runtime_config_accepts_current_repository() -> None:
     validate_local_runtime_config(**_current_inputs())
 
 
+@pytest.mark.parametrize(
+    ("service_name", "expected_role", "expected_backend"),
+    [
+        ("ingestion-worker", RUNTIME_ROLE_WORKER, "hybrid"),
+        (
+            "opensearch-bootstrap",
+            RUNTIME_ROLE_OPENSEARCH_BOOTSTRAP,
+            "opensearch",
+        ),
+    ],
+)
+def test_local_compose_worker_and_bootstrap_env_pass_real_settings_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    service_name: str,
+    expected_role: str,
+    expected_backend: str,
+) -> None:
+    compose = load_yaml_file(DOCKER_COMPOSE_PATH)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    service = services[service_name]
+    assert isinstance(service, dict)
+    environment = service["environment"]
+    assert isinstance(environment, dict)
+    for key in tuple(os.environ):
+        if key.startswith("HALLU_DEFENSE_"):
+            monkeypatch.delenv(key, raising=False)
+    for key, value in environment.items():
+        monkeypatch.setenv(str(key), str(value))
+
+    settings = load_settings(expected_runtime_role=expected_role)
+
+    assert settings.runtime_role == expected_role
+    assert settings.rag_index_backend == expected_backend
+
+
 def test_local_runtime_config_rejects_missing_required_service() -> None:
     inputs = _current_inputs()
     compose = copy.deepcopy(inputs["compose"])
@@ -77,7 +120,7 @@ def test_local_runtime_config_rejects_latest_images() -> None:
     redis["image"] = "redis:latest"
     inputs["compose"] = compose
 
-    with pytest.raises(LocalRuntimeConfigError, match="latest"):
+    with pytest.raises(LocalRuntimeConfigError, match="must equal redis:7-alpine@sha256"):
         validate_local_runtime_config(**inputs)
 
 
@@ -90,15 +133,61 @@ def test_local_runtime_config_rejects_missing_api_dependency() -> None:
     api = services["api"]
     assert isinstance(api, dict)
     depends_on = api["depends_on"]
-    assert isinstance(depends_on, list)
-    depends_on.remove("opensearch")
+    assert isinstance(depends_on, dict)
+    depends_on.pop("opensearch-bootstrap")
     inputs["compose"] = compose
 
-    with pytest.raises(LocalRuntimeConfigError, match="opensearch"):
+    with pytest.raises(LocalRuntimeConfigError, match="opensearch-bootstrap"):
         validate_local_runtime_config(**inputs)
 
 
-def test_local_runtime_config_requires_opensearch_initial_password() -> None:
+def test_local_runtime_config_requires_successful_opensearch_bootstrap() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    worker = services["ingestion-worker"]
+    assert isinstance(worker, dict)
+    dependencies = worker["depends_on"]
+    assert isinstance(dependencies, dict)
+    bootstrap = dependencies["opensearch-bootstrap"]
+    assert isinstance(bootstrap, dict)
+    bootstrap["condition"] = "service_started"
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="successful OpenSearch bootstrap"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_requires_worker_runtime_dependencies() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    worker = services["ingestion-worker"]
+    assert isinstance(worker, dict)
+    environment = worker["environment"]
+    assert isinstance(environment, dict)
+    environment.pop("HALLU_DEFENSE_AUDIT_LEDGER_BACKEND")
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="AUDIT_LEDGER_BACKEND"):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "legacy_value"),
+    [
+        ("plugins.security.disabled", "true"),
+        ("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "legacy-local-password"),
+    ],
+)
+def test_local_runtime_config_rejects_removed_opensearch_plugin_configuration(
+    legacy_key: str,
+    legacy_value: str,
+) -> None:
     inputs = _current_inputs()
     compose = copy.deepcopy(inputs["compose"])
     assert isinstance(compose, dict)
@@ -108,10 +197,10 @@ def test_local_runtime_config_requires_opensearch_initial_password() -> None:
     assert isinstance(opensearch, dict)
     environment = opensearch["environment"]
     assert isinstance(environment, dict)
-    environment.pop("OPENSEARCH_INITIAL_ADMIN_PASSWORD")
+    environment[legacy_key] = legacy_value
     inputs["compose"] = compose
 
-    with pytest.raises(LocalRuntimeConfigError, match="initial admin password"):
+    with pytest.raises(LocalRuntimeConfigError, match="removed plugin setting"):
         validate_local_runtime_config(**inputs)
 
 
@@ -291,7 +380,7 @@ def test_local_runtime_config_rejects_vault_latest_image() -> None:
     vault["image"] = "hashicorp/vault:latest"
     inputs["compose"] = compose
 
-    with pytest.raises(LocalRuntimeConfigError, match="latest"):
+    with pytest.raises(LocalRuntimeConfigError, match="must equal hashicorp/vault"):
         validate_local_runtime_config(**inputs)
 
 
@@ -310,7 +399,7 @@ def test_local_runtime_config_rejects_vault_without_dev_mode() -> None:
         validate_local_runtime_config(**inputs)
 
 
-def test_local_runtime_config_rejects_keycloak_latest_image() -> None:
+def test_local_runtime_config_rejects_external_keycloak_image() -> None:
     inputs = _current_inputs()
     compose = copy.deepcopy(inputs["compose"])
     assert isinstance(compose, dict)
@@ -321,7 +410,219 @@ def test_local_runtime_config_rejects_keycloak_latest_image() -> None:
     keycloak["image"] = "quay.io/keycloak/keycloak:latest"
     inputs["compose"] = compose
 
-    with pytest.raises(LocalRuntimeConfigError, match="latest"):
+    with pytest.raises(LocalRuntimeConfigError, match="first-party Keycloak image"):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("service_name", "external_image", "expected_message"),
+    [
+        ("grafana", "grafana/grafana:13.1.0", "first-party Grafana image"),
+        (
+            "opensearch",
+            "opensearchproject/opensearch:3.7.0",
+            "first-party OpenSearch image",
+        ),
+        ("minio", "minio/minio:latest", "first-party SeaweedFS image"),
+    ],
+)
+def test_local_runtime_config_rejects_external_hardened_service_images(
+    service_name: str,
+    external_image: str,
+    expected_message: str,
+) -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    service = services[service_name]
+    assert isinstance(service, dict)
+    service["image"] = external_image
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match=expected_message):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize("service_name", ["grafana", "opensearch", "minio"])
+def test_local_runtime_config_rejects_writable_hardened_services(
+    service_name: str,
+) -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    service = services[service_name]
+    assert isinstance(service, dict)
+    service["read_only"] = False
+    service["cap_drop"] = []
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="read-only|drop all"):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize("service_name", ["grafana", "opensearch", "minio", "keycloak"])
+def test_local_runtime_config_rejects_weak_tmpfs_options(service_name: str) -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    service = services[service_name]
+    assert isinstance(service, dict)
+    tmpfs = service["tmpfs"]
+    assert isinstance(tmpfs, list)
+    mount_path = str(tmpfs[0]).split(":", 1)[0]
+    tmpfs[0] = f"{mount_path}:rw"
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="exact hardened tmpfs"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_requires_ephemeral_opensearch_config_mount() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    opensearch = services["opensearch"]
+    assert isinstance(opensearch, dict)
+    tmpfs = opensearch["tmpfs"]
+    assert isinstance(tmpfs, list)
+    opensearch["tmpfs"] = [
+        value for value in tmpfs if "/usr/share/opensearch/config:" not in str(value)
+    ]
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="exact hardened tmpfs.*config"):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize(
+    "java_opts",
+    [
+        "-Xms512m -Xmx512m",
+        (
+            "-Xms512m -Xmx512m "
+            "-Dorg.bouncycastle.native.cpu_variant=java "
+            "-Dorg.bouncycastle.native.cpu_variant=native"
+        ),
+    ],
+)
+def test_local_runtime_config_requires_opensearch_java_only_crypto(
+    java_opts: str,
+) -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    opensearch = services["opensearch"]
+    assert isinstance(opensearch, dict)
+    environment = opensearch["environment"]
+    assert isinstance(environment, dict)
+    environment["OPENSEARCH_JAVA_OPTS"] = java_opts
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="Bouncy Castle Java"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_requires_opensearch_transport_loopback() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    opensearch = services["opensearch"]
+    assert isinstance(opensearch, dict)
+    environment = opensearch["environment"]
+    assert isinstance(environment, dict)
+    environment["transport.host"] = "0.0.0.0"
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="transport.*loopback"):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("privileged", True, "must not be privileged"),
+        ("cap_add", ["SYS_ADMIN"], "must not set cap_add"),
+        ("pid", "host", "must not override pid"),
+        ("network_mode", "host", "must not override network_mode"),
+        (
+            "security_opt",
+            ["no-new-privileges:true", "seccomp=unconfined"],
+            "only no-new-privileges",
+        ),
+    ],
+)
+def test_local_runtime_config_rejects_privilege_reintroduction(
+    key: str,
+    value: object,
+    message: str,
+) -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    opensearch = services["opensearch"]
+    assert isinstance(opensearch, dict)
+    opensearch[key] = value
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match=message):
+        validate_local_runtime_config(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("service_name", "user"),
+    [("grafana", "0:0"), ("opensearch", "0:0"), ("minio", "0:0")],
+)
+def test_local_runtime_config_rejects_root_user_override(
+    service_name: str,
+    user: str,
+) -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    service = services[service_name]
+    assert isinstance(service, dict)
+    service["user"] = user
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="user override"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_runtime_overlay_and_docker_socket() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    grafana = services["grafana"]
+    assert isinstance(grafana, dict)
+    volumes = grafana["volumes"]
+    assert isinstance(volumes, list)
+    volumes.append("/var/run/docker.sock:/var/run/docker.sock")
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="volumes.*hardened allowlist"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_seaweedfs_without_precreated_buckets() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    services = compose["services"]
+    assert isinstance(services, dict)
+    minio = services["minio"]
+    assert isinstance(minio, dict)
+    minio["command"] = ["mini", "-dir=/data", "-s3.port=9000"]
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="approved S3 contract"):
         validate_local_runtime_config(**inputs)
 
 
@@ -337,6 +638,22 @@ def test_local_runtime_config_rejects_keycloak_command_without_import_realm() ->
     inputs["compose"] = compose
 
     with pytest.raises(LocalRuntimeConfigError, match="import-realm"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_writable_keycloak() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    keycloak = services["keycloak"]
+    assert isinstance(keycloak, dict)
+    keycloak["read_only"] = False
+    keycloak["cap_drop"] = []
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="read-only|drop all"):
         validate_local_runtime_config(**inputs)
 
 

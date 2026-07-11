@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
 import shlex
-import subprocess
+import shutil
+import stat
+import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from hallu_defense.config import Settings
 from hallu_defense.domain.models import (
@@ -20,6 +27,10 @@ from hallu_defense.domain.models import (
     VerdictStatus,
 )
 from hallu_defense.services.sandbox_exec import (
+    MAX_SANDBOX_WORKSPACE_BYTES,
+    MAX_SANDBOX_WORKSPACE_FILES,
+    SANDBOX_GIT_INSPECTOR_PATH,
+    SandboxBatchExecutionBackend,
     SandboxExecutionBackend,
     SandboxExecutionError,
     build_sandbox_execution_backend,
@@ -28,7 +39,7 @@ from hallu_defense.services.text import bounded, tokenize
 
 ALLOWED_EXECUTABLES = {"python", "pytest", "npm", "node"}
 ARTIFACT_DIRS = {"artifacts", "reports"}
-INSPECTION_REPORT_PATH = "reports/sandbox-inspection.json"
+INSPECTION_EVIDENCE_SOURCE = "sandbox://inspection"
 INSPECTION_SKIP_DIRS = {
     ".git",
     ".hg",
@@ -51,6 +62,22 @@ MAX_INSPECTION_FILES = 2_000
 MAX_INSPECTION_SYMBOLS = 1_000
 MAX_CHANGED_LINES = 1_000
 MAX_CHANGED_LINE_CHARS = 500
+MAX_ARTIFACT_FILES = 10_000
+MAX_GIT_LIST_ENTRIES = 2_000
+MAX_GIT_ERROR_ENTRIES = 16
+MAX_GIT_ERROR_CHARS = 1_000
+MIN_GIT_INSPECTOR_CONTROL_CHARS = 32_768
+MAX_GIT_INSPECTOR_CONTROL_CHARS = 1_600_000
+SANDBOX_GIT_INSPECTION_SCHEMA = "sandbox_git_inspection.v1"
+HOST_GIT_INSPECTOR_ENV_KEYS = {
+    "PATH",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "WINDIR",
+}
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 INSPECTION_FILE_SUFFIXES = {
     ".c",
     ".cpp",
@@ -134,6 +161,10 @@ class SandboxError(ValueError):
     pass
 
 
+class _SandboxFileTooLarge(OSError):
+    pass
+
+
 class SandboxRunner:
     def __init__(
         self,
@@ -145,55 +176,122 @@ class SandboxRunner:
 
     def run(self, request: RepoChecksRunRequest) -> SandboxRun:
         repo_path = self._resolve_repo(request.repo_ref)
-        before_artifacts = self._artifact_snapshot(repo_path)
-        exit_codes: list[int] = []
-        stdout: list[str] = []
-        stderr: list[str] = []
-        parsed_commands: list[list[str]] = []
+        self._require_supported_network_policy(request.network_policy)
+        parsed_commands = [
+            self._parse_command(command, repo_path, request.network_policy)
+            for command in request.commands
+        ]
+        source_fingerprint = _workspace_fingerprint(repo_path)
 
-        for command in request.commands:
-            args = self._parse_command(command, repo_path, request.network_policy)
-            parsed_commands.append(args)
+        if isinstance(self._execution_backend, SandboxBatchExecutionBackend):
+            inspection_report = self._batch_inspection_report(
+                repo_path,
+                source_fingerprint=source_fingerprint,
+            )
             try:
-                completed = self._execution_backend.execute(
-                    args,
+                batch = self._execution_backend.execute_batch(
+                    parsed_commands,
                     cwd=repo_path,
+                    source_cwd=repo_path,
                     env=self._sandbox_env(request.network_policy),
                     timeout=self._settings.max_command_seconds,
                     output_caps=self._settings.max_output_chars,
                 )
             except SandboxExecutionError as exc:
                 raise SandboxError(str(exc)) from exc
-            exit_codes.append(completed.returncode)
-            stdout.append(bounded(completed.stdout, self._settings.max_output_chars))
-            stderr.append(bounded(completed.stderr, self._settings.max_output_chars))
+            if len(batch.executions) != len(parsed_commands):
+                raise SandboxError(
+                    "sandbox batch backend returned an unexpected result count"
+                )
+            if batch.pre_snapshot_fingerprint != source_fingerprint:
+                raise SandboxError(
+                    "sandbox execution snapshot does not match the requested source workspace"
+                )
+            completed_commands = list(batch.executions)
+            artifacts = sorted(set(batch.artifacts))
+        else:
+            with _ephemeral_working_copy(repo_path, source_fingerprint) as working_copy:
+                before_artifacts = self._artifact_snapshot(working_copy)
+                inspection_report = self._inspection_report(
+                    working_copy,
+                    source_repo_path=repo_path,
+                )
+                completed_commands = []
+                for args in parsed_commands:
+                    try:
+                        completed_commands.append(
+                            self._execution_backend.execute(
+                                args,
+                                cwd=working_copy,
+                                source_cwd=repo_path,
+                                env=self._sandbox_env(request.network_policy),
+                                timeout=self._settings.max_command_seconds,
+                                output_caps=self._settings.max_output_chars,
+                            )
+                        )
+                    except SandboxExecutionError as exc:
+                        raise SandboxError(str(exc)) from exc
+                artifacts = self._changed_artifacts(working_copy, before_artifacts)
 
-        inspection_report = self._write_inspection_report(repo_path)
+        if _workspace_fingerprint(repo_path) != source_fingerprint:
+            raise SandboxError(
+                "source workspace changed during the isolated sandbox run"
+            )
 
+        exit_codes = [item.returncode for item in completed_commands]
+        stdout = [
+            bounded(item.stdout, self._settings.max_output_chars)
+            for item in completed_commands
+        ]
+        stderr = [
+            bounded(item.stderr, self._settings.max_output_chars)
+            for item in completed_commands
+        ]
+
+        git_report = inspection_report.get("git")
+        git_failed = (
+            isinstance(git_report, dict)
+            and git_report.get("is_repository") is True
+            and bool(git_report.get("errors"))
+        )
         return SandboxRun(
             repo_ref=str(repo_path),
             commands=request.commands,
             exit_codes=exit_codes,
             stdout=stdout,
             stderr=stderr,
-            artifacts=self._changed_artifacts(repo_path, before_artifacts),
+            artifacts=artifacts,
             evidence=self._evidence_from_run(request, parsed_commands, exit_codes, stdout, stderr, inspection_report),
             network_policy=request.network_policy,
             verdict=VerdictStatus.SUPPORTED
-            if exit_codes and all(code == 0 for code in exit_codes)
+            if exit_codes and all(code == 0 for code in exit_codes) and not git_failed
             else VerdictStatus.CONTRADICTED,
         )
 
+    def _require_supported_network_policy(self, network_policy: str) -> None:
+        if network_policy != "deny":
+            raise SandboxError(
+                "allowlisted network policy requires an exact destination allowlist "
+                "and an approved execution grant; allowlisted egress is not enabled"
+            )
+
     def _resolve_repo(self, repo_ref: str) -> Path:
-        candidate = (self._settings.allowed_workspace / repo_ref).resolve()
-        allowed = self._settings.allowed_workspace.resolve()
+        configured_allowed = Path(os.path.abspath(self._settings.allowed_workspace))
+        try:
+            _require_real_directory(configured_allowed, label="configured workspace")
+        except OSError as exc:
+            raise SandboxError("configured workspace is unavailable") from exc
+        allowed = configured_allowed.resolve(strict=True)
+        candidate = Path(os.path.abspath(allowed / repo_ref))
         try:
             candidate.relative_to(allowed)
         except ValueError as exc:
             raise SandboxError("repo_ref escapes the configured workspace") from exc
-        if not candidate.exists() or not candidate.is_dir():
-            raise SandboxError("repo_ref must point to an existing directory")
-        return candidate
+        try:
+            _guard_existing_path(allowed, candidate, expected="directory")
+        except FileNotFoundError:
+            raise SandboxError("repo_ref must point to an existing directory") from None
+        return candidate.resolve(strict=True)
 
     def _parse_command(
         self,
@@ -222,13 +320,26 @@ class SandboxRunner:
             arg = raw_arg.strip("\"'")
             if arg.startswith("-") or not arg.lower().endswith((".py", ".js", ".mjs", ".cjs")):
                 continue
-            script_path = (repo_path / arg).resolve()
+            script_path = Path(os.path.abspath(repo_path / arg))
             try:
                 script_path.relative_to(repo_path)
             except ValueError as exc:
                 raise SandboxError("command script path escapes the repository workspace") from exc
-            if script_path.exists() and script_path.is_file():
-                inputs.append(script_path.read_text(encoding="utf-8", errors="ignore")[:100_000])
+            try:
+                inputs.append(
+                    _read_text_no_follow(
+                        repo_path,
+                        script_path,
+                        max_bytes=100_000,
+                        errors="ignore",
+                    )
+                )
+            except FileNotFoundError:
+                continue
+            except _SandboxFileTooLarge as exc:
+                raise SandboxError(
+                    "command script exceeds the policy inspection size limit"
+                ) from exc
         return inputs
 
     def _enforce_command_policy(self, policy_text: str, network_policy: str) -> None:
@@ -249,22 +360,40 @@ class SandboxRunner:
         env["HALLU_DEFENSE_NETWORK_POLICY"] = network_policy
         return env
 
-    def _artifact_snapshot(self, repo_path: Path) -> dict[str, tuple[int, int]]:
-        snapshot: dict[str, tuple[int, int]] = {}
+    def _artifact_snapshot(self, repo_path: Path) -> dict[str, tuple[int, str]]:
+        snapshot: dict[str, tuple[int, str]] = {}
         for artifact_dir in ARTIFACT_DIRS:
             root = repo_path / artifact_dir
-            if not root.exists() or not root.is_dir():
+            try:
+                root_info = os.lstat(root)
+            except FileNotFoundError:
                 continue
-            for path in root.rglob("*"):
-                if path.is_file():
-                    stat = path.stat()
-                    snapshot[path.relative_to(repo_path).as_posix()] = (stat.st_mtime_ns, stat.st_size)
+            if _stat_is_link_or_reparse(root_info) or not stat.S_ISDIR(root_info.st_mode):
+                raise SandboxError(
+                    f"sandbox artifact directory {artifact_dir!r} must be a real directory"
+                )
+            for path, path_info in _walk_regular_files_no_follow(
+                repo_path,
+                root,
+                reject_links=True,
+            ):
+                if len(snapshot) >= MAX_ARTIFACT_FILES:
+                    raise SandboxError("sandbox artifact inventory exceeded its safety limit")
+                snapshot[path.relative_to(repo_path).as_posix()] = (
+                    path_info.st_size,
+                    _file_content_digest_no_follow(
+                        repo_path,
+                        path,
+                        expected=path_info,
+                        max_bytes=MAX_SANDBOX_WORKSPACE_BYTES,
+                    ),
+                )
         return snapshot
 
     def _changed_artifacts(
         self,
         repo_path: Path,
-        before: dict[str, tuple[int, int]],
+        before: dict[str, tuple[int, str]],
     ) -> list[str]:
         after = self._artifact_snapshot(repo_path)
         return sorted(
@@ -273,20 +402,66 @@ class SandboxRunner:
             if before.get(path) != signature
         )
 
-    def _write_inspection_report(self, repo_path: Path) -> dict[str, object]:
-        report_path = repo_path / INSPECTION_REPORT_PATH
-        report_path.parent.mkdir(parents=True, exist_ok=True)
+    def _inspection_report(
+        self,
+        repo_path: Path,
+        *,
+        source_repo_path: Path,
+    ) -> dict[str, object]:
         static_report = self._static_inspection(repo_path)
-        payload: dict[str, object] = {
+        return {
             "schema_version": "sandbox_inspection.v1",
-            "git": self._git_inspection(repo_path, static_report),
+            "git": self._git_inspection(
+                repo_path,
+                static_report,
+                source_repo_path=source_repo_path,
+            ),
             "static": static_report,
         }
-        report_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        return payload
+
+    def _batch_inspection_report(
+        self,
+        source_repo_path: Path,
+        *,
+        source_fingerprint: str,
+    ) -> dict[str, object]:
+        """Inspect only snapshots whose content is bound to the command snapshot."""
+
+        with _ephemeral_working_copy(
+            source_repo_path,
+            source_fingerprint,
+        ) as inspection_snapshot:
+            static_report = self._static_inspection(inspection_snapshot)
+            git_path = inspection_snapshot / ".git"
+            try:
+                git_info = os.lstat(git_path)
+            except FileNotFoundError:
+                git_report = _no_git_inspection()
+            else:
+                if _stat_is_link_or_reparse(git_info) or not stat.S_ISDIR(
+                    git_info.st_mode
+                ):
+                    raise SandboxError(
+                        "repository .git metadata must be a real in-repository directory"
+                    )
+                try:
+                    inspector = self._run_isolated_git_inspector(
+                        source_repo_path,
+                        source_repo_path=source_repo_path,
+                        expected_source_fingerprint=source_fingerprint,
+                    )
+                except SandboxError as exc:
+                    git_report = _failed_git_inspection(type(exc).__name__)
+                else:
+                    git_report = self._git_report_from_inspector(
+                        static_report,
+                        inspector,
+                    )
+        return {
+            "schema_version": "sandbox_inspection.v1",
+            "git": git_report,
+            "static": static_report,
+        }
 
     def _evidence_from_run(
         self,
@@ -298,6 +473,7 @@ class SandboxRunner:
         inspection_report: dict[str, object],
     ) -> list[Evidence]:
         evidence: list[Evidence] = []
+        retrieved_at = datetime.now(timezone.utc)
         for index, command in enumerate(request.commands):
             exit_code = exit_codes[index] if index < len(exit_codes) else -1
             stdout_text = stdout[index] if index < len(stdout) else ""
@@ -327,18 +503,24 @@ class SandboxRunner:
                         "network_policy": request.network_policy,
                     },
                     authority=Authority.INTERNAL,
-                    freshness=Freshness(staleness_class=StalenessClass.FRESH),
+                    freshness=Freshness(
+                        retrieved_at=retrieved_at,
+                        staleness_class=StalenessClass.FRESH,
+                    ),
                 )
             )
         evidence.append(
             Evidence(
                 evidence_id="ev_sandbox_inspection",
                 kind=EvidenceKind.REPO_FILE,
-                source_ref=INSPECTION_REPORT_PATH,
+                source_ref=INSPECTION_EVIDENCE_SOURCE,
                 content=json.dumps(inspection_report, sort_keys=True),
                 structured_content=inspection_report,
                 authority=Authority.INTERNAL,
-                freshness=Freshness(staleness_class=StalenessClass.FRESH),
+                freshness=Freshness(
+                    retrieved_at=retrieved_at,
+                    staleness_class=StalenessClass.FRESH,
+                ),
             )
         )
         return evidence
@@ -454,27 +636,42 @@ class SandboxRunner:
         executable = Path(raw_executable).name.lower()
         return executable[:-4] if executable.endswith(".exe") else executable
 
-    def _git_inspection(self, repo_path: Path, static_report: dict[str, object]) -> dict[str, object]:
-        if not (repo_path / ".git").exists():
-            return {
-                "is_repository": False,
-                "status": [],
-                "diff_files": [],
-                "diff_stat": "",
-                "changed_ranges": [],
-                "changed_lines": [],
-                "changed_symbols": [],
-                "errors": [],
-            }
+    def _git_inspection(
+        self,
+        repo_path: Path,
+        static_report: dict[str, object],
+        *,
+        source_repo_path: Path,
+    ) -> dict[str, object]:
+        git_path = repo_path / ".git"
+        try:
+            git_info = os.lstat(git_path)
+        except FileNotFoundError:
+            return _no_git_inspection()
+        if _stat_is_link_or_reparse(git_info) or not stat.S_ISDIR(git_info.st_mode):
+            raise SandboxError("repository .git metadata must be a real in-repository directory")
 
-        errors: list[dict[str, str]] = []
-        status = self._git_output(repo_path, ["status", "--short"], errors)
-        unstaged_files = self._git_output(repo_path, ["diff", "--name-only"], errors)
-        staged_files = self._git_output(repo_path, ["diff", "--cached", "--name-only"], errors)
-        diff_stat = self._git_output(repo_path, ["diff", "--stat"], errors)
-        cached_diff_stat = self._git_output(repo_path, ["diff", "--cached", "--stat"], errors)
-        unstaged_patch = self._git_output(repo_path, ["diff", "--unified=0", "--no-ext-diff"], errors)
-        staged_patch = self._git_output(repo_path, ["diff", "--cached", "--unified=0", "--no-ext-diff"], errors)
+        try:
+            inspector = self._run_isolated_git_inspector(
+                repo_path,
+                source_repo_path=source_repo_path,
+            )
+        except SandboxError as exc:
+            return _failed_git_inspection(type(exc).__name__)
+        return self._git_report_from_inspector(static_report, inspector)
+
+    def _git_report_from_inspector(
+        self,
+        static_report: dict[str, object],
+        inspector: dict[str, object],
+    ) -> dict[str, object]:
+        status = "\n".join(cast(list[str], inspector["status"]))
+        unstaged_files = "\n".join(cast(list[str], inspector["unstaged_files"]))
+        staged_files = "\n".join(cast(list[str], inspector["staged_files"]))
+        diff_stat = cast(str, inspector["unstaged_diff_stat"])
+        cached_diff_stat = cast(str, inspector["staged_diff_stat"])
+        unstaged_patch = cast(str, inspector["unstaged_patch"])
+        staged_patch = cast(str, inspector["staged_patch"])
 
         diff_files = sorted({*self._nonempty_lines(unstaged_files), *self._nonempty_lines(staged_files)})
         diff_stat_parts = [part for part in [diff_stat.strip(), cached_diff_stat.strip()] if part]
@@ -495,34 +692,107 @@ class SandboxRunner:
             "changed_ranges": changed_ranges,
             "changed_lines": changed_lines,
             "changed_symbols": self._changed_symbols(static_report, changed_ranges),
-            "errors": errors,
+            "errors": cast(list[dict[str, str]], inspector["errors"]),
         }
 
-    def _git_output(self, repo_path: Path, args: list[str], errors: list[dict[str, str]]) -> str:
+    def _run_isolated_git_inspector(
+        self,
+        repo_path: Path,
+        *,
+        source_repo_path: Path,
+        expected_source_fingerprint: str | None = None,
+    ) -> dict[str, object]:
+        inspector_path = getattr(
+            self._execution_backend,
+            "git_inspector_path",
+            SANDBOX_GIT_INSPECTOR_PATH,
+        )
+        inspector_python = getattr(
+            self._execution_backend,
+            "git_inspector_python",
+            "python",
+        )
+        per_command_timeout = max(
+            0.25,
+            min(2.0, self._settings.max_command_seconds / 8),
+        )
+        per_output_bytes = max(
+            1_024,
+            min(100_000, self._settings.max_output_chars // 8),
+        )
+        control_output_chars = min(
+            MAX_GIT_INSPECTOR_CONTROL_CHARS,
+            max(MIN_GIT_INSPECTOR_CONTROL_CHARS, per_output_bytes * 16),
+        )
+        inspector_env = {
+            "CI": "true",
+            "HALLU_DEFENSE_NETWORK_POLICY": "deny",
+            "PYTHONUNBUFFERED": "1",
+        }
+        host_environment = getattr(
+            self._execution_backend,
+            "git_inspector_environment",
+            {},
+        )
+        if not isinstance(host_environment, dict) or any(
+            key not in HOST_GIT_INSPECTOR_ENV_KEYS
+            or not isinstance(value, str)
+            or "\x00" in value
+            for key, value in host_environment.items()
+        ):
+            raise SandboxError("isolated Git inspector environment is invalid")
+        inspector_env.update(cast(dict[str, str], host_environment))
+        inspector_command = [
+            str(inspector_python),
+            str(inspector_path),
+            f"{per_command_timeout:.6f}",
+            str(per_output_bytes),
+        ]
         try:
-            completed = subprocess.run(
-                ["git", *args],
-                cwd=repo_path,
-                text=True,
-                capture_output=True,
-                timeout=min(self._settings.max_command_seconds, 5),
-                check=False,
-            )
-        except FileNotFoundError:
-            errors.append({"command": f"git {' '.join(args)}", "error": "git executable not found"})
-            return ""
-        except subprocess.TimeoutExpired:
-            errors.append({"command": f"git {' '.join(args)}", "error": "git command timed out"})
-            return ""
-        if completed.returncode != 0:
-            errors.append(
-                {
-                    "command": f"git {' '.join(args)}",
-                    "error": bounded(completed.stderr, self._settings.max_output_chars).strip(),
-                }
-            )
-            return ""
-        return bounded(completed.stdout, self._settings.max_output_chars)
+            if expected_source_fingerprint is not None:
+                if not isinstance(
+                    self._execution_backend,
+                    SandboxBatchExecutionBackend,
+                ):
+                    raise SandboxError(
+                        "snapshot-bound Git inspection requires a batch backend"
+                    )
+                batch = self._execution_backend.execute_batch(
+                    [inspector_command],
+                    cwd=repo_path,
+                    source_cwd=source_repo_path,
+                    env=inspector_env,
+                    timeout=self._settings.max_command_seconds,
+                    output_caps=control_output_chars,
+                )
+                if (
+                    batch.pre_snapshot_fingerprint != expected_source_fingerprint
+                    or batch.post_snapshot_fingerprint != expected_source_fingerprint
+                    or len(batch.executions) != 1
+                    or batch.artifacts
+                ):
+                    raise SandboxError(
+                        "Git inspection snapshot does not match the requested source workspace"
+                    )
+                completed = batch.executions[0]
+            else:
+                completed = self._execution_backend.execute(
+                    inspector_command,
+                    cwd=repo_path,
+                    source_cwd=source_repo_path,
+                    env=inspector_env,
+                    timeout=self._settings.max_command_seconds,
+                    output_caps=control_output_chars,
+                )
+        except SandboxExecutionError as exc:
+            raise SandboxError("isolated Git inspector could not execute") from exc
+        if completed.returncode != 0 or completed.timed_out:
+            raise SandboxError("isolated Git inspector failed")
+        try:
+            decoded = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise SandboxError("isolated Git inspector returned invalid JSON") from exc
+        return _validate_git_inspection_payload(decoded)
 
     def _static_inspection(self, repo_path: Path) -> dict[str, object]:
         symbols: list[dict[str, object]] = []
@@ -533,10 +803,17 @@ class SandboxRunner:
         for path in [item for item in inspectable_files if item.suffix.lower() == ".py"]:
             rel_path = path.relative_to(repo_path).as_posix()
             try:
-                if path.stat().st_size > MAX_INSPECTION_BYTES:
-                    parse_errors.append({"path": rel_path, "error": "file too large for static inspection"})
-                    continue
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel_path)
+                content = _read_text_no_follow(
+                    repo_path,
+                    path,
+                    max_bytes=MAX_INSPECTION_BYTES,
+                )
+                tree = ast.parse(content, filename=rel_path)
+            except _SandboxFileTooLarge:
+                parse_errors.append(
+                    {"path": rel_path, "error": "file too large for static inspection"}
+                )
+                continue
             except (OSError, SyntaxError, UnicodeDecodeError) as exc:
                 parse_errors.append({"path": rel_path, "error": f"{type(exc).__name__}: {exc}"})
                 continue
@@ -554,10 +831,17 @@ class SandboxRunner:
                 break
             rel_path = path.relative_to(repo_path).as_posix()
             try:
-                if path.stat().st_size > MAX_INSPECTION_BYTES:
-                    parse_errors.append({"path": rel_path, "error": "file too large for static inspection"})
-                    continue
-                content = path.read_text(encoding="utf-8", errors="ignore")
+                content = _read_text_no_follow(
+                    repo_path,
+                    path,
+                    max_bytes=MAX_INSPECTION_BYTES,
+                    errors="ignore",
+                )
+            except _SandboxFileTooLarge:
+                parse_errors.append(
+                    {"path": rel_path, "error": "file too large for static inspection"}
+                )
+                continue
             except OSError as exc:
                 parse_errors.append({"path": rel_path, "error": f"{type(exc).__name__}: {exc}"})
                 continue
@@ -647,22 +931,16 @@ class SandboxRunner:
         }
 
     def _iter_inspectable_files(self, repo_path: Path) -> list[Path]:
-        files: list[Path] = []
-        for path in repo_path.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in INSPECTION_FILE_SUFFIXES:
-                continue
-            try:
-                resolved = path.resolve()
-                resolved.relative_to(repo_path)
-                rel_parts = path.relative_to(repo_path).parts
-            except ValueError:
-                continue
-            if any(part in INSPECTION_SKIP_DIRS for part in rel_parts[:-1]):
-                continue
-            files.append(path)
-        return sorted(files)
+        return sorted(
+            path
+            for path, _path_info in _walk_regular_files_no_follow(
+                repo_path,
+                repo_path,
+                reject_links=False,
+                skip_directories=INSPECTION_SKIP_DIRS,
+            )
+            if path.suffix.lower() in INSPECTION_FILE_SUFFIXES
+        )
 
     def _nonempty_lines(self, value: str) -> list[str]:
         return [line for line in value.splitlines() if line.strip()]
@@ -824,6 +1102,499 @@ class SandboxRunner:
         if not isinstance(value, list):
             return []
         return [item for item in value if isinstance(item, dict)]
+
+
+def _no_git_inspection() -> dict[str, object]:
+    return {
+        "is_repository": False,
+        "status": [],
+        "diff_files": [],
+        "diff_stat": "",
+        "changed_ranges": [],
+        "changed_lines": [],
+        "changed_symbols": [],
+        "errors": [],
+    }
+
+
+def _failed_git_inspection(error_type: str) -> dict[str, object]:
+    return {
+        "is_repository": True,
+        "status": [],
+        "diff_files": [],
+        "diff_stat": "",
+        "changed_ranges": [],
+        "changed_lines": [],
+        "changed_symbols": [],
+        "errors": [
+            {
+                "command": "isolated_git_inspector",
+                "error": bounded(error_type, MAX_GIT_ERROR_CHARS),
+            }
+        ],
+    }
+
+
+def _validate_git_inspection_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise SandboxError("isolated Git inspector response must be an object")
+    expected_keys = {
+        "schema_version",
+        "is_repository",
+        "status",
+        "unstaged_files",
+        "staged_files",
+        "unstaged_diff_stat",
+        "staged_diff_stat",
+        "unstaged_patch",
+        "staged_patch",
+        "errors",
+    }
+    if set(value) != expected_keys:
+        raise SandboxError("isolated Git inspector response has an invalid schema")
+    if value.get("schema_version") != SANDBOX_GIT_INSPECTION_SCHEMA:
+        raise SandboxError("isolated Git inspector schema version is unsupported")
+    if value.get("is_repository") is not True:
+        raise SandboxError("isolated Git inspector did not confirm the repository")
+
+    normalized: dict[str, object] = {
+        "schema_version": SANDBOX_GIT_INSPECTION_SCHEMA,
+        "is_repository": True,
+    }
+    for field_name in ("status", "unstaged_files", "staged_files"):
+        raw_items = value.get(field_name)
+        if (
+            not isinstance(raw_items, list)
+            or len(raw_items) > MAX_GIT_LIST_ENTRIES
+            or not all(
+                isinstance(item, str)
+                and len(item) <= 4_096
+                and "\x00" not in item
+                and "\r" not in item
+                and "\n" not in item
+                for item in raw_items
+            )
+        ):
+            raise SandboxError(
+                f"isolated Git inspector returned invalid {field_name} entries"
+            )
+        normalized[field_name] = list(raw_items)
+
+    for field_name in (
+        "unstaged_diff_stat",
+        "staged_diff_stat",
+        "unstaged_patch",
+        "staged_patch",
+    ):
+        raw_text = value.get(field_name)
+        if (
+            not isinstance(raw_text, str)
+            or len(raw_text.encode("utf-8")) > 100_000
+            or "\x00" in raw_text
+        ):
+            raise SandboxError(
+                f"isolated Git inspector returned invalid {field_name} output"
+            )
+        normalized[field_name] = raw_text
+
+    raw_errors = value.get("errors")
+    if not isinstance(raw_errors, list) or len(raw_errors) > MAX_GIT_ERROR_ENTRIES:
+        raise SandboxError("isolated Git inspector returned invalid errors")
+    errors: list[dict[str, str]] = []
+    for raw_error in raw_errors:
+        if not isinstance(raw_error, dict) or set(raw_error) != {"command", "error"}:
+            raise SandboxError("isolated Git inspector returned an invalid error record")
+        command = raw_error.get("command")
+        error = raw_error.get("error")
+        if (
+            not isinstance(command, str)
+            or not command
+            or len(command) > 256
+            or not isinstance(error, str)
+            or not error
+            or len(error) > MAX_GIT_ERROR_CHARS
+            or "\x00" in command
+            or "\x00" in error
+        ):
+            raise SandboxError("isolated Git inspector returned an invalid error record")
+        errors.append({"command": command, "error": error})
+    normalized["errors"] = errors
+    return normalized
+
+
+def _stat_is_link_or_reparse(path_info: object) -> bool:
+    mode = getattr(path_info, "st_mode", 0)
+    attributes = getattr(path_info, "st_file_attributes", 0)
+    return stat.S_ISLNK(mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _require_real_directory(path: Path, *, label: str) -> os.stat_result:
+    path_info = os.lstat(path)
+    if _stat_is_link_or_reparse(path_info) or not stat.S_ISDIR(path_info.st_mode):
+        raise SandboxError(f"{label} must be a real directory, not a symlink or reparse point")
+    return path_info
+
+
+def _relative_path_no_resolve(root: Path, path: Path) -> Path:
+    absolute_root = Path(os.path.abspath(root))
+    absolute_path = Path(os.path.abspath(path))
+    try:
+        return absolute_path.relative_to(absolute_root)
+    except ValueError as exc:
+        raise SandboxError("sandbox path escapes the repository workspace") from exc
+
+
+def _guard_existing_path(root: Path, path: Path, *, expected: str) -> os.stat_result:
+    _require_real_directory(root, label="repository workspace")
+    relative = _relative_path_no_resolve(root, path)
+    current = root
+    if not relative.parts:
+        path_info = os.lstat(root)
+    else:
+        path_info = os.lstat(root)
+        for index, part in enumerate(relative.parts):
+            current = current / part
+            path_info = os.lstat(current)
+            if _stat_is_link_or_reparse(path_info):
+                raise SandboxError(
+                    "sandbox path contains a symlink or reparse point: "
+                    f"{current.relative_to(root).as_posix()}"
+                )
+            if index < len(relative.parts) - 1 and not stat.S_ISDIR(path_info.st_mode):
+                raise SandboxError("sandbox path has a non-directory parent")
+    if expected == "directory" and not stat.S_ISDIR(path_info.st_mode):
+        raise SandboxError("sandbox path must be a real directory")
+    if expected == "file" and not stat.S_ISREG(path_info.st_mode):
+        raise SandboxError("sandbox path must be a real regular file")
+    return path_info
+
+
+def _supports_secure_directory_fds() -> bool:
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.scandir in os.supports_fd
+    )
+
+
+def _open_directory_no_follow(root: Path, relative: Path) -> int:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.open(root, flags)
+    try:
+        for part in relative.parts:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _directory_entries_no_follow(
+    root: Path,
+    directory: Path,
+) -> list[tuple[str, os.stat_result]]:
+    relative = _relative_path_no_resolve(root, directory)
+    if _supports_secure_directory_fds():
+        descriptor = _open_directory_no_follow(root, relative)
+        try:
+            with os.scandir(descriptor) as entries:
+                return [(entry.name, entry.stat(follow_symlinks=False)) for entry in entries]
+        finally:
+            os.close(descriptor)
+
+    before = _guard_existing_path(root, directory, expected="directory")
+    with os.scandir(directory) as entries:
+        result = [(entry.name, entry.stat(follow_symlinks=False)) for entry in entries]
+    after = _guard_existing_path(root, directory, expected="directory")
+    if not _same_file_identity(before, after):
+        raise SandboxError("sandbox directory changed during inspection")
+    return result
+
+
+def _walk_regular_files_no_follow(
+    root: Path,
+    start: Path,
+    *,
+    reject_links: bool,
+    skip_directories: set[str] | None = None,
+) -> list[tuple[Path, os.stat_result]]:
+    _guard_existing_path(root, start, expected="directory")
+    skipped = skip_directories or set()
+    directories = [start]
+    files: list[tuple[Path, os.stat_result]] = []
+    while directories:
+        directory = directories.pop()
+        for name, path_info in _directory_entries_no_follow(root, directory):
+            path = directory / name
+            if _stat_is_link_or_reparse(path_info):
+                if reject_links:
+                    raise SandboxError(
+                        "sandbox artifact tree contains a symlink or reparse point: "
+                        f"{path.relative_to(root).as_posix()}"
+                    )
+                continue
+            if stat.S_ISDIR(path_info.st_mode):
+                if name not in skipped:
+                    directories.append(path)
+            elif stat.S_ISREG(path_info.st_mode):
+                files.append((path, path_info))
+    return files
+
+
+def _read_text_no_follow(
+    root: Path,
+    path: Path,
+    *,
+    max_bytes: int,
+    errors: str = "strict",
+) -> str:
+    return _read_bytes_no_follow(root, path, max_bytes=max_bytes).decode(
+        "utf-8",
+        errors=errors,
+    )
+
+
+def _read_bytes_no_follow(
+    root: Path,
+    path: Path,
+    *,
+    max_bytes: int,
+) -> bytes:
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    relative = _relative_path_no_resolve(root, path)
+    if not relative.parts:
+        raise SandboxError("sandbox file path must not be the repository root")
+
+    descriptor: int
+    parent_descriptor: int | None = None
+    if _supports_secure_directory_fds():
+        parent_descriptor = _open_directory_no_follow(root, relative.parent)
+        try:
+            descriptor = os.open(
+                relative.name,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        finally:
+            os.close(parent_descriptor)
+    else:
+        before = _guard_existing_path(root, path, expected="file")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        after = _guard_existing_path(root, path, expected="file")
+        if not _same_file_identity(before, opened) or not _same_file_identity(opened, after):
+            os.close(descriptor)
+            raise SandboxError("sandbox file changed during no-follow open")
+
+    try:
+        path_info = os.fstat(descriptor)
+        if not stat.S_ISREG(path_info.st_mode):
+            raise SandboxError("sandbox path must be a regular file")
+        if path_info.st_size > max_bytes:
+            raise _SandboxFileTooLarge(str(path))
+        chunks: list[bytes] = []
+        total = 0
+        while total <= max_bytes:
+            chunk = os.read(descriptor, min(65_536, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if total > max_bytes:
+            raise _SandboxFileTooLarge(str(path))
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _workspace_fingerprint(root: Path) -> str:
+    """Return a bounded content fingerprint while rejecting unsafe tree entries."""
+
+    _require_real_directory(root, label="repository workspace")
+    digest = hashlib.sha256()
+    directories = [root]
+    file_count = 0
+    total_bytes = 0
+    while directories:
+        directory = directories.pop()
+        entries = sorted(_directory_entries_no_follow(root, directory), key=lambda item: item[0])
+        for name, path_info in entries:
+            path = directory / name
+            relative = path.relative_to(root).as_posix()
+            if _stat_is_link_or_reparse(path_info):
+                raise SandboxError(
+                    "sandbox source workspace contains a symlink or reparse point: "
+                    f"{relative}"
+                )
+            if stat.S_ISDIR(path_info.st_mode):
+                directories.append(path)
+                digest.update(b"D\0" + relative.encode("utf-8") + b"\0")
+                continue
+            if not stat.S_ISREG(path_info.st_mode):
+                raise SandboxError(
+                    "sandbox source workspace contains a special file: "
+                    f"{relative}"
+                )
+            file_count += 1
+            total_bytes += path_info.st_size
+            if file_count > MAX_SANDBOX_WORKSPACE_FILES:
+                raise SandboxError("sandbox workspace file count exceeded its safety limit")
+            if total_bytes > MAX_SANDBOX_WORKSPACE_BYTES:
+                raise SandboxError("sandbox workspace byte size exceeded its safety limit")
+            digest.update(b"F\0" + relative.encode("utf-8") + b"\0")
+            digest.update(str(path_info.st_size).encode("ascii") + b"\0")
+            _update_digest_from_file_no_follow(
+                digest,
+                root,
+                path,
+                expected=path_info,
+                max_bytes=MAX_SANDBOX_WORKSPACE_BYTES - total_bytes + path_info.st_size,
+            )
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _file_content_digest_no_follow(
+    root: Path,
+    path: Path,
+    *,
+    expected: os.stat_result,
+    max_bytes: int,
+) -> str:
+    digest = hashlib.sha256()
+    _update_digest_from_file_no_follow(
+        digest,
+        root,
+        path,
+        expected=expected,
+        max_bytes=max_bytes,
+    )
+    return digest.hexdigest()
+
+
+def _update_digest_from_file_no_follow(
+    digest: object,
+    root: Path,
+    path: Path,
+    *,
+    expected: os.stat_result,
+    max_bytes: int,
+) -> None:
+    relative = _relative_path_no_resolve(root, path)
+    if not relative.parts or max_bytes <= 0:
+        raise SandboxError("sandbox fingerprint path or limit is invalid")
+    if _supports_secure_directory_fds():
+        parent_descriptor = _open_directory_no_follow(root, relative.parent)
+        try:
+            descriptor = os.open(
+                relative.name,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        finally:
+            os.close(parent_descriptor)
+    else:
+        before_path = _guard_existing_path(root, path, expected="file")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        after_path = _guard_existing_path(root, path, expected="file")
+        if not _same_file_identity(before_path, opened) or not _same_file_identity(
+            opened,
+            after_path,
+        ):
+            os.close(descriptor)
+            raise SandboxError("sandbox file changed during fingerprint open")
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not _same_file_identity(expected, before)
+            or before.st_size != expected.st_size
+            or before.st_size > max_bytes
+        ):
+            raise SandboxError("sandbox file changed before fingerprinting")
+        update = getattr(digest, "update")
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                raise SandboxError("sandbox file changed during fingerprinting")
+            update(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise SandboxError("sandbox file grew during fingerprinting")
+        after = os.fstat(descriptor)
+        if (
+            after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns
+        ):
+            raise SandboxError("sandbox file changed during fingerprinting")
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _ephemeral_working_copy(
+    source: Path,
+    source_fingerprint: str,
+) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="hallu-sandbox-run-") as temp_dir:
+        working_copy = Path(temp_dir) / "workspace"
+        try:
+            shutil.copytree(source, working_copy, symlinks=True)
+        except (OSError, shutil.Error) as exc:
+            raise SandboxError("sandbox source snapshot could not be created") from exc
+        if _workspace_fingerprint(source) != source_fingerprint:
+            raise SandboxError("source workspace changed while creating its sandbox snapshot")
+        if _workspace_fingerprint(working_copy) != source_fingerprint:
+            raise SandboxError("sandbox working copy does not match the source snapshot")
+        _make_ephemeral_copy_writable(working_copy)
+        yield working_copy
+
+
+def _make_ephemeral_copy_writable(root: Path) -> None:
+    """Allow the fixed container UID to mutate only the hidden temporary copy."""
+
+    for current, directories, files in os.walk(root, topdown=False, followlinks=False):
+        for name in files:
+            path = Path(current) / name
+            path.chmod(stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) | 0o666)
+        for name in directories:
+            path = Path(current) / name
+            path.chmod(stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) | 0o777)
+    root.chmod(stat.S_IMODE(root.stat().st_mode) | 0o777)
+
+
+def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    first_inode = (getattr(first, "st_dev", 0), getattr(first, "st_ino", 0))
+    second_inode = (getattr(second, "st_dev", 0), getattr(second, "st_ino", 0))
+    if first_inode != (0, 0) and second_inode != (0, 0):
+        return first_inode == second_inode
+    return (
+        stat.S_IFMT(first.st_mode) == stat.S_IFMT(second.st_mode)
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+    )
 
 
 class _PythonSymbolVisitor(ast.NodeVisitor):

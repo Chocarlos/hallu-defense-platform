@@ -9,6 +9,12 @@ from uuid import uuid4
 
 from hallu_defense.services.audit import AuditLedger
 from hallu_defense.services.postgres import SqlConnectionProvider
+from hallu_defense.services.rag_index import PersistentRagDeletionBackend
+from hallu_defense.services.rag_lifecycle import (
+    RagLifecycleCoordinator,
+    RagLifecycleCoordinatorError,
+    RagLifecycleOperation,
+)
 
 ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_POLICY_PATH = ROOT / "infra" / "security" / "backup-retention-policy.json"
@@ -180,14 +186,24 @@ POSTGRES_LIFECYCLE_TABLES: tuple[LifecycleTable, ...] = (
     LifecycleTable("audit_runs", "verification_runs", "created_at"),
     LifecycleTable("approval_execution_grants", "approval_records", "created_at"),
     LifecycleTable("approval_records", "approval_records", "created_at"),
-    LifecycleTable("rag_corpus_grants", "approval_records", "inserted_at"),
+    LifecycleTable(
+        "rag_corpus_grants",
+        "approval_records",
+        "inserted_at",
+        "EXISTS ("
+        "SELECT 1 FROM rag_corpus_grants AS newer "
+        "WHERE newer.tenant_id = rag_corpus_grants.tenant_id "
+        "AND newer.corpus_id = rag_corpus_grants.corpus_id "
+        "AND newer.version > rag_corpus_grants.version"
+        ")",
+    ),
     LifecycleTable("rag_evidence_chunks", "evidence_indexes", "updated_at"),
     LifecycleTable("eval_reports", "eval_reports", "published_at"),
     LifecycleTable(
         "rag_ingestion_jobs",
         "short_lived_cache",
         "updated_at",
-        "status IN ('succeeded', 'failed', 'dead')",
+        "status IN ('succeeded', 'dead')",
     ),
 )
 
@@ -198,13 +214,27 @@ class DataLifecycleService:
         *,
         connection: SqlConnectionProvider,
         audit: AuditLedger,
+        transactional_audit_factory: Callable[[SqlConnectionProvider], AuditLedger],
         policy: DataLifecyclePolicy,
+        rag_index_backend: str,
+        rag_deletion_backend: PersistentRagDeletionBackend | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._connection = connection
         self._audit = audit
+        self._transactional_audit_factory = transactional_audit_factory
         self._policy = policy
+        self._rag_index_backend = rag_index_backend.strip().lower()
         self._clock = clock
+        self._rag_lifecycle = (
+            RagLifecycleCoordinator(
+                connection=connection,
+                deletion_backend=rag_deletion_backend,
+                clock=clock,
+            )
+            if rag_deletion_backend is not None
+            else None
+        )
 
     def execute_retention(
         self,
@@ -215,11 +245,89 @@ class DataLifecycleService:
     ) -> RetentionExecutionReport:
         executed_at = self._now()
         run_id = f"ret_{uuid4().hex}"
+        if dry_run:
+            return self._execute_retention(
+                connection=self._connection,
+                audit=self._audit,
+                executed_at=executed_at,
+                run_id=run_id,
+                dry_run=True,
+                actor_id=actor_id,
+                trace_id=trace_id,
+            )
+        coordinator = self._coordinated_persistent_rag_deletion()
+        if coordinator is None:
+            with self._connection.transaction() as transaction:
+                return self._execute_retention(
+                    connection=transaction,
+                    audit=self._transactional_audit_factory(transaction),
+                    executed_at=executed_at,
+                    run_id=run_id,
+                    dry_run=False,
+                    actor_id=actor_id,
+                    trace_id=trace_id,
+                )
+        try:
+            operation = coordinator.begin_retention(
+                operation_id=run_id,
+                executed_at=executed_at,
+                evidence_cutoff=(
+                    executed_at
+                    - timedelta(days=self._policy.days_for("evidence_indexes"))
+                ),
+                actor_id=actor_id,
+                trace_id=trace_id or run_id,
+            )
+        except RagLifecycleCoordinatorError:
+            raise DataLifecycleError(
+                "Coordinated persistent RAG retention could not acquire its journal lease."
+            ) from None
+        try:
+            with self._connection.transaction() as transaction:
+                coordinator.acquire_target_locks(transaction, operation)
+                operation = coordinator.delete_external(transaction, operation)
+                report = self._execute_retention(
+                    connection=transaction,
+                    audit=self._transactional_audit_factory(transaction),
+                    executed_at=operation.executed_at,
+                    run_id=operation.operation_id,
+                    dry_run=False,
+                    actor_id=operation.actor_id,
+                    trace_id=operation.trace_id,
+                    rag_operation=operation,
+                )
+                coordinator.mark_completed(transaction, operation)
+            return report
+        except Exception as exc:
+            coordinator.release_after_failure(operation, exc)
+            if isinstance(exc, DataLifecycleError):
+                raise
+            raise DataLifecycleError(
+                "Coordinated persistent RAG retention failed without a success audit."
+            ) from None
+
+    def _execute_retention(
+        self,
+        *,
+        connection: SqlConnectionProvider,
+        audit: AuditLedger,
+        executed_at: datetime,
+        run_id: str,
+        dry_run: bool,
+        actor_id: str,
+        trace_id: str | None,
+        rag_operation: RagLifecycleOperation | None = None,
+    ) -> RetentionExecutionReport:
         table_results: list[TableDeletionResult] = []
         for table in POSTGRES_LIFECYCLE_TABLES:
             retention_days = self._policy.days_for(table.retention_class)
             cutoff = executed_at - timedelta(days=retention_days)
-            affected_count = self._count_or_delete_by_cutoff(table, cutoff, dry_run=dry_run)
+            affected_count = self._count_or_delete_by_cutoff(
+                connection,
+                table,
+                cutoff,
+                dry_run=dry_run,
+            )
             table_results.append(
                 TableDeletionResult(
                     table=table.name,
@@ -230,7 +338,7 @@ class DataLifecycleService:
                 )
             )
 
-        event = self._audit.append_event(
+        event = audit.append_event(
             trace_id=trace_id or run_id,
             tenant_id=SYSTEM_TENANT_ID,
             event_type=RETENTION_EXECUTION_EVENT,
@@ -244,6 +352,7 @@ class DataLifecycleService:
                 "run_id": run_id,
                 "total_affected": sum(result.affected_count for result in table_results),
                 "tables": [_table_result_json(result) for result in table_results],
+                **_rag_operation_metadata(rag_operation),
             },
         )
         return RetentionExecutionReport(
@@ -265,9 +374,85 @@ class DataLifecycleService:
         normalized_tenant = _validate_tenant_id(tenant_id)
         executed_at = self._now()
         run_id = f"tdel_{uuid4().hex}"
+        if dry_run:
+            return self._delete_tenant_data(
+                connection=self._connection,
+                audit=self._audit,
+                normalized_tenant=normalized_tenant,
+                executed_at=executed_at,
+                run_id=run_id,
+                dry_run=True,
+                actor_id=actor_id,
+                trace_id=trace_id,
+            )
+        coordinator = self._coordinated_persistent_rag_deletion()
+        if coordinator is None:
+            with self._connection.transaction() as transaction:
+                return self._delete_tenant_data(
+                    connection=transaction,
+                    audit=self._transactional_audit_factory(transaction),
+                    normalized_tenant=normalized_tenant,
+                    executed_at=executed_at,
+                    run_id=run_id,
+                    dry_run=False,
+                    actor_id=actor_id,
+                    trace_id=trace_id,
+                )
+        try:
+            operation = coordinator.begin_tenant_deletion(
+                operation_id=run_id,
+                tenant_id=normalized_tenant,
+                executed_at=executed_at,
+                actor_id=actor_id,
+                trace_id=trace_id or run_id,
+            )
+        except RagLifecycleCoordinatorError:
+            raise DataLifecycleError(
+                "Coordinated persistent RAG tenant deletion could not acquire its journal lease."
+            ) from None
+        try:
+            with self._connection.transaction() as transaction:
+                coordinator.acquire_target_locks(transaction, operation)
+                operation = coordinator.delete_external(transaction, operation)
+                coordinator.record_tenant_deletion_fence(transaction, operation)
+                report = self._delete_tenant_data(
+                    connection=transaction,
+                    audit=self._transactional_audit_factory(transaction),
+                    normalized_tenant=normalized_tenant,
+                    executed_at=operation.executed_at,
+                    run_id=operation.operation_id,
+                    dry_run=False,
+                    actor_id=operation.actor_id,
+                    trace_id=operation.trace_id,
+                    rag_operation=operation,
+                )
+                coordinator.mark_completed(transaction, operation)
+            return report
+        except Exception as exc:
+            coordinator.release_after_failure(operation, exc)
+            if isinstance(exc, DataLifecycleError):
+                raise
+            raise DataLifecycleError(
+                "Coordinated persistent RAG tenant deletion failed without a success audit."
+            ) from None
+
+    def _delete_tenant_data(
+        self,
+        *,
+        connection: SqlConnectionProvider,
+        audit: AuditLedger,
+        normalized_tenant: str,
+        executed_at: datetime,
+        run_id: str,
+        dry_run: bool,
+        actor_id: str,
+        trace_id: str | None,
+        rag_operation: RagLifecycleOperation | None = None,
+    ) -> TenantDeletionReport:
         table_results: list[TableDeletionResult] = []
         for table in POSTGRES_LIFECYCLE_TABLES:
             affected_count = self._count_or_delete_by_tenant(
+                connection,
                 table.name,
                 normalized_tenant,
                 dry_run=dry_run,
@@ -282,9 +467,9 @@ class DataLifecycleService:
                 )
             )
 
-        event = self._audit.append_event(
+        event = audit.append_event(
             trace_id=trace_id or run_id,
-            tenant_id=normalized_tenant,
+            tenant_id=SYSTEM_TENANT_ID,
             event_type=TENANT_DATA_DELETION_EVENT,
             method="POST",
             path="/internal/data-lifecycle/delete-tenant",
@@ -294,9 +479,10 @@ class DataLifecycleService:
                 "actor_id": actor_id,
                 "dry_run": dry_run,
                 "run_id": run_id,
-                "tenant_id": normalized_tenant,
+                "deleted_tenant_id": normalized_tenant,
                 "total_affected": sum(result.affected_count for result in table_results),
                 "tables": [_table_result_json(result) for result in table_results],
+                **_rag_operation_metadata(rag_operation),
             },
         )
         return TenantDeletionReport(
@@ -308,8 +494,27 @@ class DataLifecycleService:
             audit_event_id=event.event_id,
         )
 
+    def _coordinated_persistent_rag_deletion(
+        self,
+    ) -> RagLifecycleCoordinator | None:
+        if self._rag_index_backend == "opensearch":
+            raise DataLifecycleError(
+                "Non-dry lifecycle mutation is blocked for OpenSearch-only RAG because "
+                "there is no authoritative PostgreSQL parity catalog from which to "
+                "enumerate every external evidence ID. Use the hybrid backend."
+            )
+        if self._rag_index_backend != "hybrid":
+            return None
+        if self._rag_lifecycle is None:
+            raise DataLifecycleError(
+                "Non-dry lifecycle mutation is blocked for hybrid/OpenSearch RAG without "
+                "the coordinated cross-store deletion journal and parity backend."
+            )
+        return self._rag_lifecycle
+
     def _count_or_delete_by_cutoff(
         self,
+        connection: SqlConnectionProvider,
         table: LifecycleTable,
         cutoff: datetime,
         *,
@@ -319,12 +524,12 @@ class DataLifecycleService:
         if table.retention_where_sql is not None:
             where = f"{where} AND {table.retention_where_sql}"
         if dry_run:
-            rows = self._connection.fetch_all(
+            rows = connection.fetch_all(
                 f"SELECT count(*) AS affected_count FROM {table.name} WHERE {where}",
                 (cutoff,),
             )
         else:
-            rows = self._connection.execute_returning(
+            rows = connection.execute_returning(
                 f"WITH deleted AS (DELETE FROM {table.name} WHERE {where} RETURNING 1) "
                 "SELECT count(*) AS affected_count FROM deleted",
                 (cutoff,),
@@ -333,18 +538,19 @@ class DataLifecycleService:
 
     def _count_or_delete_by_tenant(
         self,
+        connection: SqlConnectionProvider,
         table_name: str,
         tenant_id: str,
         *,
         dry_run: bool,
     ) -> int:
         if dry_run:
-            rows = self._connection.fetch_all(
+            rows = connection.fetch_all(
                 f"SELECT count(*) AS affected_count FROM {table_name} WHERE tenant_id = %s",
                 (tenant_id,),
             )
         else:
-            rows = self._connection.execute_returning(
+            rows = connection.execute_returning(
                 f"WITH deleted AS (DELETE FROM {table_name} WHERE tenant_id = %s RETURNING 1) "
                 "SELECT count(*) AS affected_count FROM deleted",
                 (tenant_id,),
@@ -369,6 +575,21 @@ def _table_result_json(result: TableDeletionResult) -> dict[str, object]:
         "cutoff": result.cutoff.isoformat() if result.cutoff is not None else None,
         "affected_count": result.affected_count,
         "dry_run": result.dry_run,
+    }
+
+
+def _rag_operation_metadata(
+    operation: RagLifecycleOperation | None,
+) -> dict[str, object]:
+    if operation is None:
+        return {}
+    return {
+        "rag_lifecycle_operation_id": operation.operation_id,
+        "rag_external_deleted_count": operation.external_deleted_count,
+        "rag_external_parity_verified": True,
+        "rag_tenant_deletion_fence_committed": (
+            operation.operation_kind == "tenant_deletion"
+        ),
     }
 
 
@@ -401,6 +622,8 @@ def _validate_tenant_id(tenant_id: str) -> str:
         raise DataLifecycleError("tenant_id must be non-empty.")
     if len(normalized) > 256:
         raise DataLifecycleError("tenant_id is too long.")
+    if normalized == SYSTEM_TENANT_ID:
+        raise DataLifecycleError("The reserved system tenant cannot be deleted.")
     return normalized
 
 

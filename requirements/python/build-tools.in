@@ -1,0 +1,7 @@
+# Bootstrap/build tooling. Every entry is intentionally exact; compile with
+# scripts/ci/compile_python_locks.py inside the pinned Python 3.12.13 image.
+build==1.5.1
+pip==26.1.2
+pip-tools==7.5.3
+setuptools==83.0.0
+wheel==0.47.0

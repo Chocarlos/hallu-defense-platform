@@ -8,6 +8,7 @@ OPA_ROOT = ROOT / "infra" / "opa"
 POLICY_FILE = OPA_ROOT / "policies" / "access_risk_approval.rego"
 TEST_FILE = OPA_ROOT / "tests" / "access_risk_approval_test.rego"
 PACKAGE_RE = re.compile(r"(?m)^package\s+hallucination_defense\.policy\s*$")
+REGO_V1_IMPORT_RE = re.compile(r"(?m)^import\s+rego\.v1\s*$")
 
 EXPECTED_POLICY_IDENTIFIERS = (
     "decision",
@@ -55,6 +56,13 @@ def require_package(path: Path, text: str) -> None:
         )
 
 
+def require_rego_v1(path: Path, text: str) -> None:
+    if not REGO_V1_IMPORT_RE.search(text):
+        raise SystemExit(
+            f"{path.relative_to(ROOT)} must import rego.v1 for OPA 1.x compatibility"
+        )
+
+
 def require_identifiers(path: Path, text: str, identifiers: tuple[str, ...]) -> None:
     missing = [
         identifier
@@ -74,6 +82,8 @@ def main() -> None:
 
     require_package(POLICY_FILE, policy_text)
     require_package(TEST_FILE, test_text)
+    require_rego_v1(POLICY_FILE, policy_text)
+    require_rego_v1(TEST_FILE, test_text)
     require_identifiers(POLICY_FILE, policy_text, EXPECTED_POLICY_IDENTIFIERS)
     require_identifiers(TEST_FILE, test_text, EXPECTED_TEST_IDENTIFIERS)
 

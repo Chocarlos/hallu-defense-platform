@@ -1,0 +1,140 @@
+{{- if and .Values.kindDependencies.enabled .Values.kindDependencies.vault.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-vault-config
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault
+data:
+  vault.hcl: |
+    api_addr = "https://{{ include "hallu-defense.fullname" . }}-vault:8200"
+    disable_mlock = true
+    ui = false
+
+    listener "tcp" {
+      address = "0.0.0.0:8200"
+      tls_disable = 0
+      tls_cert_file = "/vault/tls/tls.crt"
+      tls_key_file = "/vault/tls/tls.key"
+      tls_min_version = "tls12"
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-vault
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault
+spec:
+  ports:
+    - name: https
+      port: 8200
+      targetPort: https
+  selector:
+    app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: vault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-vault
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: vault
+  template:
+    metadata:
+      labels:
+        {{- include "hallu-defense.labels" . | nindent 8 }}
+        app.kubernetes.io/component: vault
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vault
+          image: {{ .Values.kindDependencies.vault.image | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - vault
+          args:
+            - server
+            - -dev
+            - -dev-no-store-token
+            # Keep Vault's implicit plaintext dev listener loopback-only and
+            # off port 8200; the Service exposes only the configured TLS listener.
+            - -dev-listen-address=127.0.0.1:18200
+            - -dev-root-token-id=$(VAULT_DEV_ROOT_TOKEN_ID)
+            - -config=/vault/config/vault.hcl
+          env:
+            - name: VAULT_DEV_ROOT_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "secrets.kindVault.name is required" .Values.secrets.kindVault.name }}
+                  key: root-token
+          ports:
+            - name: https
+              containerPort: 8200
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /v1/sys/health
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /v1/sys/health
+              port: https
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.kindDependencies.vault.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /vault/config
+              readOnly: true
+            - name: tls
+              mountPath: /vault/tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "hallu-defense.fullname" . }}-vault-config
+        - name: tls
+          secret:
+            secretName: {{ required "secrets.kindVault.name is required" .Values.secrets.kindVault.name }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
+{{- end }}

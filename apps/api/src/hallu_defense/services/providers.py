@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import ssl
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 from urllib import error, request
 
 from hallu_defense.config import Settings
+from hallu_defense.outbound_http import (
+    OutboundHttpPolicy,
+    OutboundHttpPolicyError,
+    OutboundHttpRedirectError,
+    open_url_no_redirect,
+    outbound_http_policy_from_settings,
+)
 from hallu_defense.services.secrets import (
     LOCAL_SECRET_BACKEND_ENVIRONMENTS,
     SecretAccessError,
@@ -15,9 +23,14 @@ from hallu_defense.services.secrets import (
 )
 
 ProviderRole = Literal["system", "user", "assistant", "tool"]
+MAX_PROVIDER_HTTP_RESPONSE_BYTES = 1024 * 1024
 
 
 class ProviderConfigurationError(RuntimeError):
+    pass
+
+
+class ProviderCredentialError(ProviderConfigurationError):
     pass
 
 
@@ -26,6 +39,10 @@ class ProviderRequestError(RuntimeError):
 
 
 class ProviderResponseError(RuntimeError):
+    pass
+
+
+class ProviderResponseTooLargeError(ProviderResponseError):
     pass
 
 
@@ -69,6 +86,15 @@ class JsonTransport(Protocol):
 
 
 class UrllibJsonTransport:
+    def __init__(
+        self,
+        *,
+        policy: OutboundHttpPolicy | None = None,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
+        self._policy = policy or OutboundHttpPolicy.local_unrestricted()
+        self._ssl_context = ssl_context
+
     def post_json(
         self,
         url: str,
@@ -77,6 +103,12 @@ class UrllibJsonTransport:
         payload: Mapping[str, object],
         timeout_seconds: float,
     ) -> Mapping[str, object]:
+        try:
+            self._policy.validate_url(url)
+        except OutboundHttpPolicyError:
+            raise ProviderRequestError(
+                "Provider endpoint is blocked by outbound policy."
+            ) from None
         encoded = json.dumps(payload).encode("utf-8")
         provider_request = request.Request(
             url,
@@ -85,14 +117,38 @@ class UrllibJsonTransport:
             method="POST",
         )
         try:
-            with request.urlopen(provider_request, timeout=timeout_seconds) as response:
-                body = response.read()
+            with open_url_no_redirect(
+                provider_request,
+                timeout=timeout_seconds,
+                context=self._ssl_context,
+            ) as response:
+                body = response.read(MAX_PROVIDER_HTTP_RESPONSE_BYTES + 1)
+        except OutboundHttpRedirectError:
+            raise ProviderRequestError("Provider redirects are not allowed.") from None
         except error.HTTPError as exc:
-            raise ProviderRequestError(f"Provider request failed with HTTP status {exc.code}.") from exc
-        except error.URLError as exc:
-            raise ProviderRequestError("Provider request failed.") from exc
+            status_code = exc.code
+            try:
+                exc.close()
+            finally:
+                raise ProviderRequestError(
+                    f"Provider request failed with HTTP status {status_code}."
+                ) from None
+        except error.URLError:
+            raise ProviderRequestError("Provider request failed.") from None
+        except (TimeoutError, OSError):
+            raise ProviderRequestError("Provider request failed.") from None
 
-        parsed = json.loads(body.decode("utf-8"))
+        if len(body) > MAX_PROVIDER_HTTP_RESPONSE_BYTES:
+            raise ProviderResponseTooLargeError(
+                "Provider response exceeded the 1 MiB safety limit."
+            )
+
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ProviderResponseError(
+                "Provider response was not valid UTF-8 JSON."
+            ) from None
         if not isinstance(parsed, Mapping):
             raise ProviderResponseError("Provider response must be a JSON object.")
         return parsed
@@ -129,6 +185,7 @@ class OpenAICompatibleProvider:
         secret_manager: SecretManager,
         timeout_seconds: int,
         transport: JsonTransport | None = None,
+        outbound_policy: OutboundHttpPolicy | None = None,
     ) -> None:
         if not base_url:
             raise ProviderConfigurationError("OpenAI-compatible base URL must be configured.")
@@ -137,11 +194,18 @@ class OpenAICompatibleProvider:
         if timeout_seconds <= 0:
             raise ProviderConfigurationError("Provider timeout must be greater than zero seconds.")
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        effective_policy = outbound_policy or OutboundHttpPolicy.local_unrestricted()
+        try:
+            effective_policy.validate_url(self._endpoint)
+        except OutboundHttpPolicyError:
+            raise ProviderConfigurationError(
+                "OpenAI-compatible endpoint is blocked by outbound policy."
+            ) from None
         self._model = model
         self._credential_secret_name = credential_secret_name
         self._secret_manager = secret_manager
         self._timeout_seconds = timeout_seconds
-        self._transport = transport or UrllibJsonTransport()
+        self._transport = transport or UrllibJsonTransport(policy=effective_policy)
 
     def complete(self, provider_request: ProviderRequest) -> ProviderResponse:
         _validate_provider_request(provider_request)
@@ -171,8 +235,10 @@ class OpenAICompatibleProvider:
     def _read_credential(self) -> str:
         try:
             return self._secret_manager.get_secret(self._credential_secret_name).reveal()
-        except (SecretAccessError, SecretNotFoundError) as exc:
-            raise ProviderConfigurationError("OpenAI-compatible provider credential is unavailable.") from exc
+        except (SecretAccessError, SecretNotFoundError):
+            raise ProviderCredentialError(
+                "OpenAI-compatible provider credential is unavailable."
+            ) from None
 
 
 class OllamaProvider:
@@ -185,6 +251,7 @@ class OllamaProvider:
         model: str,
         timeout_seconds: int,
         transport: JsonTransport | None = None,
+        outbound_policy: OutboundHttpPolicy | None = None,
     ) -> None:
         if not base_url:
             raise ProviderConfigurationError("Ollama base URL must be configured.")
@@ -193,9 +260,16 @@ class OllamaProvider:
         if timeout_seconds <= 0:
             raise ProviderConfigurationError("Provider timeout must be greater than zero seconds.")
         self._endpoint = f"{base_url.rstrip('/')}/api/chat"
+        effective_policy = outbound_policy or OutboundHttpPolicy.local_unrestricted()
+        try:
+            effective_policy.validate_url(self._endpoint)
+        except OutboundHttpPolicyError:
+            raise ProviderConfigurationError(
+                "Ollama endpoint is blocked by outbound policy."
+            ) from None
         self._model = model
         self._timeout_seconds = timeout_seconds
-        self._transport = transport or UrllibJsonTransport()
+        self._transport = transport or UrllibJsonTransport(policy=effective_policy)
 
     def complete(self, provider_request: ProviderRequest) -> ProviderResponse:
         _validate_provider_request(provider_request)
@@ -238,6 +312,12 @@ def create_model_provider(
         )
 
     if backend in {"openai", "openai-compatible"}:
+        try:
+            outbound_policy = outbound_http_policy_from_settings(settings)
+        except OutboundHttpPolicyError:
+            raise ProviderConfigurationError(
+                "Provider outbound policy is invalid."
+            ) from None
         return OpenAICompatibleProvider(
             base_url=settings.openai_compatible_base_url,
             model=settings.provider_model,
@@ -245,14 +325,22 @@ def create_model_provider(
             secret_manager=secret_manager,
             timeout_seconds=settings.provider_timeout_seconds,
             transport=transport,
+            outbound_policy=outbound_policy,
         )
 
     if backend == "ollama":
+        try:
+            outbound_policy = outbound_http_policy_from_settings(settings)
+        except OutboundHttpPolicyError:
+            raise ProviderConfigurationError(
+                "Provider outbound policy is invalid."
+            ) from None
         return OllamaProvider(
             base_url=settings.ollama_base_url,
             model=settings.provider_model,
             timeout_seconds=settings.provider_timeout_seconds,
             transport=transport,
+            outbound_policy=outbound_policy,
         )
 
     raise ProviderConfigurationError(f"Unsupported provider backend {settings.provider_backend!r}.")

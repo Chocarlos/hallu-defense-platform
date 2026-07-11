@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -183,6 +184,125 @@ def test_oidc_jwks_resolver_refreshes_after_cache_ttl() -> None:
     assert calls == ["https://issuer.example/jwks.json", "https://issuer.example/jwks.json"]
 
 
+def test_oidc_unknown_kid_refresh_is_single_flight_and_globally_cooled_down() -> None:
+    calls: list[str] = []
+    settings = _settings(
+        jwks_path=None,
+        oidc_jwks_url="https://issuer.example/jwks.json",
+        oidc_jwks_cache_ttl_seconds=60,
+    )
+
+    def fetch_json(url: str, timeout_seconds: int) -> dict[str, object]:
+        del timeout_seconds
+        calls.append(url)
+        return _jwks()
+
+    resolver = OidcJwksResolver(settings, fetch_json=fetch_json, clock=lambda: 1000.0)
+    resolver.resolve()
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(
+            executor.map(
+                resolver.resolve_unknown_kid,
+                [f"attacker-kid-{index}" for index in range(64)],
+            )
+        )
+
+    assert all(result == _jwks() for result in results)
+    assert calls == [
+        "https://issuer.example/jwks.json",
+        "https://issuer.example/jwks.json",
+    ]
+
+
+def test_oidc_unknown_kids_do_not_amplify_failed_forced_refresh() -> None:
+    calls = 0
+    fail = False
+    settings = _settings(
+        jwks_path=None,
+        oidc_jwks_url="https://issuer.example/jwks.json",
+        oidc_jwks_cache_ttl_seconds=60,
+    )
+
+    def fetch_json(_url: str, _timeout_seconds: int) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if fail:
+            raise OidcJwtValidationError("simulated JWKS outage")
+        return _jwks()
+
+    resolver = OidcJwksResolver(settings, fetch_json=fetch_json, clock=lambda: 1000.0)
+    resolver.resolve()
+    fail = True
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(
+            executor.map(
+                resolver.resolve_unknown_kid,
+                [f"outage-kid-{index}" for index in range(64)],
+            )
+        )
+
+    assert all(result == _jwks() for result in results)
+    assert calls == 2
+    assert len(resolver._negative_kids) == 64
+
+
+def test_oidc_legitimate_rotation_refreshes_after_unknown_kid_cooldown() -> None:
+    now = 1000.0
+    active_kid = "old-key"
+    calls = 0
+    settings = _settings(
+        jwks_path=None,
+        oidc_jwks_url="https://issuer.example/jwks.json",
+        oidc_jwks_cache_ttl_seconds=60,
+    )
+
+    def fetch_json(url: str, timeout_seconds: int) -> dict[str, object]:
+        nonlocal calls
+        del url, timeout_seconds
+        calls += 1
+        payload = _jwks()
+        keys = payload["keys"]
+        assert isinstance(keys, list)
+        keys[0] = {**keys[0], "kid": active_kid}
+        return payload
+
+    resolver = OidcJwksResolver(settings, fetch_json=fetch_json, clock=lambda: now)
+    resolver.resolve()
+    resolver.resolve_unknown_kid("rotated-key")
+    active_kid = "rotated-key"
+    now = 1004.0
+    assert not any(
+        key.get("kid") == "rotated-key"
+        for key in resolver.resolve_unknown_kid("rotated-key")["keys"]
+    )
+    now = 1006.0
+
+    rotated = resolver.resolve_unknown_kid("rotated-key")
+
+    assert any(key.get("kid") == "rotated-key" for key in rotated["keys"])
+    assert calls == 3
+
+
+def test_oidc_negative_kid_cache_is_bounded() -> None:
+    settings = _settings(
+        jwks_path=None,
+        oidc_jwks_url="https://issuer.example/jwks.json",
+    )
+    resolver = OidcJwksResolver(
+        settings,
+        fetch_json=lambda _url, _timeout: _jwks(),
+        clock=lambda: 1000.0,
+    )
+    resolver.resolve()
+
+    for index in range(400):
+        resolver.resolve_unknown_kid(f"random-kid-{index}")
+
+    assert len(resolver._negative_kids) == 256
+
+
 def test_oidc_jwks_resolver_discovers_jwks_uri() -> None:
     calls: list[str] = []
     settings = _settings(
@@ -208,6 +328,30 @@ def test_oidc_jwks_resolver_discovers_jwks_uri() -> None:
     ]
 
 
+def test_oidc_jwks_resolver_rejects_plaintext_discovered_jwks_in_production() -> None:
+    settings = _settings(
+        jwks_path=None,
+        environment="production",
+        oidc_discovery_url="https://issuer.example/.well-known/openid-configuration",
+        outbound_https_allowed_origins=(
+            "https://issuer.example",
+            "https://jwks.internal",
+        ),
+    )
+
+    def fetch_json(url: str, timeout_seconds: int) -> dict[str, object]:
+        assert url.startswith("https://")
+        return {
+            "issuer": "https://issuer.example",
+            "jwks_uri": "http://jwks.internal/keys.json",
+        }
+
+    resolver = OidcJwksResolver(settings, fetch_json=fetch_json)
+
+    with pytest.raises(OidcJwtValidationError, match="HTTPS"):
+        resolver.resolve()
+
+
 def test_oidc_request_context_refreshes_jwks_on_unknown_kid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -224,12 +368,14 @@ def test_oidc_request_context_refreshes_jwks_on_unknown_kid(
     )
 
     assert context.principal.subject_id == "user-1"
-    assert resolver.force_refresh_calls == [False, True]
+    assert resolver.force_refresh_calls == [False]
+    assert resolver.unknown_kids == ["unit-key"]
 
 
 class _RotatingResolver:
     def __init__(self) -> None:
         self.force_refresh_calls: list[bool] = []
+        self.unknown_kids: list[str] = []
 
     def resolve(self, *, force_refresh: bool = False) -> dict[str, object]:
         self.force_refresh_calls.append(force_refresh)
@@ -242,6 +388,10 @@ class _RotatingResolver:
         stale_key["kid"] = "stale-key"
         stale["keys"] = [stale_key]
         return stale
+
+    def resolve_unknown_kid(self, kid: str) -> dict[str, object]:
+        self.unknown_kids.append(kid)
+        return _jwks()
 
 
 def _request() -> Request:

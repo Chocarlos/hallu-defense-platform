@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "clm_0001",
+  "status": "SUPPORTED",
+  "confidence": 0.95,
+  "evidence_ids": ["ev_0001"],
+  "action": "allow_with_citation",
+  "reason": "Legacy vocabulary is not valid in v2.",
+  "validator_trace": {}
+}

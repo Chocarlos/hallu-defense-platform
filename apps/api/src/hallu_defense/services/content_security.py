@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -77,6 +79,42 @@ class ContentSecurityScanner:
                 ("indirect_prompt_injection", self._INDIRECT_PROMPT_INJECTION_RULES),
                 ("data_poisoning", self._DATA_POISONING_RULES),
             ),
+        )
+
+    def scan_tool_payload(
+        self,
+        payload: Mapping[str, object],
+        *,
+        source_ref: str,
+        pre_tool: bool,
+    ) -> list[ContentThreat]:
+        """Scan an untrusted tool payload without persisting or logging it."""
+        try:
+            text = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            text = ""
+        rule_list: list[
+            tuple[ThreatType, tuple[tuple[str, re.Pattern[str]], ...]]
+        ] = []
+        if pre_tool:
+            rule_list.append(("prompt_injection", self._DIRECT_PROMPT_INJECTION_RULES))
+        rule_list.extend(
+            [
+                ("indirect_prompt_injection", self._INDIRECT_PROMPT_INJECTION_RULES),
+                ("data_poisoning", self._DATA_POISONING_RULES),
+            ]
+        )
+        rules = tuple(rule_list)
+        return self._scan(
+            text,
+            source_kind="user_message" if pre_tool else "tool_output",
+            source_ref=source_ref,
+            rules=rules,
         )
 
     def mark_evidence(self, evidence: Evidence) -> Evidence:

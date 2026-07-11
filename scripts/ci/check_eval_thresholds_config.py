@@ -40,6 +40,7 @@ REQUIRED_MIN_FLOORS: dict[str, dict[str, float]] = {
         "tool_contradiction_guard_rate": 1.0,
         "repo_false_claim_block_rate": 1.0,
         "repo_semantic_claim_decision_accuracy": 1.0,
+        "blocking_precision": 0.92,
         "sandbox_block_rate": 1.0,
         CATEGORY_FLOOR_KEY: 1.0,
     },

@@ -155,7 +155,10 @@ class PolicyEngine:
                 explanation="Tool output contradicts available evidence and requires repair or block.",
             ), started_at)
 
-        if request.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+        if (
+            request.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
+            and not self._approval_granted(request)
+        ):
             return self._record_response(PolicyEvaluationResponse(
                 trace_id=trace_id,
                 allowed=False,
@@ -165,7 +168,7 @@ class PolicyEngine:
                 explanation="High-risk actions require human review by default.",
             ), started_at)
 
-        if action_name in SENSITIVE_ACTIONS:
+        if action_name in SENSITIVE_ACTIONS and not self._approval_granted(request):
             return self._record_response(PolicyEvaluationResponse(
                 trace_id=trace_id,
                 allowed=False,
@@ -201,18 +204,30 @@ class PolicyEngine:
         tenant_id: str,
     ) -> PolicyEvaluationResponse | None:
         if self._opa_evaluator is None:
+            if self._settings.opa_enabled:
+                return self._opa_failure_response(trace_id)
             return None
         try:
-            return self._opa_evaluator.evaluate(request, trace_id=trace_id, tenant_id=tenant_id)
-        except OpaPolicyEvaluationError as exc:
-            return PolicyEvaluationResponse(
+            response = self._opa_evaluator.evaluate(
+                request,
                 trace_id=trace_id,
-                allowed=False,
-                action=VerdictAction.BLOCK,
-                policy_version=self._settings.policy_version,
-                matched_rules=["opa_policy_evaluation_failed"],
-                explanation=str(exc),
+                tenant_id=tenant_id,
             )
+        except OpaPolicyEvaluationError:
+            return self._opa_failure_response(trace_id)
+        if response is None and self._settings.opa_enabled:
+            return self._opa_failure_response(trace_id)
+        return response
+
+    def _opa_failure_response(self, trace_id: str) -> PolicyEvaluationResponse:
+        return PolicyEvaluationResponse(
+            trace_id=trace_id,
+            allowed=False,
+            action=VerdictAction.BLOCK,
+            policy_version=self._settings.policy_version,
+            matched_rules=["opa_policy_evaluation_failed"],
+            explanation="OPA policy evaluation failed closed.",
+        )
 
     def _cross_tenant(self, request: PolicyEvaluationRequest, tenant_id: str) -> bool:
         resource_tenant = self._string_attr(request, "resource_tenant_id", "tenant_id")
@@ -250,6 +265,10 @@ class PolicyEngine:
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
+
+    def _approval_granted(self, request: PolicyEvaluationRequest) -> bool:
+        status = self._string_attr(request, "approval_status")
+        return status == "approved" or self._bool_attr(request, "approved")
 
     def _record_response(
         self,

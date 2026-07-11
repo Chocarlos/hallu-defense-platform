@@ -13,3 +13,10 @@ make openapi-check
 ```
 
 Do not edit generated OpenAPI by hand.
+
+Public contract versions and the additive v1-to-v2 migration are documented in
+[`v1-to-v2-migration.md`](v1-to-v2-migration.md). The semantic contract gate is:
+
+```powershell
+.venv\Scripts\python.exe scripts\ci\check_contract_versions.py
+```

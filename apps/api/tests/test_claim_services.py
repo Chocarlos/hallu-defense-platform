@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from hallu_defense.domain.models import (
     Authority,
     Claim,
@@ -8,7 +10,9 @@ from hallu_defense.domain.models import (
     Evidence,
     EvidenceKind,
     FinalDecision,
+    Freshness,
     RiskLevel,
+    StalenessClass,
     VerdictAction,
     VerdictStatus,
     ClaimVerdict,
@@ -156,7 +160,12 @@ def test_response_repairer_abstains_when_no_claims_remain_supported() -> None:
                 kind=EvidenceKind.DOCUMENT_CHUNK,
                 source_ref="unrelated",
                 content="Unrelated evidence.",
+                structured_content={},
                 authority=Authority.INTERNAL,
+                freshness=Freshness(
+                    retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    staleness_class=StalenessClass.UNKNOWN,
+                ),
             )
         ],
     )

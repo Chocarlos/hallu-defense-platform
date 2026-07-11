@@ -24,6 +24,7 @@ def test_thresholds_config_file_loads_smoke_and_scenario_suites() -> None:
     assert "cost_per_run_usd" in smoke["max"]
     assert "category_pass_rate_min" in scenarios["min"]
     assert "blocked_high_risk_rate" in scenarios["min"]
+    assert scenarios["min"]["blocking_precision"] == 0.92
 
 
 def test_suite_thresholds_rejects_missing_suite() -> None:

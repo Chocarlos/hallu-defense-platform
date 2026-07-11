@@ -78,13 +78,26 @@ def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
         repo.mkdir(parents=True)
         _make_writable_for_container(repo)
         _write_probe_scripts(repo)
+        protected_before = (repo / "protected-source.txt").read_bytes()
 
         runner = SandboxRunner(_settings(config, workspace, max_command_seconds=3))
         network_run = runner.run(
             RepoChecksRunRequest(
                 repo_ref="repo",
                 commands=["python network_probe.py"],
-                network_policy="allow",
+                # The import is intentionally split so regex remains only a
+                # secondary check and Docker's --network=none is the boundary.
+                network_policy="deny",
+            )
+        )
+        mutation_run = runner.run(
+            RepoChecksRunRequest(
+                repo_ref="repo",
+                commands=[
+                    "python source_mutation_probe.py",
+                    "node source_mutation_probe.js",
+                ],
+                network_policy="deny",
             )
         )
         outside_write_run = runner.run(
@@ -112,24 +125,43 @@ def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
         )
 
         limits = _inspect_limits(config, repo)
+        kubernetes_batch = _run_kubernetes_style_batch(
+            config,
+            source=repo,
+            scratch_root=workspace,
+        )
+        source_immutable = (
+            repo / "protected-source.txt"
+        ).read_bytes() == protected_before
 
     _assert_run(network_run.exit_codes == [0], "outbound network probe did not fail closed")
     _assert_run("network denied" in "".join(network_run.stdout), "network-deny evidence missing")
+    _assert_run(mutation_run.exit_codes == [0, 0], "working-copy mutation probe failed")
+    _assert_run(
+        source_immutable,
+        "source workspace changed during isolated execution",
+    )
     _assert_run(outside_write_run.exit_codes == [0], "outside-workspace write probe succeeded")
     _assert_run("outside write denied" in "".join(outside_write_run.stdout), "outside-write evidence missing")
     _assert_run(artifact_run.exit_codes == [0], "artifact probe failed")
     _assert_run("artifacts/live-smoke.txt" in artifact_run.artifacts, "artifact was not captured")
     _assert_run(timeout_run.exit_codes == [124], "timeout path did not return 124")
-    _assert_run("docker kill" in "".join(timeout_run.stderr), "timeout path did not report docker kill")
+    _assert_run(
+        "timed out" in "".join(timeout_run.stderr),
+        "timeout path did not report bounded process termination",
+    )
 
     return {
         "status": "passed",
         "image": config.image,
         "network_denied": True,
+        "source_workspace_immutable": True,
         "outside_workspace_write_denied": True,
         "artifact_captured": "artifacts/live-smoke.txt",
         "timeout_killed": True,
+        "timeout_mode": "in-container-process-group",
         "limits": limits,
+        "kubernetes_batch_runner": kubernetes_batch,
     }
 
 
@@ -197,9 +229,9 @@ def _settings(
 
 def _write_probe_scripts(repo: Path) -> None:
     (repo / "network_probe.py").write_text(
-        "import socket\n"
+        "socket_module = __import__('so' + 'cket')\n"
         "import sys\n"
-        "sock = socket.socket()\n"
+        "sock = getattr(socket_module, 'so' + 'cket')()\n"
         "sock.settimeout(1)\n"
         "try:\n"
         "    sock.connect(('1.1.1.1', 53))\n"
@@ -220,6 +252,23 @@ def _write_probe_scripts(repo: Path) -> None:
         "    sys.exit(0)\n"
         "print('outside write unexpectedly succeeded')\n"
         "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    (repo / "protected-source.txt").write_text("immutable\n", encoding="utf-8")
+    (repo / "source_mutation_probe.py").write_text(
+        "from pathlib import Path\n"
+        "target = Path('protected-source.txt')\n"
+        "getattr(target, 'un' + 'link')()\n"
+        "with open('protected-source.txt', 'w', encoding='utf-8') as stream:\n"
+        "    stream.write('copy-only')\n",
+        encoding="utf-8",
+    )
+    (repo / "source_mutation_probe.js").write_text(
+        "const fs = require('f' + 's');\n"
+        "fs['un' + 'linkSync']('protected-source.txt');\n"
+        "const fd = fs['open' + 'Sync']('protected-source.txt', 'w');\n"
+        "fs['write' + 'Sync'](fd, 'node-copy-only');\n"
+        "fs['close' + 'Sync'](fd);\n",
         encoding="utf-8",
     )
     (repo / "artifact_probe.py").write_text(
@@ -248,6 +297,7 @@ def _inspect_limits(config: LiveDockerSandboxSmokeConfig, repo: Path) -> dict[st
     argv = backend.build_run_argv(
         ["python", "-c", "import time; time.sleep(60)"],
         cwd=repo,
+        source_cwd=repo,
         env={"HALLU_DEFENSE_NETWORK_POLICY": "deny"},
     )
     argv.insert(2, "-d")
@@ -289,6 +339,109 @@ def _inspect_limits(config: LiveDockerSandboxSmokeConfig, repo: Path) -> dict[st
     finally:
         if container_id:
             _run([config.docker_path, "kill", container_id], timeout=10)
+
+
+def _run_kubernetes_style_batch(
+    config: LiveDockerSandboxSmokeConfig,
+    *,
+    source: Path,
+    scratch_root: Path,
+) -> dict[str, object]:
+    results = scratch_root / "kubernetes-batch-results"
+    results.mkdir()
+    _make_writable_for_container(results)
+    commands = json.dumps(
+        [
+            ["python", "source_mutation_probe.py"],
+            ["node", "source_mutation_probe.js"],
+        ],
+        separators=(",", ":"),
+    )
+    completed = _run(
+        [
+            config.docker_path,
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--tmpfs",
+            "/tmp",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            str(config.pids_limit),
+            "--memory",
+            f"{config.memory_mb}m",
+            "--cpus",
+            str(config.cpus),
+            "--user",
+            "10001",
+            "--mount",
+            f"type=bind,source={source.resolve()},target=/hallu-source,readonly",
+            "--mount",
+            "type=tmpfs,target=/workspace,tmpfs-size=536870912,tmpfs-mode=1777",
+            "--mount",
+            f"type=bind,source={results.resolve()},target=/hallu-results",
+            "--workdir",
+            "/workspace",
+            config.image,
+            "python",
+            "/opt/hallu-defense/sandbox_runner.py",
+            str(config.pids_limit),
+            "50000",
+            str(512 * 1024 * 1024),
+            "python",
+            "/opt/hallu-defense/sandbox_batch_runner.py",
+            "3",
+            "4000",
+            commands,
+        ],
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        runner_stderr = ""
+        if (results / "stderr").is_file():
+            runner_stderr = (results / "stderr").read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).strip()
+        raise LiveDockerSandboxSmokeError(
+            "Kubernetes-style runner failed: "
+            f"{runner_stderr or completed.stderr.strip() or completed.returncode}"
+        )
+    if completed.stdout or completed.stderr:
+        raise LiveDockerSandboxSmokeError(
+            "Kubernetes-style runner leaked control output to Docker streams"
+        )
+    if not (results / "done").is_file():
+        raise LiveDockerSandboxSmokeError(
+            "Kubernetes-style runner did not publish its done marker"
+        )
+    payload = json.loads((results / "stdout").read_text(encoding="utf-8"))
+    executions = payload.get("executions")
+    if (
+        payload.get("schema_version") != "sandbox_execution_batch.v3"
+        or not isinstance(payload.get("pre_snapshot_fingerprint"), str)
+        or len(payload["pre_snapshot_fingerprint"]) != 64
+        or not isinstance(payload.get("post_snapshot_fingerprint"), str)
+        or len(payload["post_snapshot_fingerprint"]) != 64
+        or payload["pre_snapshot_fingerprint"] == payload["post_snapshot_fingerprint"]
+        or not isinstance(executions, list)
+        or [item.get("returncode") for item in executions] != [0, 0]
+    ):
+        raise LiveDockerSandboxSmokeError(
+            "Kubernetes-style runner returned an invalid batch result"
+        )
+    return {
+        "schema_version": payload["schema_version"],
+        "pre_snapshot_fingerprint": payload["pre_snapshot_fingerprint"],
+        "post_snapshot_fingerprint": payload["post_snapshot_fingerprint"],
+        "command_returncodes": [item["returncode"] for item in executions],
+        "source_read_only": True,
+        "working_copy_discardable": True,
+    }
 
 
 def _run_checked(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:

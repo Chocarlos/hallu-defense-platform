@@ -32,6 +32,18 @@ def test_secret_scan_detects_private_key_marker(tmp_path: Path) -> None:
     assert result.findings == ["key.pem"]
 
 
+def test_secret_scan_detects_encrypted_private_key_marker(tmp_path: Path) -> None:
+    key_file = tmp_path / "encrypted-key.pem"
+    key_file.write_text(
+        "-----BEGIN " + "ENCRYPTED PRIVATE KEY-----\nfixture-body\n",
+        encoding="utf-8",
+    )
+
+    result = scan_tree(tmp_path)
+
+    assert result.findings == ["encrypted-key.pem"]
+
+
 def test_secret_scan_skips_generated_and_local_tooling_dirs(tmp_path: Path) -> None:
     for directory in (".venv", "node_modules", ".claude", ".codex-fable-work"):
         skipped_file = tmp_path / directory / "ignored.py"

@@ -3,6 +3,8 @@
 The authoritative config baseline is `infra/security/auth-policy.json`. The CI
 gate `scripts/ci/check_auth_config.py` validates the policy, environment example,
 runtime fail-closed checks, role matrix wiring, and CI/security workflow wiring.
+The browser Console's Authorization Code + PKCE boundary and runtime environment
+contract are documented in `docs/security/console-oidc.md`.
 
 The API builds a request principal either from an in-process OIDC JWT validator
 or from trusted boundary headers supplied by a gateway/local development tooling:
@@ -126,6 +128,7 @@ role requirements.
 | `POST /rag/corpus-grants/history` | `rag_writer` or `verifier` |
 | `POST /rag/corpus-grants/history/diff` | `rag_writer` or `verifier` |
 | `POST /claims/verify` | `verifier` |
+| `POST /v2/claims/verify` | `verifier` |
 | `POST /response/repair` | `verifier` |
 | `POST /tools/validate-input` | `tool_operator` |
 | `POST /tools/validate-output` | `tool_operator` |
@@ -136,7 +139,9 @@ role requirements.
 | `POST /audit/export` | `auditor` |
 | `POST /evals/reports/publish` | `eval_publisher` |
 | `POST /evals/reports/list` | `auditor` or `verifier` |
+| `POST /verification/runs/list` | `auditor` or `verifier` |
 | `POST /verification/run` | `verifier` |
+| `POST /v2/verification/run` | `verifier` |
 | `POST /verification/replay` | `verifier` |
 
 `POST /verification/replay` only replays `VerificationRun` snapshots that the
@@ -144,6 +149,12 @@ audit ledger returns for the authenticated tenant. Missing traces and
 cross-tenant traces fail closed with the same `404` response, and the replay
 re-executes verification/repair over the redacted stored snapshot instead of
 echoing live payloads.
+
+`POST /verification/runs/list` is a tenant-derived, keyset-paginated history of
+safe `verification_completed` audit events. It exposes only `trace_id`,
+`final_decision`, and the persisted completion timestamp; it does not reconstruct
+or return claim, evidence, input, or output payloads. PostgreSQL filters tenant,
+event type, optional trace, and cursor before applying the page limit.
 
 Local development with `HALLU_DEFENSE_AUTH_REQUIRED=false` bypasses this matrix
 except for `POST /approvals/decide`, `POST /rag/corpus-grants/upsert`,
@@ -159,7 +170,7 @@ Production and staging must set:
 ```text
 HALLU_DEFENSE_AUTH_REQUIRED=true
 HALLU_DEFENSE_AUTH_CLAIMS_MODE=oidc_jwt
-HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-bearer-token
+HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-scrape-token
 ```
 
 `load_settings()` rejects production-like environments that leave auth optional
@@ -174,7 +185,7 @@ the normal OIDC/RBAC flow or a static Prometheus scrape token:
 
 ```text
 Authorization: Bearer <metrics scrape token>
-HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-bearer-token
+HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-scrape-token
 ```
 
 The static token value is loaded through `SecretManager` using the configured
@@ -200,6 +211,8 @@ The bearer-token path fails closed:
 `infra/prometheus/prometheus.prod.yml` uses Prometheus
 `authorization.credentials_file`, so the deployed scrape token is mounted as a
 file and is not committed in Prometheus config or exposed as a process argument.
+The Vault-to-file rotation and sidecar/systemd deployment contract is documented
+in `docs/deployment/metrics-bearer-token-materializer.md`.
 
 ## RAG Corpus Grants And Metadata ABAC
 
@@ -252,12 +265,20 @@ dropping permissions. PostgreSQL-backed deployments use
 monotonic `sequence_id` used to replay audit history in insertion order.
 
 The Python adapter accepts an injected `CorpusGrantSqlConnection` for tests and
-custom deployments. When `HALLU_DEFENSE_POSTGRES_DSN` is configured, runtime
-wiring uses `PsycopgCorpusGrantSqlConnection`, a lazy psycopg-backed wrapper
-that opens driver connections with `dict_row`, executes only parameterized SQL,
-and returns mapping rows to the same append-only storage adapter. The domain
-registry remains independent from psycopg, so deployments can still inject a
-pool-backed adapter when they need different connection lifecycle behavior.
+custom deployments. API and worker runtime wiring reuse the shared pool-backed
+PostgreSQL provider; `PsycopgCorpusGrantSqlConnection` remains the lazy fallback
+when the factory is used directly with only `HALLU_DEFENSE_POSTGRES_DSN`.
+
+The PostgreSQL registry is database-authoritative: it never preloads a
+cross-tenant grant table or keeps an authorization cache in process memory.
+Every current-state, list, and history query includes the authenticated
+`tenant_id`. Mutations acquire a transaction-scoped advisory lock derived from
+tenant and corpus, read the latest version in that transaction, enforce
+`expected_version`, and append with `ON CONFLICT DO NOTHING`. Consequently a
+revocation committed through one API replica is visible to another replica on
+its next request, while concurrent stale writers produce one committed version
+and one controlled `409 Conflict`. History diffs use a tenant-scoped SQL window
+to obtain the previous version without loading another tenant's records.
 
 `scripts/ci/check_corpus_grants_config.py` validates the corpus grants env keys,
 PostgreSQL migration, fail-closed service behavior, endpoint role matrix,
@@ -272,12 +293,13 @@ grant without appending a new record.
 The history endpoint returns revisions in append order and never returns grants
 from another tenant. Timestamp filters must include an explicit timezone offset.
 
-Mutating requests can include `expected_version` for optimistic concurrency.
+Mutating requests in production and staging must include `expected_version` for
+optimistic concurrency; requests that omit it fail closed with `409 Conflict`.
 For create-only upserts, `expected_version: 0` means "only create if no current
 grant exists"; for updates and disables the value must match the current grant
 `version`. Stale versions fail with `409 Conflict` and do not append a new JSONL
-record. Omitting `expected_version` preserves backward-compatible last-write
-behavior for local automation.
+record. Local/test automation may omit `expected_version` for backward
+compatibility, but that behavior is never enabled by the production factory.
 
 Document metadata can still declare per-chunk corpus role gates:
 
@@ -301,6 +323,65 @@ requires reader roles the principal does not have. For persistent chunks that
 include `metadata.corpus_id`, retrieval also applies durable registry reader
 roles. The `admin` role satisfies all corpus reader/writer role checks.
 
+## Local Keycloak + Uvicorn Live API Smoke
+
+Local Keycloak runs from the repository-built `hallu-defense-keycloak:ci`
+image. The image is assembled from checksum-pinned Keycloak 26.7.0 and Jackson
+2.21.4 artifacts on a minimal Alpine runtime, contains only the PostgreSQL JDBC
+stack, runs as UID 10001, and keeps application files root-owned and read-only.
+Compose supplies writable tmpfs mounts only for `/tmp` and
+`/opt/keycloak/data`; it drops every Linux capability and sets
+`no-new-privileges`. The local identity database shares the isolated local
+PostgreSQL service. Production does not deploy this development identity
+service: its OIDC issuer/JWKS and identity persistence are externally managed.
+
+The `keycloak-live` job in `.github/workflows/live.yml` imports the development
+realm from `infra/security/keycloak/realm-hallu-defense.json`, starts the API as
+a separate Uvicorn process in `oidc_jwt` mode, and waits for `/ready`. Readiness
+resolves the real Keycloak discovery document and JWKS before the smoke runs.
+The smoke then crosses the HTTP boundary; it does not import the FastAPI app or
+use an in-process test client.
+
+The reviewer and least-privilege service accounts have the same API audience
+and `tenant-a`, while only the reviewer has `approval_reviewer` and `auditor`.
+`scripts/dev/live_keycloak_oidc_smoke.py --api` proves all of these outcomes:
+
+- no bearer token is rejected with `401`;
+- the reviewer token reaches `POST /approvals/list` with `200`;
+- the least-privilege token is rejected there with `403`;
+- an `x-tenant-id` that disagrees with the JWT tenant is rejected with `401`;
+- the reviewer request's audit event/export retains the JWT-derived tenant.
+
+The opt-in local configuration is explicit and fail-closed:
+
+```text
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_SMOKE_ENABLED=true
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_ISSUER=http://localhost:8081/realms/hallu-defense
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_AUDIENCE=hallu-defense-api
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_DISCOVERY_URL=http://localhost:8081/realms/hallu-defense/.well-known/openid-configuration
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_SUBJECT_CLAIM=azp
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_CLIENT_ID=hallu-defense-api
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_CLIENT_SECRET=<redacted>
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_EXPECTED_SUBJECT=hallu-defense-api
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_EXPECTED_TENANT=tenant-a
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_REQUIRED_ROLE=approval_reviewer
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_API_BASE_URL=http://127.0.0.1:18081
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_CLIENT_ID=hallu-defense-limited
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_CLIENT_SECRET=<redacted>
+HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_EXPECTED_SUBJECT=hallu-defense-limited
+```
+
+Subject, tenant, and role expectations are mandatory. Token minting rejects
+redirects, all responses and timeouts are bounded, and emitted results/errors
+never contain tokens or configured client secrets. Plain HTTP is accepted only
+for the explicit loopback hosts `127.0.0.1`, `::1`, and `localhost`; every
+non-loopback endpoint must use HTTPS. Issuer, discovery, and token endpoints
+must also share one canonical origin, and URLs containing credentials are
+rejected before a request can send a secret or bearer token. Teardown stops
+only the Uvicorn PID and Keycloak container created by the job; it does not run
+a global Compose volume deletion that could destroy Postgres, Vault, or MinIO
+state.
+
 ## Deployed Provider Smoke
 
 CI and the security workflow run `scripts/ci/oidc_provider_smoke.py`. By default
@@ -317,6 +398,7 @@ HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_ENABLED=true
 HALLU_DEFENSE_OIDC_ISSUER=https://issuer.example
 HALLU_DEFENSE_OIDC_AUDIENCE=hallu-defense-api
 HALLU_DEFENSE_OIDC_DISCOVERY_URL=https://issuer.example/.well-known/openid-configuration
+HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS=https://issuer.example
 HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_JWT=<short-lived test JWT>
 HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_EXPECTED_SUBJECT=
 HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_EXPECTED_TENANT=
@@ -331,8 +413,10 @@ issuer/source used.
 
 - Tenant identity is JWT-derived in `oidc_jwt` mode and header-derived only in
   local/trusted-gateway modes.
-- Deployed identity-provider smoke requires externally supplied provider URL and
-  short-lived test JWT. Local CI executes the gate in skipped mode.
+- The local Keycloak smoke now exercises a real Uvicorn network boundary.
+  Smoke evidence for an externally deployed identity provider/API still
+  requires an externally supplied provider URL and short-lived test JWT; local
+  CI executes that external-provider gate in skipped mode.
 - Future work can expand ABAC conditions into environment and resource
   sensitivity. Corpus grants now have a default PostgreSQL DSN path; high-throughput
   deployments should still inject a pooled connection adapter.

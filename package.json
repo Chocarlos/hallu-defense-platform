@@ -2,6 +2,7 @@
   "name": "hallu-defense-platform",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@11.16.0",
   "workspaces": [
     "packages/contracts",
     "packages/sdk",
@@ -11,6 +12,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "lint": "eslint . --max-warnings=0",
     "test": "npm run test --workspaces --if-present",
     "test:e2e": "npm --workspace @hallu-defense/console run test:e2e",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -19,11 +21,26 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.10",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.10",
+    "next": "16.2.10",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=22"
+    "node": "24.18.0",
+    "npm": "11.16.0"
+  },
+  "allowScripts": {
+    "esbuild": false,
+    "fsevents": false,
+    "sharp": false,
+    "unrs-resolver": false
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.10"
+    }
   }
 }

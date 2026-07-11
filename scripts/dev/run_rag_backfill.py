@@ -19,12 +19,16 @@ from hallu_defense.services.ingestion_jobs import (  # noqa: E402
     PostgresIngestionJobQueue,
 )
 from hallu_defense.services.postgres import build_postgres_provider  # noqa: E402
+from hallu_defense.services.rag_backfill import (  # noqa: E402
+    RagBackfillError,
+    validate_backfill_storage_identities,
+)
 from hallu_defense.worker import build_worker_from_settings  # noqa: E402
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Enqueue an idempotent tenant/corpus RAG reindex job."
+        description="Enqueue a tenant/corpus RAG reindex job when the target is page-safe."
     )
     parser.add_argument("--tenant-id", required=True)
     parser.add_argument("--corpus-id", required=True)
@@ -38,6 +42,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = load_settings()
+    backend = settings.rag_index_backend.strip().lower()
+    source_identities = frozenset({("pgvector", settings.pgvector_table_name)})
+    if backend == "pgvector":
+        target_identities = source_identities
+    elif backend == "opensearch":
+        target_identities = frozenset(
+            {("opensearch", settings.opensearch_index_name)}
+        )
+    elif backend == "hybrid":
+        target_identities = source_identities | frozenset(
+            {("opensearch", settings.opensearch_index_name)}
+        )
+    else:
+        target_identities = None
+    try:
+        validate_backfill_storage_identities(
+            source_identities=source_identities,
+            target_identities=target_identities,
+            target_backfill_page_safe=False,
+        )
+    except RagBackfillError as exc:
+        parser.error(str(exc))
     sql_provider = build_postgres_provider(settings)
     queue = PostgresIngestionJobQueue(
         connection=sql_provider,

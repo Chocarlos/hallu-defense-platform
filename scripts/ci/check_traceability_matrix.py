@@ -6,6 +6,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 TRACEABILITY_PATH = ROOT / "docs" / "TRACEABILITY_MATRIX.md"
+PLAN_MASTER_PATH = ROOT / "docs" / "PLAN_MASTER.md"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 
@@ -22,6 +23,7 @@ EXPECTED_COLUMNS = [
 ]
 ALLOWED_STATUSES = {"not_started", "designed", "implemented", "tested", "documented", "accepted"}
 ID_PATTERN = re.compile(r"^[A-Z]+-\d{3}$")
+DECLARED_ID_SEQUENCE_PATTERN = re.compile(r"\b([A-Z]+)-(\d{3}(?:/\d{3})*)\b")
 WEAK_EVIDENCE_VALUES = {
     "",
     "n/a",
@@ -109,14 +111,34 @@ def parse_traceability_matrix(text: str) -> list[TraceabilityRow]:
     return rows
 
 
-def validate_traceability_matrix(text: str) -> list[TraceabilityRow]:
+def validate_traceability_matrix(
+    text: str,
+    *,
+    plan_text: str | None = None,
+) -> list[TraceabilityRow]:
     errors: list[str] = []
     _validate_preamble(text, errors)
     rows = parse_traceability_matrix(text)
     _validate_rows(rows, errors)
+    if plan_text is not None:
+        _validate_declared_requirement_ids(plan_text, rows, errors)
     if errors:
         raise TraceabilityMatrixError("\n".join(errors))
     return rows
+
+
+def extract_declared_requirement_ids(plan_text: str) -> set[str]:
+    """Expand full and shorthand requirement IDs declared by the master plan.
+
+    The M6 roadmap uses compact sequences such as ``EVAL-003/004/005``. Treating
+    only the first token as an ID would recreate the exact coverage gap this gate
+    is intended to prevent.
+    """
+
+    declared: set[str] = set()
+    for prefix, number_sequence in DECLARED_ID_SEQUENCE_PATTERN.findall(plan_text):
+        declared.update(f"{prefix}-{number}" for number in number_sequence.split("/"))
+    return declared
 
 
 def validate_supporting_files(*, makefile_text: str, ci_workflow_text: str) -> None:
@@ -176,6 +198,21 @@ def _validate_rows(rows: list[TraceabilityRow], errors: list[str]) -> None:
             _validate_accepted_row(row, row_prefix, errors)
 
 
+def _validate_declared_requirement_ids(
+    plan_text: str,
+    rows: list[TraceabilityRow],
+    errors: list[str],
+) -> None:
+    declared = extract_declared_requirement_ids(plan_text)
+    matrix_ids = {row.requirement_id for row in rows}
+    missing = sorted(declared - matrix_ids)
+    if missing:
+        errors.append(
+            "master plan declares requirement IDs missing from the traceability matrix: "
+            + ", ".join(missing)
+        )
+
+
 def _validate_accepted_row(row: TraceabilityRow, row_prefix: str, errors: list[str]) -> None:
     evidence = _normalize(row.evidence)
     if evidence in WEAK_EVIDENCE_VALUES:
@@ -205,7 +242,10 @@ def _split_markdown_row(line: str, line_number: int) -> list[str]:
 
 
 def main() -> None:
-    rows = validate_traceability_matrix(TRACEABILITY_PATH.read_text(encoding="utf-8"))
+    rows = validate_traceability_matrix(
+        TRACEABILITY_PATH.read_text(encoding="utf-8"),
+        plan_text=PLAN_MASTER_PATH.read_text(encoding="utf-8"),
+    )
     validate_supporting_files(
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         ci_workflow_text=CI_WORKFLOW_PATH.read_text(encoding="utf-8"),

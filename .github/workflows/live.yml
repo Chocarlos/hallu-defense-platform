@@ -9,8 +9,9 @@ name: live
 # repo bind mounts to work -- postgres mounts `infra/rag/pgvector` as its initdb
 # schema and keycloak mounts `infra/security/keycloak` as its realm import.
 #
-# Every job tears its stack down with `docker compose down -v` under
-# `if: always()` so a failed smoke never leaks containers or volumes.
+# Every job has an `if: always()` teardown so a failed smoke never leaks its
+# process/container resources. Jobs that share local developer services stop
+# only the service they started instead of deleting unrelated volumes.
 #
 # Extensible by design: live jobs here follow the same
 # start -> wait-for-readiness -> gated-smoke -> teardown shape. ci.yml and
@@ -24,22 +25,69 @@ on:
     # Weekly, Mondays at 06:00 UTC.
     - cron: "0 6 * * 1"
 
+permissions:
+  contents: read
+
 jobs:
-  postgres-live:
-    runs-on: ubuntu-latest
+  hybrid-rag-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: hallu-hybrid-rag-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
-          # PooledPostgresProvider drives the smoke through psycopg_pool; install
-          # it explicitly so the live path has the pool driver even if the base
-          # extra ever drops it.
-          python -m pip install "psycopg-pool>=3.2,<4"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
+      - name: Start isolated PostgreSQL and OpenSearch
+        run: docker compose up -d postgres opensearch
+      - name: Wait for both persistent stores
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T postgres pg_isready -U hallu -d postgres \
+              && curl --max-time 2 -fsS http://localhost:9200/_cluster/health > /dev/null; then
+              echo "PostgreSQL and OpenSearch are ready"
+              exit 0
+            fi
+            echo "waiting for hybrid stores (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "hybrid stores did not become ready" >&2
+          docker compose logs postgres opensearch
+          exit 1
+      - name: Run combined hybrid RAG live smoke in scratch resources
+        env:
+          HALLU_DEFENSE_LIVE_HYBRID_RAG_SMOKE_ENABLED: "true"
+          HALLU_DEFENSE_LIVE_HYBRID_RAG_ADMIN_DSN: postgresql://hallu:hallu@localhost:5432/postgres
+          HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://localhost:9200
+          HALLU_DEFENSE_RAG_INDEX_TIMEOUT_SECONDS: "5"
+        run: python scripts/dev/live_hybrid_rag_smoke.py
+      - name: Teardown isolated hybrid stores
+        if: always()
+        run: docker compose down -v
+
+  postgres-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+      - name: Install API
+        run: |
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Start postgres
         run: docker compose up -d postgres
       - name: Wait for postgres readiness
@@ -65,22 +113,28 @@ jobs:
         run: docker compose down -v
 
   keycloak-live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: hallu-keycloak-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Start keycloak
         run: docker compose up -d keycloak
       - name: Wait for keycloak discovery
         run: |
           discovery_url="http://localhost:8081/realms/hallu-defense/.well-known/openid-configuration"
-          # ~5 min deadline: keycloak start-dev + realm import is slow to warm up.
+          # ~5 min deadline: optimized Keycloak + PostgreSQL realm import can warm slowly.
           for attempt in $(seq 1 60); do
             if curl -fsS "${discovery_url}" > /dev/null 2>&1; then
               echo "keycloak discovery is reachable"
@@ -92,7 +146,38 @@ jobs:
           echo "keycloak discovery not reachable before the deadline" >&2
           docker compose logs keycloak
           exit 1
-      - name: Run keycloak OIDC live smoke
+      - name: Start OIDC-backed Uvicorn API and wait for readiness
+        env:
+          HALLU_DEFENSE_ENV: local
+          HALLU_DEFENSE_RUNTIME_ROLE: api
+          HALLU_DEFENSE_AUTH_REQUIRED: "true"
+          HALLU_DEFENSE_AUTH_CLAIMS_MODE: oidc_jwt
+          HALLU_DEFENSE_OIDC_ISSUER: http://localhost:8081/realms/hallu-defense
+          HALLU_DEFENSE_OIDC_AUDIENCE: hallu-defense-api
+          HALLU_DEFENSE_OIDC_DISCOVERY_URL: http://localhost:8081/realms/hallu-defense/.well-known/openid-configuration
+          HALLU_DEFENSE_OIDC_SUBJECT_CLAIM: azp
+          HALLU_DEFENSE_OIDC_ROLES_CLAIM: roles
+          HALLU_DEFENSE_OIDC_TENANT_CLAIM: tenant_id
+          HALLU_DEFENSE_PROVIDER_BACKEND: mock
+          HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: memory
+          HALLU_DEFENSE_OTEL_ENABLED: "false"
+        run: |
+          nohup python -m uvicorn hallu_defense.main:app \
+            --host 127.0.0.1 --port 18081 --no-access-log \
+            > keycloak-api.log 2>&1 &
+          echo "$!" > keycloak-api.pid
+          for attempt in $(seq 1 60); do
+            if curl --max-time 2 -fsS http://127.0.0.1:18081/ready > /dev/null 2>&1; then
+              echo "OIDC-backed Uvicorn API is ready"
+              exit 0
+            fi
+            echo "waiting for OIDC-backed API (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "OIDC-backed Uvicorn API did not become ready" >&2
+          cat keycloak-api.log || true
+          exit 1
+      - name: Run Keycloak OIDC live API smoke
         # NOTE: scripts/dev/live_keycloak_oidc_smoke.py reads the
         # HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_* env names (verified in
         # `_config_from_env`), not the generic HALLU_DEFENSE_OIDC_* settings
@@ -102,26 +187,47 @@ jobs:
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_ISSUER: http://localhost:8081/realms/hallu-defense
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_AUDIENCE: hallu-defense-api
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_DISCOVERY_URL: http://localhost:8081/realms/hallu-defense/.well-known/openid-configuration
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_SUBJECT_CLAIM: azp
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_CLIENT_ID: hallu-defense-api
           HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_CLIENT_SECRET: local-dev-only
-        run: python scripts/dev/live_keycloak_oidc_smoke.py
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_EXPECTED_SUBJECT: hallu-defense-api
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_EXPECTED_TENANT: tenant-a
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_REQUIRED_ROLE: approval_reviewer
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_API_BASE_URL: http://127.0.0.1:18081
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_CLIENT_ID: hallu-defense-limited
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_CLIENT_SECRET: limited-only
+          HALLU_DEFENSE_LIVE_KEYCLOAK_OIDC_LIMITED_EXPECTED_SUBJECT: hallu-defense-limited
+        run: python scripts/dev/live_keycloak_oidc_smoke.py --api
       - name: Teardown
         if: always()
-        run: docker compose down -v
+        run: |
+          if [ -f keycloak-api.pid ]; then
+            api_pid="$(cat keycloak-api.pid)"
+            if kill -0 "${api_pid}" 2> /dev/null; then
+              kill "${api_pid}"
+            fi
+            wait "${api_pid}" 2> /dev/null || true
+          fi
+          docker compose stop keycloak || true
+          docker compose rm -f keycloak || true
 
   vault-live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       HALLU_DEFENSE_LOCAL_VAULT_DEV_ROOT_TOKEN: dev-root
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Start vault
         run: docker compose up -d vault
       - name: Wait for vault readiness
@@ -154,16 +260,20 @@ jobs:
         run: docker compose down -v
 
   observability-live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Start observability stack
         run: docker compose up -d --build grafana
       - name: Wait for API readiness
@@ -225,17 +335,21 @@ jobs:
         run: docker compose down -v
 
   sandbox-live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     needs: [postgres-live, keycloak-live]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Build sandbox image
         run: docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci .
       - name: Run Docker sandbox live smoke
@@ -248,16 +362,20 @@ jobs:
         run: python scripts/dev/live_docker_sandbox_smoke.py
 
   prod-profile-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Run production profile e2e scaffold
         env:
           HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_ENABLED: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_ENABLED || 'false' }}
@@ -266,37 +384,128 @@ jobs:
           HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_TENANT: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_TENANT || 'tenant-a' }}
         run: python scripts/dev/live_prod_profile_e2e.py
 
-  kind-helm-live:
-    runs-on: ubuntu-latest
+  ingestion-worker-crash-recovery-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # A unique Compose project prevents this job from adopting or deleting
+      # containers and volumes owned by another local/live stack.
+      COMPOSE_PROJECT_NAME: hallu-ingestion-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+      - name: Install API and PostgreSQL pool driver
+        run: |
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
+      - name: Start isolated postgres
+        run: docker compose up -d postgres
+      - name: Wait for isolated postgres readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T postgres pg_isready -U hallu -d hallu_defense; then
+              echo "postgres is ready"
+              exit 0
+            fi
+            echo "waiting for postgres (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "postgres did not become ready in time" >&2
+          exit 1
+      - name: Run real ingestion worker crash/restart smoke
+        env:
+          HALLU_DEFENSE_LIVE_INGESTION_WORKER_SMOKE_ENABLED: "true"
+          HALLU_DEFENSE_ENV: local
+          HALLU_DEFENSE_AUTH_REQUIRED: "false"
+          HALLU_DEFENSE_PROVIDER_BACKEND: mock
+          HALLU_DEFENSE_OTEL_ENABLED: "false"
+          HALLU_DEFENSE_POSTGRES_DSN: postgresql://hallu:hallu@localhost:5432/hallu_defense
+          HALLU_DEFENSE_RAG_INDEX_BACKEND: pgvector
+          HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+          HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
+          HALLU_DEFENSE_INGESTION_MODE: async
+        run: python scripts/dev/live_ingestion_worker_smoke.py
+      - name: Teardown only isolated ingestion postgres
+        if: always()
+        run: |
+          docker compose stop postgres || true
+          docker compose rm -f postgres || true
+          docker volume rm "${COMPOSE_PROJECT_NAME}_postgres-data" || true
+          docker network rm "${COMPOSE_PROJECT_NAME}_default" || true
+
+  kind-helm-live:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+      - name: Install pinned kind, Helm, and kubectl
+        env:
+          KIND_VERSION: v0.32.0
+          KIND_SHA256: 50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54
+          HELM_VERSION: v4.2.2
+          HELM_SHA256: 9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6
+          KUBECTL_VERSION: v1.36.1
+          KUBECTL_SHA256: 629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7
+        run: |
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm-${HELM_VERSION}-linux-amd64.tar.gz" | sha256sum --check
+          tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          sudo install linux-amd64/helm /usr/local/bin/helm
+
+          curl -fsSLo kind-linux-amd64 "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind-linux-amd64" | sha256sum --check
+          sudo install kind-linux-amd64 /usr/local/bin/kind
+
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  kubectl" | sha256sum --check
+          sudo install kubectl /usr/local/bin/kubectl
+
+          helm version --short
+          kind version
+          kubectl version --client
+      - name: Prepare OpenSearch kernel requirement
+        run: sudo sysctl -w vm.max_map_count=262144
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
-      - name: Run kind/Helm smoke scaffold
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
+      - name: Run kind/Helm live installation smoke
         env:
-          HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED: ${{ vars.HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED || 'false' }}
+          HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED: "true"
           HALLU_DEFENSE_LIVE_KIND_HELM_CLUSTER: ${{ vars.HALLU_DEFENSE_LIVE_KIND_HELM_CLUSTER || 'hallu-defense-smoke' }}
           HALLU_DEFENSE_LIVE_KIND_HELM_NAMESPACE: ${{ vars.HALLU_DEFENSE_LIVE_KIND_HELM_NAMESPACE || 'hallu-defense' }}
         run: python scripts/dev/live_kind_helm_smoke.py
 
   eval-reports-live:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     needs: [postgres-live, keycloak-live]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
-          python -m pip install "psycopg-pool>=3.2,<4"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
       - name: Start postgres
         run: docker compose up -d postgres
       - name: Wait for postgres readiness

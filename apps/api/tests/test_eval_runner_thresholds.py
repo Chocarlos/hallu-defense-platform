@@ -64,6 +64,7 @@ def _passing_scenario_metrics() -> dict[str, object]:
         "tool_contradiction_guard_rate": 1.0,
         "repo_false_claim_block_rate": 1.0,
         "repo_semantic_claim_decision_accuracy": 1.0,
+        "blocking_precision": 1.0,
         "sandbox_block_rate": 1.0,
         "category_pass_rate": {"documents": 1.0, "tools": 1.0, "sandbox": 1.0},
         "p95_latency_ms": 50.0,
@@ -99,3 +100,12 @@ def test_scenario_metric_failures_reports_pass_rate_regression() -> None:
     failures = scenarios_runner._metric_failures(metrics)
 
     assert any("pass_rate" in failure for failure in failures)
+
+
+def test_scenario_metric_failures_reports_blocking_precision_regression() -> None:
+    metrics = _passing_scenario_metrics()
+    metrics["blocking_precision"] = 0.91
+
+    failures = scenarios_runner._metric_failures(metrics)
+
+    assert any("blocking_precision" in failure for failure in failures)

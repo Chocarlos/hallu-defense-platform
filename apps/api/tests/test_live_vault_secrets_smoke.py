@@ -29,6 +29,7 @@ def _secret_values() -> dict[str, str]:
         "observability/metrics-scrape-token": "metrics-local-value",
         "auth/trusted-header-signing-key": "gateway-local-value",
         "backup/encryption-key": _fernet_key(),
+        "providers/openai/api-key": "provider-local-value",
     }
 
 
@@ -102,6 +103,7 @@ def test_run_from_env_exercises_vault_secret_manager_with_injected_http(
         "http://127.0.0.1:8200/v1/secret/data/observability/metrics-scrape-token",
         "http://127.0.0.1:8200/v1/secret/data/auth/trusted-header-signing-key",
         "http://127.0.0.1:8200/v1/secret/data/backup/encryption-key",
+        "http://127.0.0.1:8200/v1/secret/data/providers/openai/api-key",
     ]
     assert "CUSTOM_LOCAL_VAULT_TOKEN" not in __import__("os").environ
 

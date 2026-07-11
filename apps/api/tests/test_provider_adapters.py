@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 
+import hallu_defense.services.providers as providers_module
 from hallu_defense.config import Settings
 from hallu_defense.services.providers import (
+    MAX_PROVIDER_HTTP_RESPONSE_BYTES,
     MockModelProvider,
     OpenAICompatibleProvider,
     OllamaProvider,
@@ -14,6 +16,9 @@ from hallu_defense.services.providers import (
     ProviderMessage,
     ProviderRequest,
     ProviderRequestError,
+    ProviderResponseError,
+    ProviderResponseTooLargeError,
+    UrllibJsonTransport,
     create_model_provider,
 )
 from hallu_defense.services.secrets import SecretNotFoundError, SecretValue
@@ -53,6 +58,22 @@ class StaticCredentialStore:
         if field != "value" or name not in self.values:
             raise SecretNotFoundError(name)
         return SecretValue(name=name, _value=self.values[name])
+
+
+class FakeHttpResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.read_amount: int | None = None
+
+    def __enter__(self) -> FakeHttpResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, amount: int = -1) -> bytes:
+        self.read_amount = amount
+        return self.payload if amount < 0 else self.payload[:amount]
 
 
 def _settings(**overrides: object) -> Settings:
@@ -194,3 +215,43 @@ def test_provider_request_rejects_empty_messages() -> None:
 
     with pytest.raises(ProviderRequestError, match="at least one message"):
         provider.complete(ProviderRequest(messages=[]))
+
+
+def test_urllib_provider_transport_rejects_response_over_one_mib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = FakeHttpResponse(b"x" * (MAX_PROVIDER_HTTP_RESPONSE_BYTES + 1))
+    monkeypatch.setattr(
+        providers_module,
+        "open_url_no_redirect",
+        lambda *_args, **_kwargs: response,
+    )
+
+    with pytest.raises(ProviderResponseTooLargeError, match="1 MiB"):
+        UrllibJsonTransport().post_json(
+            "https://llm.example/v1/chat/completions",
+            headers={},
+            payload={"model": "bounded"},
+            timeout_seconds=3,
+        )
+
+    assert response.read_amount == MAX_PROVIDER_HTTP_RESPONSE_BYTES + 1
+
+
+def test_urllib_provider_transport_maps_invalid_json_to_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = FakeHttpResponse(b"not-json")
+    monkeypatch.setattr(
+        providers_module,
+        "open_url_no_redirect",
+        lambda *_args, **_kwargs: response,
+    )
+
+    with pytest.raises(ProviderResponseError, match="UTF-8 JSON"):
+        UrllibJsonTransport().post_json(
+            "https://llm.example/v1/chat/completions",
+            headers={},
+            payload={"model": "bounded"},
+            timeout_seconds=3,
+        )

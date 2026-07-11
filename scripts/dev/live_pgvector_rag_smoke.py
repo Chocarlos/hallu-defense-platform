@@ -24,10 +24,13 @@ from hallu_defense.domain.models import (  # noqa: E402
 )
 from hallu_defense.services.ingestion import DocumentIngestionService  # noqa: E402
 from hallu_defense.services.rag_index import (  # noqa: E402
+    DeterministicHashEmbedder,
     PgVectorConnection,
     PgVectorRagIndexBackend,
     PsycopgPgVectorConnection,
+    RagSearchRequest,
 )
+from hallu_defense.domain.rag_metadata import canonical_json  # noqa: E402
 from hallu_defense.services.retrieval import HybridRetriever  # noqa: E402
 
 ENABLED_ENV = "HALLU_DEFENSE_LIVE_PGVECTOR_RAG_SMOKE_ENABLED"
@@ -42,6 +45,7 @@ SMOKE_TENANT_A = "tenant-live-pgvector-smoke-a"
 SMOKE_TENANT_B = "tenant-live-pgvector-smoke-b"
 SMOKE_TENANTS = (SMOKE_TENANT_A, SMOKE_TENANT_B)
 EXPECTED_EMBEDDING_TYPE = "vector(16)"
+EXPECTED_RETRIEVED_AT_TYPE = "timestamp with time zone"
 SAFE_TABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -73,6 +77,8 @@ def run_from_env(
             "backend": "pgvector",
             "indexed_count": 0,
             "tenant_isolation": False,
+            "exact_plan": False,
+            "exact_recall": False,
         }
 
     config = LivePgVectorRagSmokeConfig(
@@ -96,6 +102,10 @@ def run_live_smoke(
 
     try:
         verify_pgvector_schema(connection=active_connection, table_name=table_name)
+        exact_plan = verify_exact_query_plan(
+            connection=active_connection,
+            table_name=table_name,
+        )
         cleanup_smoke_rows(
             connection=active_connection,
             table_name=table_name,
@@ -127,6 +137,13 @@ def run_live_smoke(
             smoke_run_id=smoke_run_id,
             shared_source_ref=documents["tenant_a"].source_ref,
         )
+        exact_recall = _assert_exact_filtered_recall(
+            backend=backend,
+            connection=active_connection,
+            table_name=table_name,
+            smoke_run_id=smoke_run_id,
+            shared_source_ref=documents["tenant_a"].source_ref,
+        )
         indexed_count = tenant_a_response.indexed_count + tenant_b_response.indexed_count
         return {
             "status": "passed",
@@ -135,6 +152,8 @@ def run_live_smoke(
             "backend": tenant_a_response.backend,
             "indexed_count": indexed_count,
             "tenant_isolation": tenant_isolation,
+            "exact_plan": exact_plan,
+            "exact_recall": exact_recall,
         }
     finally:
         try:
@@ -191,6 +210,72 @@ def verify_pgvector_schema(*, connection: PgVectorConnection, table_name: str) -
             f"{EXPECTED_EMBEDDING_TYPE}; found {embedding_type!r}"
         )
 
+    retrieved_at_rows = connection.fetch_all(
+        "SELECT format_type(attribute.atttypid, attribute.atttypmod) AS retrieved_at_type, "
+        "attribute.attnotnull AS retrieved_at_not_null "
+        "FROM pg_attribute attribute "
+        "JOIN pg_class class ON class.oid = attribute.attrelid "
+        "JOIN pg_namespace namespace ON namespace.oid = class.relnamespace "
+        "WHERE namespace.nspname = %s "
+        "AND class.relname = %s "
+        "AND attribute.attname = %s "
+        "AND attribute.attnum > 0 "
+        "AND NOT attribute.attisdropped",
+        ["public", safe_table_name, "retrieved_at"],
+    )
+    retrieved_at_type = (
+        retrieved_at_rows[0].get("retrieved_at_type") if retrieved_at_rows else None
+    )
+    retrieved_at_not_null = (
+        retrieved_at_rows[0].get("retrieved_at_not_null")
+        if retrieved_at_rows
+        else None
+    )
+    if (
+        retrieved_at_type != EXPECTED_RETRIEVED_AT_TYPE
+        or retrieved_at_not_null is not True
+    ):
+        raise RuntimeError(
+            f"pgvector table {safe_table_name!r} must have retrieved_at "
+            f"{EXPECTED_RETRIEVED_AT_TYPE} NOT NULL; found "
+            f"type={retrieved_at_type!r}, not_null={retrieved_at_not_null!r}. "
+            "Apply 010_add_retrieved_at.sql."
+        )
+
+    index_rows = connection.fetch_all(
+        "SELECT indexname, indexdef FROM pg_indexes "
+        "WHERE schemaname = %s AND tablename = %s",
+        ["public", safe_table_name],
+    )
+    serialized_indexes = json.dumps(list(index_rows), sort_keys=True, default=str).lower()
+    if any(marker in serialized_indexes for marker in ("ivfflat", " hnsw ")):
+        raise RuntimeError(
+            "pgvector exact-search baseline must not have an approximate vector index; "
+            "apply 009_drop_unsafe_ivfflat.sql"
+        )
+
+
+def verify_exact_query_plan(
+    *,
+    connection: PgVectorConnection,
+    table_name: str,
+) -> bool:
+    safe_table_name = validate_smoke_table_name(table_name)
+    vector = _vector_literal(DeterministicHashEmbedder().embed("exact plan smoke"))
+    rows = connection.fetch_all(
+        "EXPLAIN (FORMAT JSON) SELECT evidence_id "
+        f"FROM {safe_table_name} "
+        "WHERE tenant_id = %s AND metadata -> %s = %s::jsonb "
+        "ORDER BY 1 - (embedding <=> %s::vector) DESC, evidence_id ASC LIMIT %s",
+        [SMOKE_TENANT_A, "smoke_kind", canonical_json(SMOKE_KIND), vector, 3],
+    )
+    if not rows:
+        raise RuntimeError("pgvector exact-search EXPLAIN returned no plan")
+    serialized_plan = json.dumps(list(rows), sort_keys=True, default=str).lower()
+    if any(marker in serialized_plan for marker in ("ivfflat", "hnsw")):
+        raise RuntimeError("pgvector production query unexpectedly used approximate ANN")
+    return True
+
 
 def cleanup_smoke_rows(
     *,
@@ -227,6 +312,8 @@ def main(
             "error": str(exc),
             "backend": "pgvector",
             "tenant_isolation": False,
+            "exact_plan": False,
+            "exact_recall": False,
         }
         print(_json_result(result))
         return 1
@@ -351,6 +438,64 @@ def _assert_tenant_isolation(
     return True
 
 
+def _assert_exact_filtered_recall(
+    *,
+    backend: PgVectorRagIndexBackend,
+    connection: PgVectorConnection,
+    table_name: str,
+    smoke_run_id: str,
+    shared_source_ref: str,
+) -> bool:
+    safe_table_name = validate_smoke_table_name(table_name)
+    embedder = DeterministicHashEmbedder()
+    for tenant_id, tenant_marker in (
+        (SMOKE_TENANT_A, "alpha"),
+        (SMOKE_TENANT_B, "beta"),
+    ):
+        query_text = f"{tenant_marker} entitlement approved {tenant_id} {smoke_run_id}"
+        request = RagSearchRequest(
+            tenant_id=tenant_id,
+            claim_id=f"clm_exact_recall_{tenant_marker}",
+            query_text=query_text,
+            context_refs=[shared_source_ref],
+            metadata_filter={
+                "smoke_kind": SMOKE_KIND,
+                "smoke_run_id": smoke_run_id,
+            },
+            max_results=3,
+        )
+        production_ids = [item.evidence_id for item in backend.search(request)]
+        oracle_rows = connection.fetch_all(
+            "SELECT evidence_id "
+            f"FROM {safe_table_name} "
+            "WHERE tenant_id = %s AND source_ref = %s "
+            "AND metadata -> %s = %s::jsonb "
+            "AND metadata -> %s = %s::jsonb "
+            "ORDER BY embedding <=> %s::vector ASC, evidence_id ASC LIMIT %s",
+            [
+                tenant_id,
+                shared_source_ref,
+                "smoke_kind",
+                canonical_json(SMOKE_KIND),
+                "smoke_run_id",
+                canonical_json(smoke_run_id),
+                _vector_literal(embedder.embed(query_text)),
+                3,
+            ],
+        )
+        oracle_ids = [
+            row.get("evidence_id")
+            for row in oracle_rows
+            if isinstance(row.get("evidence_id"), str)
+        ]
+        if production_ids != oracle_ids or not production_ids:
+            raise AssertionError(
+                "pgvector filtered recall diverged from exact oracle: "
+                f"tenant={tenant_id!r}, production={production_ids}, oracle={oracle_ids}"
+            )
+    return True
+
+
 def _retrieve_evidence(
     retriever: HybridRetriever,
     *,
@@ -437,6 +582,10 @@ def _redact_dsn(dsn: str) -> str:
             parsed.fragment,
         )
     )
+
+
+def _vector_literal(values: Sequence[float]) -> str:
+    return "[" + ",".join(f"{value:.6f}" for value in values) + "]"
 
 
 def _json_result(result: Mapping[str, object]) -> str:

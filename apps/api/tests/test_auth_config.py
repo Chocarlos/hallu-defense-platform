@@ -1,24 +1,32 @@
 from __future__ import annotations
 
 import copy
+import json
+import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
 from hallu_defense.config import (
     AuthConfigurationError,
+    EnvironmentConfigurationError,
     MetricsAuthConfigurationError,
     RateLimitConfigurationError,
+    RuntimeTransportConfigurationError,
     Settings,
+    load_settings,
     validate_auth_settings,
     validate_metrics_auth_settings,
     validate_rate_limit_settings,
+    validate_runtime_transport_settings,
 )
 from scripts.ci.check_auth_config import (
     AuthConfigError,
     load_current_config,
     load_policy,
     validate_policy,
+    validate_live_keycloak_config,
     validate_supporting_files,
 )
 
@@ -157,6 +165,132 @@ def test_metrics_auth_settings_accept_vault_backend_in_production() -> None:
     validate_metrics_auth_settings(settings)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "setting_name"),
+    [
+        (
+            {"secrets_backend": "vault", "vault_addr": "http://vault.internal:8200"},
+            "VAULT_ADDR",
+        ),
+        (
+            {
+                "provider_backend": "openai-compatible",
+                "openai_compatible_base_url": "http://provider.internal/v1",
+            },
+            "OPENAI_COMPATIBLE_BASE_URL",
+        ),
+        (
+            {"provider_backend": "ollama", "ollama_base_url": "http://ollama.internal:11434"},
+            "OLLAMA_BASE_URL",
+        ),
+    ],
+)
+def test_runtime_transport_settings_reject_plaintext_production_urls(
+    overrides: dict[str, object],
+    setting_name: str,
+) -> None:
+    settings = _settings(
+        environment="production",
+        outbound_https_allowed_origins=(
+            "https://vault.internal:8200",
+            "https://provider.internal",
+            "https://ollama.internal:11434",
+        ),
+        **overrides,
+    )
+
+    with pytest.raises(RuntimeTransportConfigurationError, match=setting_name):
+        validate_runtime_transport_settings(settings)
+
+
+def test_runtime_transport_settings_allow_local_plaintext_dependencies() -> None:
+    settings = _settings(
+        environment="local",
+        secrets_backend="vault",
+        vault_addr="http://127.0.0.1:8200",
+        provider_backend="ollama",
+        ollama_base_url="http://127.0.0.1:11434",
+    )
+
+    validate_runtime_transport_settings(settings)
+
+
+def test_load_settings_applies_runtime_transport_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    redis_ca_path = tmp_path / "redis-ca.pem"
+    vault_token_path = tmp_path / "vault-token"
+    redis_ca_path.write_text("test-ca", encoding="utf-8")
+    vault_token_path.write_text("test-vault-token\n", encoding="utf-8")
+    vault_token_path.chmod(0o400)
+    monkeypatch.setenv("HALLU_DEFENSE_ENV", "production")
+    monkeypatch.setenv("HALLU_DEFENSE_AUTH_REQUIRED", "true")
+    monkeypatch.setenv("HALLU_DEFENSE_AUTH_CLAIMS_MODE", "signed_headers")
+    monkeypatch.setenv("HALLU_DEFENSE_CORS_ALLOW_ORIGINS", "https://console.example.test")
+    monkeypatch.setenv("HALLU_DEFENSE_SECRETS_BACKEND", "vault")
+    monkeypatch.setenv("HALLU_DEFENSE_VAULT_ADDR", "http://vault.internal:8200")
+    monkeypatch.setenv("HALLU_DEFENSE_VAULT_TOKEN_FILE", str(vault_token_path))
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS",
+        "https://vault.internal:8200,https://search.example.test",
+    )
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME",
+        "observability/metrics-scrape-token",
+    )
+    monkeypatch.setenv("HALLU_DEFENSE_SANDBOX_BACKEND", "kubernetes")
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_SANDBOX_KUBERNETES_IMAGE",
+        "registry.example.test/hallu-sandbox@sha256:" + ("a" * 64),
+    )
+    monkeypatch.setenv("HALLU_DEFENSE_SANDBOX_KUBERNETES_NAMESPACE", "hallu-sandbox")
+    monkeypatch.setenv("HALLU_DEFENSE_SANDBOX_KUBERNETES_PVC_NAME", "tenant-workspace")
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_SANDBOX_KUBERNETES_WORKSPACE_MOUNT_PATH",
+        "/workspace",
+    )
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_SANDBOX_KUBERNETES_NETWORK_POLICY_NAME",
+        "sandbox-default-deny",
+    )
+    monkeypatch.setenv("HALLU_DEFENSE_SANDBOX_KUBERNETES_TENANT_ID", "tenant-a")
+    monkeypatch.setenv("HALLU_DEFENSE_PROVIDER_BACKEND", "mock")
+    monkeypatch.setenv("HALLU_DEFENSE_RAG_INDEX_BACKEND", "hybrid")
+    monkeypatch.setenv("HALLU_DEFENSE_INGESTION_MODE", "async")
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_POSTGRES_DSN",
+        "postgresql://runtime@postgres/hallu"
+        "?sslmode=verify-full"
+        "&ssl_min_protocol_version=TLSv1.3"
+        "&gssencmode=disable"
+        f"&sslrootcert={quote(redis_ca_path.resolve().as_posix(), safe='')}",
+    )
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_POSTGRES_CA_CERT_PATH",
+        str(redis_ca_path.resolve()),
+    )
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_OPENSEARCH_ENDPOINT",
+        "https://search.example.test",
+    )
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME",
+        "rag/opensearch/authorization",
+    )
+    monkeypatch.setenv("HALLU_DEFENSE_OPA_ENABLED", "true")
+    monkeypatch.setenv("HALLU_DEFENSE_OPA_PATH", str(Path(sys.executable).resolve()))
+    monkeypatch.setenv("HALLU_DEFENSE_OPA_POLICY_DIR", str(tmp_path))
+    monkeypatch.setenv("HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_BACKEND", "redis")
+    monkeypatch.setenv(
+        "HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_CA_PATH",
+        str(redis_ca_path),
+    )
+
+    with pytest.raises(RuntimeTransportConfigurationError, match="VAULT_ADDR"):
+        load_settings()
+
+
 def test_rate_limit_settings_reject_non_positive_values() -> None:
     settings = _settings(
         tool_validation_rate_limit_max_requests=0,
@@ -278,3 +412,72 @@ def test_auth_config_requires_oidc_provider_smoke_ci_wiring() -> None:
             ci_workflow_text=config[7],
             security_workflow_text=config[8],
         )
+
+
+def _live_keycloak_artifacts() -> tuple[str, str, str]:
+    root = Path(__file__).parents[3]
+    return (
+        (root / "scripts/dev/live_keycloak_oidc_smoke.py").read_text(encoding="utf-8"),
+        (root / "infra/security/keycloak/realm-hallu-defense.json").read_text(
+            encoding="utf-8"
+        ),
+        (root / ".github/workflows/live.yml").read_text(encoding="utf-8"),
+    )
+
+
+def test_live_keycloak_gate_rejects_in_process_test_client() -> None:
+    script, realm, workflow = _live_keycloak_artifacts()
+
+    with pytest.raises(AuthConfigError, match="Uvicorn HTTP boundary"):
+        validate_live_keycloak_config(
+            live_script_text=f"from fastapi.testclient import TestClient\n{script}",
+            realm_text=realm,
+            live_workflow_text=workflow,
+        )
+
+
+def test_live_keycloak_gate_requires_limited_client() -> None:
+    script, realm_text, workflow = _live_keycloak_artifacts()
+    realm = json.loads(realm_text)
+    realm["clients"] = [
+        client
+        for client in realm["clients"]
+        if client["clientId"] != "hallu-defense-limited"
+    ]
+
+    with pytest.raises(AuthConfigError, match="missing least-privilege client"):
+        validate_live_keycloak_config(
+            live_script_text=script,
+            realm_text=json.dumps(realm),
+            live_workflow_text=workflow,
+        )
+
+
+def test_live_keycloak_gate_forbids_global_compose_teardown() -> None:
+    script, realm, workflow = _live_keycloak_artifacts()
+    unsafe_workflow = workflow.replace(
+        "docker compose stop keycloak || true",
+        "docker compose down -v || true",
+    )
+
+    with pytest.raises(AuthConfigError, match="must not run global docker compose down"):
+        validate_live_keycloak_config(
+            live_script_text=script,
+            realm_text=realm,
+            live_workflow_text=unsafe_workflow,
+        )
+def test_load_settings_normalizes_environment_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HALLU_DEFENSE_ENV", " LOCAL ")
+
+    assert load_settings().environment == "local"
+
+
+def test_load_settings_rejects_unknown_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HALLU_DEFENSE_ENV", "prod")
+
+    with pytest.raises(EnvironmentConfigurationError, match="HALLU_DEFENSE_ENV"):
+        load_settings()

@@ -1,0 +1,93 @@
+{{- if and (eq .Values.sandbox.backend "kubernetes") .Values.sandbox.workspace.createClaim }}
+{{- if not .Values.kindDependencies.enabled }}
+{{- fail "sandbox.workspace.createClaim=true is allowed only when kindDependencies.enabled=true; production requires existing namespaced RWX claims" }}
+{{- end }}
+{{- $sandboxNamespace := include "hallu-defense.sandboxNamespace" . -}}
+{{- $workspaceHash := sha256sum (printf "%s/%s/%s" .Release.Namespace $sandboxNamespace .Release.Name) | trunc 16 -}}
+{{- $apiPvName := printf "%s-sandbox-reader-%s" (include "hallu-defense.fullname" . | trunc 38 | trimSuffix "-") $workspaceHash | trunc 63 | trimSuffix "-" -}}
+{{- $sandboxPvName := printf "%s-sandbox-runner-%s" (include "hallu-defense.fullname" . | trunc 38 | trimSuffix "-") $workspaceHash | trunc 63 | trimSuffix "-" -}}
+{{- $hostPath := printf "/var/local/hallu-defense-sandbox/%s" $workspaceHash -}}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ $apiPvName }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+    hallu-defense.openai.com/workspace-view: reader
+spec:
+  capacity:
+    storage: {{ required "sandbox.workspace.storage is required when createClaim=true" .Values.sandbox.workspace.storage }}
+  accessModes:
+    {{- toYaml .Values.sandbox.workspace.accessModes | nindent 4 }}
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: ""
+  volumeMode: Filesystem
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: {{ include "hallu-defense.sandboxApiWorkspaceClaimName" . }}
+  hostPath:
+    path: {{ $hostPath }}
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ $sandboxPvName }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+    hallu-defense.openai.com/workspace-view: runner
+spec:
+  capacity:
+    storage: {{ required "sandbox.workspace.storage is required when createClaim=true" .Values.sandbox.workspace.storage }}
+  accessModes:
+    {{- toYaml .Values.sandbox.workspace.accessModes | nindent 4 }}
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: ""
+  volumeMode: Filesystem
+  claimRef:
+    namespace: {{ $sandboxNamespace }}
+    name: {{ include "hallu-defense.sandboxWorkspaceClaimName" . }}
+  hostPath:
+    path: {{ $hostPath }}
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "hallu-defense.sandboxApiWorkspaceClaimName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+    hallu-defense.openai.com/workspace-view: reader
+spec:
+  accessModes:
+    {{- toYaml .Values.sandbox.workspace.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ required "sandbox.workspace.storage is required when createClaim=true" .Values.sandbox.workspace.storage }}
+  storageClassName: ""
+  volumeMode: Filesystem
+  volumeName: {{ $apiPvName }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "hallu-defense.sandboxWorkspaceClaimName" . }}
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+    hallu-defense.openai.com/workspace-view: runner
+spec:
+  accessModes:
+    {{- toYaml .Values.sandbox.workspace.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ required "sandbox.workspace.storage is required when createClaim=true" .Values.sandbox.workspace.storage }}
+  storageClassName: ""
+  volumeMode: Filesystem
+  volumeName: {{ $sandboxPvName }}
+{{- end }}

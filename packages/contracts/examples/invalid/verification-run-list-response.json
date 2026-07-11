@@ -1,0 +1,10 @@
+{
+  "trace_id": "tr_history_list_contract",
+  "runs": [
+    {
+      "trace_id": "tr_history_contract",
+      "final_decision": "repaired"
+    }
+  ],
+  "next_cursor": null
+}

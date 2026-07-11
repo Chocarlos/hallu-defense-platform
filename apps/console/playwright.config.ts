@@ -32,14 +32,22 @@ export default defineConfig({
   webServer: [
     {
       // Reset the persistent e2e queue/ledger state, then boot the real API.
-      command: `node "apps/console/e2e/clean-state.mjs" && "${pythonBin}" -m uvicorn hallu_defense.main:app --host 127.0.0.1 --port ${apiPort}`,
+      // The sandbox backend is intentionally Docker-only in local/test. Build
+      // the exact image used by this suite so a stale local tag cannot make
+      // the browser flow exercise an older sandbox control protocol.
+      command:
+        `docker build -f "infra/docker/sandbox.Dockerfile" -t hallu-defense-sandbox:ci . && ` +
+        `node "apps/console/e2e/clean-state.mjs" && ` +
+        `"${pythonBin}" -m uvicorn hallu_defense.main:app --host 127.0.0.1 --port ${apiPort}`,
       url: `${apiBaseUrl}/health`,
       cwd: repoRoot,
       reuseExistingServer: false,
-      timeout: 60_000,
+      timeout: 300_000,
       env: {
         HALLU_DEFENSE_ENV: "local",
         HALLU_DEFENSE_ALLOWED_WORKSPACE: e2eStateDir,
+        HALLU_DEFENSE_SANDBOX_BACKEND: "docker",
+        HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: "hallu-defense-sandbox:ci",
         HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: "jsonl",
         HALLU_DEFENSE_APPROVAL_QUEUE_PATH: path.join(e2eStateDir, "approval-queue.jsonl"),
         HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: "jsonl",
@@ -48,13 +56,25 @@ export default defineConfig({
       }
     },
     {
-      command: `npm run build && npx next start --port ${consolePort}`,
+      command:
+        `npm --prefix "${repoRoot}" run build --workspace @hallu-defense/contracts && ` +
+        `npm --prefix "${repoRoot}" run build --workspace @hallu-defense/sdk && ` +
+        `npm run build && npx next start --port ${consolePort}`,
       url: consoleBaseUrl,
       cwd: configDir,
       reuseExistingServer: false,
       timeout: 300_000,
       env: {
-        NEXT_PUBLIC_API_BASE_URL: apiBaseUrl
+        HALLU_DEFENSE_ENV: "test",
+        HALLU_DEFENSE_CONSOLE_AUTH_MODE: "unsigned-local",
+        HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: consoleBaseUrl,
+        HALLU_DEFENSE_CONSOLE_API_ORIGIN: apiBaseUrl,
+        HALLU_DEFENSE_CONSOLE_ALLOW_INSECURE_LOCAL_HTTP: "true",
+        HALLU_DEFENSE_CONSOLE_ALLOW_UNSIGNED_LOCAL: "true",
+        HALLU_DEFENSE_CONSOLE_LOCAL_TENANT_ID: "tenant-a",
+        HALLU_DEFENSE_CONSOLE_LOCAL_SUBJECT_ID: "console-reviewer",
+        HALLU_DEFENSE_CONSOLE_LOCAL_ROLES:
+          "verifier,approval_reviewer,policy_evaluator,rag_writer,sandbox_runner,tool_operator"
       }
     }
   ]

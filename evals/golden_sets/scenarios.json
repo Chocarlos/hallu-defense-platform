@@ -105,7 +105,7 @@
             }
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         }
       ]
     },
@@ -156,7 +156,7 @@
             }
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         }
       ]
     },
@@ -219,7 +219,7 @@
             }
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         }
       ]
     },
@@ -317,7 +317,7 @@
             }
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         },
         {
           "evidence_id": "ev_cmd_broad_test",
@@ -338,7 +338,7 @@
             "network_policy": "deny"
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         }
       ]
     },
@@ -436,7 +436,7 @@
             }
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         },
         {
           "evidence_id": "ev_cmd_cache_test",
@@ -457,7 +457,7 @@
             "network_policy": "deny"
           },
           "authority": "internal",
-          "freshness": {"staleness_class": "fresh"}
+          "freshness": {"retrieved_at": "2026-01-01T00:00:00Z", "staleness_class": "fresh"}
         }
       ]
     },
@@ -522,8 +522,8 @@
     },
     "expect": {
       "status_code": 200,
-      "allowed": true,
-      "action": "rewrite",
+      "allowed": false,
+      "action": "block",
       "sanitized_output": {
         "api_key": "[REDACTED]",
         "email": "[REDACTED_EMAIL]"

@@ -29,6 +29,7 @@ SMOKE_JWT_ENV = "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_JWT"
 SMOKE_EXPECTED_SUBJECT_ENV = "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_EXPECTED_SUBJECT"
 SMOKE_EXPECTED_TENANT_ENV = "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_EXPECTED_TENANT"
 SMOKE_REQUIRED_ROLE_ENV = "HALLU_DEFENSE_OIDC_PROVIDER_SMOKE_REQUIRED_ROLE"
+OUTBOUND_ALLOWED_ORIGINS_ENV = "HALLU_DEFENSE_OUTBOUND_HTTPS_ALLOWED_ORIGINS"
 
 
 class OidcProviderSmokeError(ValueError):
@@ -115,6 +116,7 @@ def _load_config(env: Mapping[str, str]) -> OidcProviderSmokeConfig:
         oidc_clock_skew_seconds=_int_env(env, "HALLU_DEFENSE_OIDC_CLOCK_SKEW_SECONDS", 60),
         oidc_jwks_cache_ttl_seconds=_int_env(env, "HALLU_DEFENSE_OIDC_JWKS_CACHE_TTL_SECONDS", 300),
         oidc_http_timeout_seconds=_int_env(env, "HALLU_DEFENSE_OIDC_HTTP_TIMEOUT_SECONDS", 3),
+        outbound_https_allowed_origins=_csv_env(env, OUTBOUND_ALLOWED_ORIGINS_ENV),
     )
     try:
         validate_auth_settings(settings)
@@ -145,6 +147,14 @@ def _optional_env(env: Mapping[str, str], name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
+
+
+def _csv_env(env: Mapping[str, str], name: str) -> tuple[str, ...]:
+    raw_value = _required_env(env, name)
+    values = tuple(value.strip() for value in raw_value.split(","))
+    if any(not value for value in values):
+        raise OidcProviderSmokeError(f"{name} must contain only non-empty origins.")
+    return values
 
 
 def _int_env(env: Mapping[str, str], name: str, default: int) -> int:

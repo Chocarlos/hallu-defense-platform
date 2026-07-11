@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Final, Protocol, TypeVar
 
+from hallu_defense.services.nli import NLI_ADJUDICATION_OUTCOMES, NliAdjudicationOutcome
+
 PROMETHEUS_CONTENT_TYPE: Final = "text/plain; version=0.0.4; charset=utf-8"
 HTTP_DURATION_BUCKETS: Final = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 INGESTION_LATENCY_MS_BUCKETS: Final = (
@@ -21,6 +23,17 @@ INGESTION_LATENCY_MS_BUCKETS: Final = (
     30000.0,
     60000.0,
 )
+TOOL_VALIDATION_RATE_LIMIT_OUTCOMES: Final = frozenset(
+    {"allowed", "blocked", "unavailable"}
+)
+HTTP_METHODS: Final = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+)
+OTHER_HTTP_METHOD: Final = "__other__"
+EVAL_METRIC_SUITES: Final = frozenset(
+    {"smoke", "scenarios", "deterministic_claim_verifier"}
+)
+CUSTOM_EVAL_METRIC_SUITE: Final = "custom"
 TMetricLabels = TypeVar("TMetricLabels", bound=Hashable)
 TLabelText = TypeVar("TLabelText", bound=Hashable, contravariant=True)
 
@@ -68,6 +81,11 @@ class ApprovalDecisionLabels:
 
 
 @dataclass(frozen=True)
+class ToolValidationRateLimitLabels:
+    outcome: str
+
+
+@dataclass(frozen=True)
 class SandboxRunLabels:
     verdict: str
     network_policy: str
@@ -82,6 +100,11 @@ class EvalSuiteLabels:
 @dataclass(frozen=True)
 class IngestionJobLabels:
     status: str
+
+
+@dataclass(frozen=True)
+class NliAdjudicationLabels:
+    outcome: NliAdjudicationOutcome
 
 
 class PrometheusMetrics:
@@ -102,6 +125,9 @@ class PrometheusMetrics:
         self._policy_duration_buckets: defaultdict[tuple[PolicyDecisionLabels, float], int] = defaultdict(int)
         self._approval_request_totals: defaultdict[ApprovalRequestLabels, int] = defaultdict(int)
         self._approval_decision_totals: defaultdict[ApprovalDecisionLabels, int] = defaultdict(int)
+        self._tool_validation_rate_limit_totals: defaultdict[
+            ToolValidationRateLimitLabels, int
+        ] = defaultdict(int)
         self._sandbox_run_totals: defaultdict[SandboxRunLabels, int] = defaultdict(int)
         self._sandbox_duration_sums: defaultdict[SandboxRunLabels, float] = defaultdict(float)
         self._sandbox_duration_buckets: defaultdict[tuple[SandboxRunLabels, float], int] = defaultdict(int)
@@ -113,6 +139,7 @@ class PrometheusMetrics:
         self._ingestion_job_totals: defaultdict[IngestionJobLabels, int] = defaultdict(int)
         self._ingestion_latency_ms_sums: defaultdict[IngestionJobLabels, float] = defaultdict(float)
         self._ingestion_latency_ms_buckets: defaultdict[tuple[IngestionJobLabels, float], int] = defaultdict(int)
+        self._nli_adjudication_totals: defaultdict[NliAdjudicationLabels, int] = defaultdict(int)
 
     def record_http_request(
         self,
@@ -123,7 +150,7 @@ class PrometheusMetrics:
         duration_seconds: float,
     ) -> None:
         labels = HttpRequestLabels(
-            method=method.upper(),
+            method=normalize_http_method(method),
             path=path,
             status_code=str(status_code),
             outcome="success" if status_code < 400 else "error",
@@ -183,6 +210,13 @@ class PrometheusMetrics:
         with self._lock:
             self._approval_decision_totals[labels] += 1
 
+    def record_tool_validation_rate_limit(self, *, outcome: str) -> None:
+        if outcome not in TOOL_VALIDATION_RATE_LIMIT_OUTCOMES:
+            raise ValueError(f"Unsupported tool-validation rate limit outcome {outcome!r}.")
+        labels = ToolValidationRateLimitLabels(outcome=outcome)
+        with self._lock:
+            self._tool_validation_rate_limit_totals[labels] += 1
+
     def record_sandbox_run(
         self,
         *,
@@ -210,7 +244,7 @@ class PrometheusMetrics:
         groundedness: float | None,
         faithfulness: float | None,
     ) -> None:
-        labels = EvalSuiteLabels(suite=suite)
+        labels = EvalSuiteLabels(suite=normalize_eval_metric_suite(suite))
         with self._lock:
             self._eval_pass_rate[labels] = pass_rate
             self._eval_p95_latency_ms[labels] = p95_latency_ms
@@ -233,6 +267,13 @@ class PrometheusMetrics:
                     self._ingestion_latency_ms_buckets[(labels, bucket)] += 1
             self._ingestion_latency_ms_buckets[(labels, float("inf"))] += 1
 
+    def record_nli_adjudication(self, *, outcome: NliAdjudicationOutcome) -> None:
+        if outcome not in NLI_ADJUDICATION_OUTCOMES:
+            raise ValueError(f"Unsupported NLI adjudication outcome {outcome!r}.")
+        labels = NliAdjudicationLabels(outcome=outcome)
+        with self._lock:
+            self._nli_adjudication_totals[labels] += 1
+
     def render(self) -> str:
         with self._lock:
             request_totals = dict(self._request_totals)
@@ -247,6 +288,9 @@ class PrometheusMetrics:
             policy_duration_buckets = dict(self._policy_duration_buckets)
             approval_request_totals = dict(self._approval_request_totals)
             approval_decision_totals = dict(self._approval_decision_totals)
+            tool_validation_rate_limit_totals = dict(
+                self._tool_validation_rate_limit_totals
+            )
             sandbox_run_totals = dict(self._sandbox_run_totals)
             sandbox_duration_sums = dict(self._sandbox_duration_sums)
             sandbox_duration_buckets = dict(self._sandbox_duration_buckets)
@@ -258,6 +302,7 @@ class PrometheusMetrics:
             ingestion_job_totals = dict(self._ingestion_job_totals)
             ingestion_latency_ms_sums = dict(self._ingestion_latency_ms_sums)
             ingestion_latency_ms_buckets = dict(self._ingestion_latency_ms_buckets)
+            nli_adjudication_totals = dict(self._nli_adjudication_totals)
 
         lines = [
             "# HELP hallu_api_build_info API service build and environment metadata.",
@@ -308,6 +353,10 @@ class PrometheusMetrics:
             policy_duration_buckets,
         )
         self._append_approval_metrics(lines, approval_request_totals, approval_decision_totals)
+        self._append_tool_validation_rate_limit_metrics(
+            lines,
+            tool_validation_rate_limit_totals,
+        )
         self._append_sandbox_metrics(
             lines,
             sandbox_run_totals,
@@ -328,6 +377,7 @@ class PrometheusMetrics:
             ingestion_latency_ms_sums,
             ingestion_latency_ms_buckets,
         )
+        self._append_nli_adjudication_metrics(lines, nli_adjudication_totals)
 
         return "\n".join(lines) + "\n"
 
@@ -439,6 +489,27 @@ class PrometheusMetrics:
             lines.append(
                 "hallu_approval_decisions_total"
                 f"{_approval_decision_label_text(decision_labels)} {count}"
+            )
+
+    def _append_tool_validation_rate_limit_metrics(
+        self,
+        lines: list[str],
+        totals: dict[ToolValidationRateLimitLabels, int],
+    ) -> None:
+        lines.extend(
+            [
+                "# HELP hallu_tool_validation_rate_limit_total "
+                "Tool-validation rate limit decisions by bounded outcome.",
+                "# TYPE hallu_tool_validation_rate_limit_total counter",
+            ]
+        )
+        for labels, count in sorted(
+            totals.items(),
+            key=lambda item: item[0].outcome,
+        ):
+            lines.append(
+                "hallu_tool_validation_rate_limit_total"
+                f"{_tool_validation_rate_limit_label_text(labels)} {count}"
             )
 
     def _append_sandbox_metrics(
@@ -581,6 +652,26 @@ class PrometheusMetrics:
                 f"{_ingestion_job_label_text(labels)} {totals.get(labels, 0)}"
             )
 
+    def _append_nli_adjudication_metrics(
+        self,
+        lines: list[str],
+        totals: dict[NliAdjudicationLabels, int],
+    ) -> None:
+        lines.extend(
+            [
+                "# HELP hallu_nli_adjudications_total Total provider NLI adjudication attempts by outcome.",
+                "# TYPE hallu_nli_adjudications_total counter",
+            ]
+        )
+        for labels, count in sorted(
+            totals.items(),
+            key=lambda item: _nli_adjudication_sort_key(item[0]),
+        ):
+            lines.append(
+                "hallu_nli_adjudications_total"
+                f"{_nli_adjudication_label_text(labels)} {count}"
+            )
+
     def _append_histogram(
         self,
         lines: list[str],
@@ -651,6 +742,22 @@ def _approval_decision_label_text(labels: ApprovalDecisionLabels, *extra: tuple[
     )
 
 
+def normalize_http_method(method: str) -> str:
+    normalized = method.upper()
+    return normalized if normalized in HTTP_METHODS else OTHER_HTTP_METHOD
+
+
+def normalize_eval_metric_suite(suite: str) -> str:
+    return suite if suite in EVAL_METRIC_SUITES else CUSTOM_EVAL_METRIC_SUITE
+
+
+def _tool_validation_rate_limit_label_text(
+    labels: ToolValidationRateLimitLabels,
+    *extra: tuple[str, str],
+) -> str:
+    return _label_text(("outcome", labels.outcome), *extra)
+
+
 def _sandbox_run_label_text(labels: SandboxRunLabels, *extra: tuple[str, str]) -> str:
     return _label_text(
         ("verdict", labels.verdict),
@@ -714,3 +821,14 @@ def _ingestion_job_label_text(labels: IngestionJobLabels, *extra: tuple[str, str
 
 def _ingestion_job_sort_key(labels: IngestionJobLabels) -> tuple[str]:
     return (labels.status,)
+
+
+def _nli_adjudication_label_text(
+    labels: NliAdjudicationLabels,
+    *extra: tuple[str, str],
+) -> str:
+    return _label_text(("outcome", labels.outcome), *extra)
+
+
+def _nli_adjudication_sort_key(labels: NliAdjudicationLabels) -> tuple[str]:
+    return (labels.outcome,)

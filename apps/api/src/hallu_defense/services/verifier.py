@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import cast
 
@@ -17,6 +18,7 @@ from hallu_defense.domain.models import (
 from hallu_defense.services.nli import NliAdjudicator
 from hallu_defense.services.text import tokenize
 
+LOGGER = logging.getLogger(__name__)
 NUMBER_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 PASS_RE = re.compile(r"\b(pass|passed|green|exito|exit code 0)\b", re.I)
 FAIL_RE = re.compile(r"\b(fail|failed|error|traceback|exit code [1-9])\b", re.I)
@@ -233,8 +235,27 @@ class ClaimVerifier:
             return None
         try:
             adjudication = self._nli_adjudicator.adjudicate(claim, evidence)
-        except Exception:
-            return None
+        except Exception as exc:
+            error_type = type(exc).__name__
+            LOGGER.error(
+                "Provider NLI adjudication failed closed",
+                extra={"claim_id": claim.claim_id, "error_type": error_type},
+            )
+            return ClaimVerdict(
+                claim_id=claim.claim_id,
+                status=VerdictStatus.AMBIGUOUS,
+                confidence=min(0.49, max(0.1, best_score)),
+                action=(
+                    VerdictAction.REQUIRE_HUMAN_REVIEW
+                    if claim.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
+                    else VerdictAction.REWRITE
+                ),
+                reason="Provider NLI was unavailable or invalid; conservative fallback applied.",
+                validator_trace={
+                    "overlap": best_score,
+                    "nli": {"status": "unavailable", "error_type": error_type},
+                },
+            )
         if adjudication is None:
             return None
 

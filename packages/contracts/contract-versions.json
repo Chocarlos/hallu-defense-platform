@@ -1,0 +1,203 @@
+{
+  "manifest_version": "contract-versions.v1",
+  "vocabularies": {
+    "shared": {
+      "claim_types": [
+        "world_fact",
+        "doc_grounded",
+        "tool_observation",
+        "repo_state",
+        "test_result",
+        "computed_value",
+        "policy_claim",
+        "proposed_action",
+        "creative_statement",
+        "opinion"
+      ],
+      "risk_levels": ["low", "medium", "high", "critical"],
+      "evidence_kinds": [
+        "document_chunk",
+        "web_source",
+        "tool_output",
+        "repo_file",
+        "command_output",
+        "policy_rule",
+        "calculation"
+      ],
+      "authorities": ["official", "internal", "trusted_third_party", "unknown"]
+    },
+    "v1": {
+      "status_type": "VerdictStatus",
+      "action_type": "VerdictAction",
+      "statuses": [
+        "SUPPORTED",
+        "PARTIALLY_SUPPORTED",
+        "CONTRADICTED",
+        "NOT_FOUND",
+        "AMBIGUOUS",
+        "STALE_SOURCE",
+        "UNVERIFIABLE",
+        "OUT_OF_SCOPE"
+      ],
+      "actions": [
+        "allow",
+        "allow_with_citation",
+        "rewrite",
+        "abstain",
+        "ask_clarification",
+        "block",
+        "require_human_review"
+      ]
+    },
+    "v2": {
+      "schema_version": "2.0",
+      "schema_version_type": "ContractSchemaVersionV2",
+      "status_type": "VerdictStatusV2",
+      "action_type": "VerdictActionV2",
+      "statuses": [
+        "supported",
+        "unsupported",
+        "contradicted",
+        "insufficient_evidence",
+        "not_verifiable",
+        "requires_human_review",
+        "blocked_by_policy"
+      ],
+      "actions": [
+        "allow",
+        "repair",
+        "abstain",
+        "block",
+        "ask_clarification",
+        "require_approval"
+      ]
+    }
+  },
+  "legacy_models": {
+    "Claim": {
+      "contract_version": "1.0",
+      "json_schema": "claim.schema.json",
+      "fields": ["claim_id", "text", "canonical_form", "type", "risk_level", "requires_evidence", "source_span", "metadata"]
+    },
+    "Evidence": {
+      "contract_version": "1.0",
+      "json_schema": "evidence.schema.json",
+      "fields": ["evidence_id", "kind", "source_ref", "content", "structured_content", "authority", "freshness"]
+    },
+    "ClaimVerdict": {
+      "contract_version": "1.0",
+      "json_schema": "verdict.schema.json",
+      "fields": ["claim_id", "status", "confidence", "evidence_ids", "action", "reason", "validator_trace"]
+    },
+    "VerificationRunRequest": {
+      "json_schema": "verification-run-request.schema.json",
+      "fields": ["tenant_id", "message_text", "documents", "tool_outputs", "execution_artifacts", "task_type", "message_id"]
+    },
+    "VerificationRun": {
+      "contract_version": "1.0",
+      "json_schema": "verification-run.schema.json",
+      "fields": ["trace_id", "tenant_id", "input", "claims", "evidence", "verdicts", "final_decision", "final_text", "policy_version", "created_at"]
+    },
+    "ToolCallEnvelope": {
+      "contract_version": "1.0",
+      "json_schema": "tool-call-envelope.schema.json",
+      "fields": ["tool_name", "input", "schema", "risk_level", "approval_required", "caller_context", "approval_id", "approval_execution_token"]
+    },
+    "SandboxRun": {
+      "contract_version": "1.0",
+      "json_schema": "sandbox-run.schema.json",
+      "fields": ["repo_ref", "commands", "exit_codes", "stdout", "stderr", "artifacts", "evidence", "network_policy", "verdict"]
+    },
+    "DocumentInput": {
+      "json_schema": "document-input.schema.json",
+      "fields": ["source_ref", "content", "authority", "metadata"]
+    },
+    "PolicyEvaluationResponse": {
+      "json_schema": "policy-evaluation-response.schema.json",
+      "fields": ["trace_id", "allowed", "action", "policy_version", "matched_rules", "explanation"]
+    },
+    "SourceSpan": {
+      "json_schema": "source-span.schema.json",
+      "fields": ["message_id", "start_char", "end_char"]
+    },
+    "Freshness": {
+      "json_schema": "freshness.schema.json",
+      "fields": ["retrieved_at", "published_at", "staleness_class"]
+    },
+    "EvalReportMetrics": {
+      "json_schema": "eval-report-metrics.schema.json",
+      "fields": ["scenario_count", "pass_rate", "p95_latency_ms", "groundedness", "faithfulness"]
+    },
+    "EvalReport": {
+      "json_schema": "eval-report.schema.json",
+      "fields": ["report_id", "tenant_id", "suite", "run_id", "source", "metrics", "payload", "published_by", "published_at"]
+    },
+    "EvalReportPublishRequest": {
+      "json_schema": "eval-report-publish-request.schema.json",
+      "fields": ["suite", "run_id", "source", "metrics", "payload"]
+    },
+    "EvalReportPublishResponse": {
+      "json_schema": "eval-report-publish-response.schema.json",
+      "fields": ["trace_id", "report"]
+    },
+    "EvalReportListRequest": {
+      "json_schema": "eval-report-list-request.schema.json",
+      "fields": ["suite", "limit"]
+    },
+    "EvalReportListResponse": {
+      "json_schema": "eval-report-list-response.schema.json",
+      "fields": ["trace_id", "reports"]
+    }
+  },
+  "v2_models": {
+    "ClaimVerdictV2": {
+      "contract_version": "2.0",
+      "json_schema": "claim-verdict-v2.schema.json",
+      "fields": ["schema_version", "claim_id", "status", "confidence", "evidence_ids", "action", "reason", "validator_trace"],
+      "required": ["schema_version", "claim_id", "status", "confidence", "evidence_ids", "action", "reason", "validator_trace"]
+    },
+    "ClaimVerificationRequestV2": {
+      "contract_version": "2.0",
+      "json_schema": "claim-verification-request-v2.schema.json",
+      "fields": ["schema_version", "claims", "evidence"],
+      "required": ["schema_version", "claims"]
+    },
+    "ClaimVerificationResponseV2": {
+      "contract_version": "2.0",
+      "json_schema": "claim-verification-response-v2.schema.json",
+      "fields": ["schema_version", "verdicts"],
+      "required": ["schema_version", "verdicts"]
+    },
+    "VerificationRunRequestV2": {
+      "contract_version": "2.0",
+      "json_schema": "verification-run-request-v2.schema.json",
+      "fields": ["schema_version", "tenant_id", "message_text", "documents", "tool_outputs", "execution_artifacts", "task_type", "message_id"],
+      "required": ["schema_version", "message_text"]
+    },
+    "VerificationRunV2": {
+      "contract_version": "2.0",
+      "json_schema": "verification-run-v2.schema.json",
+      "fields": ["schema_version", "trace_id", "tenant_id", "input", "claims", "evidence", "verdicts", "final_decision", "final_text", "policy_version", "created_at"],
+      "required": ["schema_version", "trace_id", "tenant_id", "input", "claims", "evidence", "verdicts", "final_decision", "final_text", "policy_version", "created_at"]
+    }
+  },
+  "vocabulary_bindings": [
+    {"model": "Claim", "field": "type", "vocabulary": "shared.claim_types"},
+    {"model": "Claim", "field": "risk_level", "vocabulary": "shared.risk_levels"},
+    {"model": "Evidence", "field": "kind", "vocabulary": "shared.evidence_kinds"},
+    {"model": "Evidence", "field": "authority", "vocabulary": "shared.authorities"},
+    {"model": "ClaimVerdict", "field": "status", "vocabulary": "v1.statuses"},
+    {"model": "ClaimVerdict", "field": "action", "vocabulary": "v1.actions"},
+    {"model": "ToolCallEnvelope", "field": "risk_level", "vocabulary": "shared.risk_levels"},
+    {"model": "SandboxRun", "field": "verdict", "vocabulary": "v1.statuses"},
+    {"model": "PolicyEvaluationResponse", "field": "action", "vocabulary": "v1.actions"},
+    {"model": "ClaimVerdictV2", "field": "status", "vocabulary": "v2.statuses"},
+    {"model": "ClaimVerdictV2", "field": "action", "vocabulary": "v2.actions"}
+  ],
+  "endpoints": {
+    "/claims/verify": {"request_model": "ClaimVerificationRequest", "response_model": "ClaimVerificationResponse"},
+    "/verification/run": {"request_model": "VerificationRunRequest", "response_model": "VerificationRun"},
+    "/v2/claims/verify": {"request_model": "ClaimVerificationRequestV2", "response_model": "ClaimVerificationResponseV2"},
+    "/v2/verification/run": {"request_model": "VerificationRunRequestV2", "response_model": "VerificationRunV2"}
+  }
+}

@@ -1,0 +1,21 @@
+diff --git a/go.mod b/go.mod
+index 479ecbf6..034e4f01 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,5 +1,7 @@
+ module github.com/grafana/grafana
+ 
++replace github.com/grafana/tempo v2.10.3+incompatible => ../tempo-v2.10.3-src
++
+ go 1.26.4
+ 
+ // Direct requirements -- every entry needs an owner
+@@ -120,7 +122,7 @@ require (
+ 	github.com/grafana/pyroscope-go/godeltaprof v0.1.9 // @grafana/data-sources-plugins
+ 	github.com/grafana/pyroscope/api v1.3.0 // @grafana/data-sources-plugins
+ 	github.com/grafana/schemads v0.2.2 // @grafana/data-sources
+-	github.com/grafana/tempo v1.5.1-0.20260427112133-525d1bab07e0 // @grafana/data-sources-plugins
++	github.com/grafana/tempo v2.10.3+incompatible // @grafana/data-sources-plugins
+ 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // @grafana/grafana-search-and-storage
+ 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0 // @grafana/grafana-catalog
+ 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3 // @grafana/grafana-backend-group

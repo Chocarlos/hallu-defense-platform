@@ -6,21 +6,33 @@ import hashlib
 import hmac
 import json
 import socket
+import ssl
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-from hallu_defense.config import Settings
+from hallu_defense.config import PRODUCTION_LIKE_ENVIRONMENTS, Settings
+from hallu_defense.outbound_http import (
+    OutboundHttpPolicy,
+    OutboundHttpPolicyError,
+    OutboundHttpRedirectError,
+    open_url_no_redirect,
+    outbound_http_policy_from_settings,
+)
 from hallu_defense.services.auth import Principal
 
 _SHA256_DIGEST_INFO_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")
 _MAX_OIDC_JSON_BYTES = 1_048_576
+_OIDC_FORCED_REFRESH_COOLDOWN_SECONDS = 5.0
+_OIDC_NEGATIVE_KID_TTL_SECONDS = _OIDC_FORCED_REFRESH_COOLDOWN_SECONDS
+_MAX_OIDC_NEGATIVE_KIDS = 256
 
 
 class OidcJwtValidationError(RuntimeError):
@@ -28,7 +40,9 @@ class OidcJwtValidationError(RuntimeError):
 
 
 class OidcJwksKeyNotFoundError(OidcJwtValidationError):
-    pass
+    def __init__(self, kid: str) -> None:
+        super().__init__("OIDC JWT kid was not found in JWKS.")
+        self.kid = kid
 
 
 @dataclass(frozen=True)
@@ -63,35 +77,120 @@ class OidcJwksResolver:
         settings: Settings,
         *,
         fetch_json: JsonFetcher | None = None,
-        clock: Clock = time.time,
+        clock: Clock = time.monotonic,
     ) -> None:
         self._settings = settings
-        self._fetch_json = fetch_json or fetch_json_url
+        try:
+            self._outbound_policy = outbound_http_policy_from_settings(settings)
+        except OutboundHttpPolicyError:
+            raise OidcJwtValidationError("OIDC outbound policy is invalid.") from None
+        self._fetch_json = fetch_json or (
+            lambda url, timeout: fetch_json_url(
+                url,
+                timeout,
+                policy=self._outbound_policy,
+            )
+        )
         self._clock = clock
         self._lock = threading.Lock()
         self._cached_jwks: _CachedJwks | None = None
         self._cached_discovered_jwks_url: str | None = None
+        self._last_forced_refresh_at: float | None = None
+        self._negative_kids: OrderedDict[str, float] = OrderedDict()
+        if settings.oidc_jwks_path is None:
+            for endpoint in (
+                settings.oidc_issuer,
+                settings.oidc_jwks_url,
+                settings.oidc_discovery_url,
+            ):
+                if endpoint is not None:
+                    _validate_remote_jwks_url(
+                        endpoint,
+                        require_https=self._production_like,
+                        policy=self._outbound_policy,
+                    )
 
     def resolve(self, *, force_refresh: bool = False) -> Mapping[str, object]:
-        if self._settings.oidc_jwks_path is not None:
-            return load_jwks(self._settings.oidc_jwks_path)
-
         now = self._clock()
         with self._lock:
+            cached = self._cached_jwks
+            if not force_refresh and cached is not None and cached.expires_at > now:
+                return cached.payload
             if (
-                not force_refresh
-                and self._cached_jwks is not None
-                and self._cached_jwks.expires_at > now
+                force_refresh
+                and self._last_forced_refresh_at is not None
+                and now - self._last_forced_refresh_at
+                < _OIDC_FORCED_REFRESH_COOLDOWN_SECONDS
             ):
-                return self._cached_jwks.payload
-            jwks_url = self._settings.oidc_jwks_url or self._discovered_jwks_url(force_refresh)
-            payload = self._fetch_json(jwks_url, self._settings.oidc_http_timeout_seconds)
-            _validate_jwks_shape(payload)
+                if cached is None:
+                    raise OidcJwtValidationError(
+                        "OIDC JWKS forced refresh is temporarily unavailable."
+                    )
+                return cached.payload
+            if force_refresh:
+                # Record the attempt before I/O. A failed IdP/JWKS request must
+                # still activate the global cooldown or random kids amplify an
+                # upstream outage into one request per authentication attempt.
+                self._last_forced_refresh_at = now
+            try:
+                if self._settings.oidc_jwks_path is not None:
+                    payload = load_jwks(self._settings.oidc_jwks_path)
+                else:
+                    jwks_url = self._settings.oidc_jwks_url or self._discovered_jwks_url(
+                        False
+                    )
+                    _validate_remote_jwks_url(
+                        jwks_url,
+                        require_https=self._production_like,
+                        policy=self._outbound_policy,
+                    )
+                    payload = self._fetch_json(
+                        jwks_url,
+                        self._settings.oidc_http_timeout_seconds,
+                    )
+                _validate_jwks_shape(payload)
+            except Exception:
+                # For an unknown kid, a stale known-key set is safe: the caller
+                # will still reject that kid. Returning it also lets the bounded
+                # negative cache suppress repeated attacker-controlled values.
+                if force_refresh and cached is not None:
+                    return cached.payload
+                raise
             self._cached_jwks = _CachedJwks(
                 payload=payload,
                 expires_at=now + self._settings.oidc_jwks_cache_ttl_seconds,
             )
             return payload
+
+    def resolve_unknown_kid(self, kid: str) -> Mapping[str, object]:
+        normalized_kid = kid.strip()
+        if not normalized_kid or len(normalized_kid) > 512:
+            raise OidcJwtValidationError("OIDC JWT kid header is invalid.")
+        now = self._clock()
+        with self._lock:
+            self._prune_negative_kids(now)
+            expires_at = self._negative_kids.get(normalized_kid)
+            if expires_at is not None and expires_at > now and self._cached_jwks is not None:
+                self._negative_kids.move_to_end(normalized_kid)
+                return self._cached_jwks.payload
+        payload = self.resolve(force_refresh=True)
+        with self._lock:
+            self._prune_negative_kids(now)
+            if _jwks_contains_kid(payload, normalized_kid):
+                self._negative_kids.pop(normalized_kid, None)
+            else:
+                self._negative_kids[normalized_kid] = (
+                    now + _OIDC_NEGATIVE_KID_TTL_SECONDS
+                )
+                self._negative_kids.move_to_end(normalized_kid)
+                while len(self._negative_kids) > _MAX_OIDC_NEGATIVE_KIDS:
+                    self._negative_kids.popitem(last=False)
+        return payload
+
+    def _prune_negative_kids(self, now: float) -> None:
+        expired = [kid for kid, expires_at in self._negative_kids.items() if expires_at <= now]
+        for kid in expired:
+            self._negative_kids.pop(kid, None)
 
     def _discovered_jwks_url(self, force_refresh: bool) -> str:
         if not force_refresh and self._cached_discovered_jwks_url is not None:
@@ -101,6 +200,11 @@ class OidcJwksResolver:
             raise OidcJwtValidationError(
                 "OIDC JWKS URL or discovery URL is required when no JWKS path is configured."
             )
+        _validate_remote_jwks_url(
+            discovery_url,
+            require_https=self._production_like,
+            policy=self._outbound_policy,
+        )
         discovery = self._fetch_json(discovery_url, self._settings.oidc_http_timeout_seconds)
         issuer = discovery.get("issuer")
         if issuer != self._settings.oidc_issuer:
@@ -108,9 +212,17 @@ class OidcJwksResolver:
         jwks_uri = discovery.get("jwks_uri")
         if not isinstance(jwks_uri, str) or not jwks_uri.strip():
             raise OidcJwtValidationError("OIDC discovery document must contain jwks_uri.")
-        _validate_remote_jwks_url(jwks_uri)
+        _validate_remote_jwks_url(
+            jwks_uri,
+            require_https=self._production_like,
+            policy=self._outbound_policy,
+        )
         self._cached_discovered_jwks_url = jwks_uri.strip()
         return self._cached_discovered_jwks_url
+
+    @property
+    def _production_like(self) -> bool:
+        return self._settings.environment.strip().lower() in PRODUCTION_LIKE_ENVIRONMENTS
 
 
 class OidcJwtValidator:
@@ -137,7 +249,7 @@ class OidcJwtValidator:
             raise OidcJwtValidationError("OIDC JWT kid header is required.")
         key = self._keys.get(kid)
         if key is None:
-            raise OidcJwksKeyNotFoundError("OIDC JWT kid was not found in JWKS.")
+            raise OidcJwksKeyNotFoundError(kid)
         _verify_rs256_signature(key, signed_part, signature)
         self._validate_registered_claims(payload, current_time_seconds=current_time_seconds)
         subject = _string_claim(payload, self._subject_claim, required=True)
@@ -183,10 +295,10 @@ class OidcJwtValidator:
 def load_jwks(path: Path) -> Mapping[str, object]:
     try:
         payload: object = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise OidcJwtValidationError("OIDC JWKS file could not be read.") from exc
-    except json.JSONDecodeError as exc:
-        raise OidcJwtValidationError("OIDC JWKS file is not valid JSON.") from exc
+    except OSError:
+        raise OidcJwtValidationError("OIDC JWKS file could not be read.") from None
+    except json.JSONDecodeError:
+        raise OidcJwtValidationError("OIDC JWKS file is not valid JSON.") from None
     if not isinstance(payload, Mapping):
         raise OidcJwtValidationError("OIDC JWKS must be a JSON object.")
     jwks = cast(Mapping[str, object], payload)
@@ -194,22 +306,42 @@ def load_jwks(path: Path) -> Mapping[str, object]:
     return jwks
 
 
-def fetch_json_url(url: str, timeout_seconds: int) -> Mapping[str, object]:
-    _validate_remote_jwks_url(url)
+def fetch_json_url(
+    url: str,
+    timeout_seconds: int,
+    *,
+    policy: OutboundHttpPolicy | None = None,
+    ssl_context: ssl.SSLContext | None = None,
+) -> Mapping[str, object]:
+    effective_policy = policy or OutboundHttpPolicy.local_unrestricted()
+    _validate_remote_jwks_url(url, policy=effective_policy)
     request = Request(url, headers={"Accept": "application/json"})
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        with open_url_no_redirect(
+            request,
+            timeout=timeout_seconds,
+            context=ssl_context,
+        ) as response:
             raw = response.read(_MAX_OIDC_JSON_BYTES + 1)
+    except OutboundHttpRedirectError:
+        raise OidcJwtValidationError("OIDC redirects are not allowed.") from None
     except HTTPError as exc:
-        raise OidcJwtValidationError("OIDC remote JSON request failed.") from exc
-    except (OSError, TimeoutError, URLError, socket.timeout) as exc:
-        raise OidcJwtValidationError("OIDC remote JSON request could not be completed.") from exc
+        try:
+            exc.close()
+        finally:
+            raise OidcJwtValidationError("OIDC remote JSON request failed.") from None
+    except (OSError, TimeoutError, URLError, socket.timeout):
+        raise OidcJwtValidationError(
+            "OIDC remote JSON request could not be completed."
+        ) from None
     if len(raw) > _MAX_OIDC_JSON_BYTES:
         raise OidcJwtValidationError("OIDC remote JSON response is too large.")
     try:
         payload: object = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise OidcJwtValidationError("OIDC remote JSON response is not valid JSON.") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise OidcJwtValidationError(
+            "OIDC remote JSON response is not valid JSON."
+        ) from None
     if not isinstance(payload, Mapping):
         raise OidcJwtValidationError("OIDC remote JSON response must be a JSON object.")
     return cast(Mapping[str, object], payload)
@@ -221,10 +353,37 @@ def _validate_jwks_shape(jwks: Mapping[str, object]) -> None:
         raise OidcJwtValidationError("OIDC JWKS must contain a keys array.")
 
 
-def _validate_remote_jwks_url(url: str) -> None:
-    parsed = urlparse(url)
+def _jwks_contains_kid(jwks: Mapping[str, object], kid: str) -> bool:
+    keys = jwks.get("keys")
+    if not isinstance(keys, list):
+        return False
+    return any(isinstance(key, Mapping) and key.get("kid") == kid for key in keys)
+
+
+def _validate_remote_jwks_url(
+    url: str,
+    *,
+    require_https: bool = False,
+    policy: OutboundHttpPolicy | None = None,
+) -> None:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        raise OidcJwtValidationError(
+            "OIDC remote URL must be an absolute HTTP(S) URL."
+        ) from None
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise OidcJwtValidationError("OIDC remote URL must be an absolute HTTP(S) URL.")
+    if require_https and parsed.scheme != "https":
+        raise OidcJwtValidationError(
+            "OIDC remote URL must use HTTPS in production and staging."
+        )
+    try:
+        (policy or OutboundHttpPolicy.local_unrestricted()).validate_url(url)
+    except OutboundHttpPolicyError:
+        raise OidcJwtValidationError(
+            "OIDC remote endpoint is blocked by outbound policy."
+        ) from None
 
 
 def _jwk_keys_by_id(jwks: Mapping[str, object]) -> dict[str, _RsaPublicKey]:
@@ -277,8 +436,8 @@ def _decode_jwt(token: str) -> tuple[Mapping[str, object], Mapping[str, object],
 def _json_segment(segment: str, label: str) -> Mapping[str, object]:
     try:
         payload: object = json.loads(_base64url_decode(segment).decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise OidcJwtValidationError(f"OIDC JWT {label} is not valid JSON.") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise OidcJwtValidationError(f"OIDC JWT {label} is not valid JSON.") from None
     if not isinstance(payload, Mapping):
         raise OidcJwtValidationError(f"OIDC JWT {label} must be a JSON object.")
     if not all(isinstance(key, str) for key in payload):
@@ -326,8 +485,8 @@ def _base64url_decode(value: str) -> bytes:
             altchars=b"-_",
             validate=True,
         )
-    except (binascii.Error, ValueError, UnicodeEncodeError) as exc:
-        raise OidcJwtValidationError("OIDC JWT contains invalid base64url data.") from exc
+    except (binascii.Error, ValueError, UnicodeEncodeError):
+        raise OidcJwtValidationError("OIDC JWT contains invalid base64url data.") from None
 
 
 def _integer_claim(

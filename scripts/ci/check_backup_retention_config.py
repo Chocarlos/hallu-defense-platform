@@ -12,6 +12,7 @@ MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
 DATA_LIFECYCLE_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "data_lifecycle.py"
+RAG_LIFECYCLE_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "rag_lifecycle.py"
 RETENTION_EXECUTION_PATH = ROOT / "scripts" / "dev" / "run_retention_execution.py"
 BACKUP_RESTORE_DRILL_PATH = ROOT / "scripts" / "dev" / "backup_restore_drill.py"
 API_PYPROJECT_PATH = ROOT / "apps" / "api" / "pyproject.toml"
@@ -94,6 +95,7 @@ def validate_supporting_files(
     ci_workflow_text: str,
     security_workflow_text: str,
     data_lifecycle_text: str = "",
+    rag_lifecycle_text: str = "",
     retention_execution_text: str = "",
     backup_restore_drill_text: str = "",
     api_pyproject_text: str = "",
@@ -105,6 +107,8 @@ def validate_supporting_files(
         or "restore drill" not in docs_text
         or "run_retention_execution.py" not in docs_text
         or "backup_restore_drill.py" not in docs_text
+        or "rag_lifecycle_operations" not in docs_text
+        or "parity verification" not in docs_text
     ):
         errors.append(
             "docs/security/backup-restore-retention.md must document policy, "
@@ -129,6 +133,7 @@ def validate_supporting_files(
     if required_script not in security_workflow_text:
         errors.append("security workflow must run check_backup_retention_config.py")
     _validate_data_lifecycle_runtime(data_lifecycle_text, errors)
+    _validate_rag_lifecycle_runtime(rag_lifecycle_text, errors)
     _validate_retention_execution_script(retention_execution_text, errors)
     _validate_backup_restore_drill_script(backup_restore_drill_text, errors)
     if "cryptography" not in api_pyproject_text:
@@ -163,6 +168,7 @@ def _validate_component(
 
     backup = _mapping(component.get("backup"), f"{path}.backup", errors)
     _validate_backup(
+        component_name=component_name,
         path=f"{path}.backup",
         backup=backup,
         persistent=persistent,
@@ -182,6 +188,7 @@ def _validate_component(
 
 def _validate_backup(
     *,
+    component_name: str,
     path: str,
     backup: Mapping[str, object],
     persistent: bool,
@@ -209,6 +216,17 @@ def _validate_backup(
         errors.append(f"{path}.target must be a non-empty string")
     elif enabled and str(target) == "not_applicable":
         errors.append(f"{path}.target must name a backup target when backups are enabled")
+
+    # Keep the v1 policy backward compatible for every existing component while
+    # making MinIO's primary-data and backup-target boundary explicit.
+    if component_name == "minio":
+        source = backup.get("source")
+        if source != "primary-data-bucket":
+            errors.append(f"{path}.source must be primary-data-bucket")
+        if target != "cross-bucket-encrypted-replica":
+            errors.append(f"{path}.target must be cross-bucket-encrypted-replica")
+        if source == target:
+            errors.append(f"{path}.source and target must be distinct")
 
     rpo_minutes = _non_negative_int(backup.get("rpo_minutes"), f"{path}.rpo_minutes", errors)
     rto_minutes = _non_negative_int(backup.get("rto_minutes"), f"{path}.rto_minutes", errors)
@@ -297,6 +315,11 @@ def _validate_data_lifecycle_runtime(text: str, errors: list[str]) -> None:
         "tenant_id = %s",
         "DELETE FROM",
         "append_event",
+        "RagLifecycleCoordinator",
+        "acquire_target_locks",
+        "delete_external",
+        "mark_completed",
+        "rag_external_parity_verified",
     )
     for marker in required_markers:
         if marker not in text:
@@ -320,6 +343,24 @@ def _validate_retention_execution_script(text: str, errors: list[str]) -> None:
             errors.append(f"run_retention_execution.py missing safeguard {marker!r}")
 
 
+def _validate_rag_lifecycle_runtime(text: str, errors: list[str]) -> None:
+    if not text.strip():
+        errors.append("services/rag_lifecycle.py must exist")
+        return
+    for marker in (
+        "rag_lifecycle_operations",
+        "pg_advisory_xact_lock",
+        "HYBRID_REVISION_LOCK_NAMESPACE",
+        "delete_evidence_ids",
+        "external_deleted",
+        "mark_completed",
+        "lease_token",
+        "target_tenant_id",
+    ):
+        if marker not in text:
+            errors.append(f"services/rag_lifecycle.py missing {marker!r}")
+
+
 def _validate_backup_restore_drill_script(text: str, errors: list[str]) -> None:
     if not text.strip():
         errors.append("scripts/dev/backup_restore_drill.py must exist")
@@ -334,7 +375,19 @@ def _validate_backup_restore_drill_script(text: str, errors: list[str]) -> None:
         "pg_restore",
         "Fernet",
         "create_secret_manager",
-        "minio/mc",
+        "S3SigV4Client",
+        "DEFAULT_MINIO_CREDENTIALS_SECRET_NAME",
+        'field="access_key"',
+        'field="secret_key"',
+        "PRODUCTION_LIKE_ENVIRONMENTS",
+        "minio_allowed_origins",
+        "minio_allow_private_endpoint",
+        "upload_file",
+        "get_bytes",
+        "max_backup_bytes",
+        "_download_from_minio",
+        "restored_from_object_storage",
+        "encrypted_sha256",
         "backup-drills",
         "parity",
         "report_path",
@@ -343,6 +396,10 @@ def _validate_backup_restore_drill_script(text: str, errors: list[str]) -> None:
     for marker in required_markers:
         if marker not in text:
             errors.append(f"backup_restore_drill.py missing safeguard {marker!r}")
+    legacy_tool_image = "minio/" + "mc"
+    legacy_image_constant = "DEFAULT_" + "MC_IMAGE"
+    if legacy_tool_image in text or legacy_image_constant in text:
+        errors.append("backup_restore_drill.py must not use a MinIO tool image")
 
 
 def _mapping(value: object, path: str, errors: list[str]) -> Mapping[str, object]:
@@ -387,6 +444,7 @@ def main() -> None:
         ci_workflow_text=CI_WORKFLOW_PATH.read_text(encoding="utf-8"),
         security_workflow_text=SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"),
         data_lifecycle_text=DATA_LIFECYCLE_PATH.read_text(encoding="utf-8"),
+        rag_lifecycle_text=RAG_LIFECYCLE_PATH.read_text(encoding="utf-8"),
         retention_execution_text=RETENTION_EXECUTION_PATH.read_text(encoding="utf-8"),
         backup_restore_drill_text=BACKUP_RESTORE_DRILL_PATH.read_text(encoding="utf-8"),
         api_pyproject_text=API_PYPROJECT_PATH.read_text(encoding="utf-8"),

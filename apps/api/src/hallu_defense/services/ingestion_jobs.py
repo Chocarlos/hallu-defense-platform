@@ -27,12 +27,17 @@ from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
 from hallu_defense.services.postgres import SqlConnectionProvider
+from hallu_defense.services.rag_index import (
+    HYBRID_REVISION_LOCK_NAMESPACE,
+    hybrid_tenant_lifecycle_lock_key,
+)
 
 if TYPE_CHECKING:
     from hallu_defense.config import Settings
 
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_BACKOFF_BASE_SECONDS = 30.0
+MAX_RECONCILIATION_BACKOFF_SECONDS = 60 * 60
 
 
 class IngestionJobError(Exception):
@@ -41,6 +46,10 @@ class IngestionJobError(Exception):
 
 class IngestionJobTransitionError(IngestionJobError):
     """Raised when a claimed job cannot transition (stale claim, wrong tenant/worker, or already terminal)."""
+
+
+class IngestionTenantDeletedError(IngestionJobError):
+    """Raised when a durable tenant-deletion fence forbids new ingestion."""
 
 
 class IngestionJobType(str, Enum):
@@ -69,6 +78,7 @@ class IngestionJob:
     available_at: datetime
     locked_by: str | None
     locked_at: datetime | None
+    lease_token: str | None
     last_error: str | None
     created_at: datetime
     updated_at: datetime
@@ -80,14 +90,23 @@ class IngestionJob:
 # claim/complete/fail all parse rows through the same helper.
 _JOB_COLUMNS = (
     "job_id, tenant_id, corpus_id, trace_id, job_type, payload, status, attempts, "
-    "available_at, locked_by, locked_at, last_error, created_at, updated_at"
+    "available_at, locked_by, locked_at, lease_token, last_error, created_at, updated_at"
 )
 
 _INSERT_JOB_SQL = (
     "INSERT INTO rag_ingestion_jobs "
     "(job_id, tenant_id, corpus_id, trace_id, job_type, payload, status, attempts, "
     "available_at, created_at, updated_at) "
-    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)"
+    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s) "
+    f"RETURNING {_JOB_COLUMNS}"
+)
+
+_LOCK_TENANT_LIFECYCLE_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+)
+_SELECT_TENANT_TOMBSTONE_SQL = (
+    "SELECT tenant_id FROM rag_tenant_deletion_tombstones "
+    "WHERE tenant_id = %s LIMIT 1"
 )
 
 _SELECT_JOB_SQL = (
@@ -107,15 +126,25 @@ _CLAIM_BATCH_SQL = (
     "FOR UPDATE SKIP LOCKED "
     "LIMIT %s"
     ") "
-    "UPDATE rag_ingestion_jobs SET status = %s, locked_by = %s, locked_at = %s, updated_at = %s "
+    "UPDATE rag_ingestion_jobs SET status = %s, locked_by = %s, locked_at = %s, "
+    "lease_token = %s, updated_at = %s "
     "WHERE job_id IN (SELECT job_id FROM candidates) "
     f"RETURNING {_JOB_COLUMNS}"
 )
 
 _COMPLETE_JOB_SQL = (
-    "UPDATE rag_ingestion_jobs SET status = %s, locked_by = NULL, locked_at = NULL, updated_at = %s "
+    "UPDATE rag_ingestion_jobs SET status = %s, locked_by = NULL, locked_at = NULL, "
+    "lease_token = NULL, updated_at = %s "
     "WHERE job_id = %s AND tenant_id = %s AND status = %s AND locked_by = %s "
-    "RETURNING job_id"
+    "AND lease_token = %s "
+    f"RETURNING {_JOB_COLUMNS}"
+)
+
+_HEARTBEAT_JOB_SQL = (
+    "UPDATE rag_ingestion_jobs SET locked_at = %s, updated_at = %s "
+    "WHERE job_id = %s AND tenant_id = %s AND status = %s AND locked_by = %s "
+    "AND lease_token = %s "
+    f"RETURNING {_JOB_COLUMNS}"
 )
 
 # attempts + 1 >= max_attempts decides dead-letter vs. retry-with-backoff in a
@@ -128,8 +157,23 @@ _FAIL_JOB_SQL = (
     "status = CASE WHEN attempts + 1 >= %s THEN %s ELSE %s END, "
     "available_at = CASE WHEN attempts + 1 >= %s THEN available_at "
     "ELSE %s + (%s * power(2, attempts)) * interval '1 second' END, "
-    "locked_by = NULL, locked_at = NULL, last_error = %s, updated_at = %s "
+    "locked_by = NULL, locked_at = NULL, lease_token = NULL, last_error = %s, updated_at = %s "
     "WHERE job_id = %s AND tenant_id = %s AND status = %s AND locked_by = %s "
+    "AND lease_token = %s "
+    f"RETURNING {_JOB_COLUMNS}"
+)
+
+# A persistent hybrid write may already exist in one store. Transport failures
+# therefore remain retryable until both idempotent writes converge; only
+# deterministic job/payload failures use the bounded dead-letter transition.
+_RETRY_JOB_SQL = (
+    "UPDATE rag_ingestion_jobs SET "
+    "attempts = attempts + 1, status = %s, "
+    "available_at = %s + LEAST(%s * power(2, LEAST(attempts, 16)), %s) "
+    "* interval '1 second', "
+    "locked_by = NULL, locked_at = NULL, lease_token = NULL, last_error = %s, updated_at = %s "
+    "WHERE job_id = %s AND tenant_id = %s AND status = %s AND locked_by = %s "
+    "AND lease_token = %s "
     f"RETURNING {_JOB_COLUMNS}"
 )
 
@@ -145,7 +189,24 @@ _REQUEUE_STALE_RUNNING_SQL = (
     "attempts = attempts + 1, "
     "status = CASE WHEN attempts + 1 >= %s THEN %s ELSE %s END, "
     "available_at = CASE WHEN attempts + 1 >= %s THEN available_at ELSE %s END, "
-    "locked_by = NULL, locked_at = NULL, last_error = %s, updated_at = %s "
+    "locked_by = NULL, locked_at = NULL, lease_token = NULL, last_error = %s, updated_at = %s "
+    "WHERE job_id IN (SELECT job_id FROM candidates) "
+    f"RETURNING {_JOB_COLUMNS}"
+)
+
+_RETRY_STALE_RUNNING_SQL = (
+    "WITH candidates AS ("
+    "SELECT job_id FROM rag_ingestion_jobs "
+    "WHERE status = %s AND locked_at <= %s "
+    "ORDER BY locked_at ASC "
+    "FOR UPDATE SKIP LOCKED "
+    "LIMIT %s"
+    ") "
+    "UPDATE rag_ingestion_jobs SET "
+    "attempts = attempts + 1, status = %s, "
+    "available_at = %s + LEAST(%s * power(2, LEAST(attempts, 16)), %s) "
+    "* interval '1 second', "
+    "locked_by = NULL, locked_at = NULL, lease_token = NULL, last_error = %s, updated_at = %s "
     "WHERE job_id IN (SELECT job_id FROM candidates) "
     f"RETURNING {_JOB_COLUMNS}"
 )
@@ -200,27 +261,47 @@ class PostgresIngestionJobQueue:
             available_at=available_at or now,
             locked_by=None,
             locked_at=None,
+            lease_token=None,
             last_error=None,
             created_at=now,
             updated_at=now,
         )
-        self._connection.execute(
-            _INSERT_JOB_SQL,
-            (
-                job.job_id,
-                job.tenant_id,
-                job.corpus_id,
-                job.trace_id,
-                job.job_type.value,
-                self._payload(job.payload),
-                job.status.value,
-                job.attempts,
-                job.available_at,
-                job.created_at,
-                job.updated_at,
-            ),
-        )
-        return job
+        with self._connection.transaction() as transaction:
+            transaction.execute(
+                _LOCK_TENANT_LIFECYCLE_SQL,
+                (
+                    HYBRID_REVISION_LOCK_NAMESPACE
+                    + hybrid_tenant_lifecycle_lock_key(job.tenant_id),
+                ),
+            )
+            if transaction.fetch_all(
+                _SELECT_TENANT_TOMBSTONE_SQL,
+                (job.tenant_id,),
+            ):
+                raise IngestionTenantDeletedError(
+                    "Ingestion is forbidden for a durably deleted tenant."
+                )
+            rows = transaction.execute_returning(
+                _INSERT_JOB_SQL,
+                (
+                    job.job_id,
+                    job.tenant_id,
+                    job.corpus_id,
+                    job.trace_id,
+                    job.job_type.value,
+                    self._payload(job.payload),
+                    job.status.value,
+                    job.attempts,
+                    job.available_at,
+                    job.created_at,
+                    job.updated_at,
+                ),
+            )
+        if len(rows) != 1:
+            raise IngestionJobTransitionError(
+                "Ingestion enqueue did not return exactly one durable job."
+            )
+        return self._job_from_row(rows[0])
 
     def get(self, *, job_id: str, tenant_id: str) -> IngestionJob | None:
         rows = self._connection.fetch_all(_SELECT_JOB_SQL, (job_id, tenant_id))
@@ -235,6 +316,7 @@ class PostgresIngestionJobQueue:
         if batch_size < 1:
             raise IngestionJobError("batch_size must be at least 1.")
         now = self._now()
+        lease_token = f"lease_{uuid4().hex}"
         rows = self._connection.execute_returning(
             _CLAIM_BATCH_SQL,
             (
@@ -243,6 +325,7 @@ class PostgresIngestionJobQueue:
                 IngestionJobStatus.RUNNING.value,
                 worker_id,
                 now,
+                lease_token,
                 now,
             ),
         )
@@ -254,28 +337,53 @@ class PostgresIngestionJobQueue:
         locked_before: datetime,
         batch_size: int,
         error: str = "worker_lock_expired",
+        preserve_for_reconciliation: bool = False,
     ) -> list[IngestionJob]:
         if batch_size < 1:
             raise IngestionJobError("batch_size must be at least 1.")
         now = self._now()
-        rows = self._connection.execute_returning(
-            _REQUEUE_STALE_RUNNING_SQL,
-            (
-                IngestionJobStatus.RUNNING.value,
-                locked_before,
-                batch_size,
-                self._max_attempts,
-                IngestionJobStatus.DEAD.value,
-                IngestionJobStatus.FAILED.value,
-                self._max_attempts,
-                now,
-                error,
-                now,
-            ),
-        )
+        if preserve_for_reconciliation:
+            rows = self._connection.execute_returning(
+                _RETRY_STALE_RUNNING_SQL,
+                (
+                    IngestionJobStatus.RUNNING.value,
+                    locked_before,
+                    batch_size,
+                    IngestionJobStatus.FAILED.value,
+                    now,
+                    self._backoff_base_seconds,
+                    MAX_RECONCILIATION_BACKOFF_SECONDS,
+                    error,
+                    now,
+                ),
+            )
+        else:
+            rows = self._connection.execute_returning(
+                _REQUEUE_STALE_RUNNING_SQL,
+                (
+                    IngestionJobStatus.RUNNING.value,
+                    locked_before,
+                    batch_size,
+                    self._max_attempts,
+                    IngestionJobStatus.DEAD.value,
+                    IngestionJobStatus.FAILED.value,
+                    self._max_attempts,
+                    now,
+                    error,
+                    now,
+                ),
+            )
         return [self._job_from_row(row) for row in rows]
 
-    def complete(self, *, job_id: str, tenant_id: str, worker_id: str) -> None:
+    def complete(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        worker_id: str,
+        lease_token: str,
+    ) -> IngestionJob:
+        lease_token = self._validate_lease_token(lease_token)
         rows = self._connection.execute_returning(
             _COMPLETE_JOB_SQL,
             (
@@ -285,12 +393,42 @@ class PostgresIngestionJobQueue:
                 tenant_id,
                 IngestionJobStatus.RUNNING.value,
                 worker_id,
+                lease_token,
             ),
         )
         if not rows:
             raise IngestionJobTransitionError(
                 "Ingestion job is not running under this worker for this tenant."
             )
+        return self._job_from_row(rows[0])
+
+    def heartbeat(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        worker_id: str,
+        lease_token: str,
+    ) -> IngestionJob:
+        lease_token = self._validate_lease_token(lease_token)
+        now = self._now()
+        rows = self._connection.execute_returning(
+            _HEARTBEAT_JOB_SQL,
+            (
+                now,
+                now,
+                job_id,
+                tenant_id,
+                IngestionJobStatus.RUNNING.value,
+                worker_id,
+                lease_token,
+            ),
+        )
+        if not rows:
+            raise IngestionJobTransitionError(
+                "Ingestion job lease is no longer held by this worker."
+            )
+        return self._job_from_row(rows[0])
 
     def fail(
         self,
@@ -298,8 +436,10 @@ class PostgresIngestionJobQueue:
         job_id: str,
         tenant_id: str,
         worker_id: str,
+        lease_token: str,
         error: str,
     ) -> IngestionJob:
+        lease_token = self._validate_lease_token(lease_token)
         now = self._now()
         rows = self._connection.execute_returning(
             _FAIL_JOB_SQL,
@@ -316,6 +456,40 @@ class PostgresIngestionJobQueue:
                 tenant_id,
                 IngestionJobStatus.RUNNING.value,
                 worker_id,
+                lease_token,
+            ),
+        )
+        if not rows:
+            raise IngestionJobTransitionError(
+                "Ingestion job is not running under this worker for this tenant."
+            )
+        return self._job_from_row(rows[0])
+
+    def retry_for_reconciliation(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        worker_id: str,
+        lease_token: str,
+        error: str,
+    ) -> IngestionJob:
+        lease_token = self._validate_lease_token(lease_token)
+        now = self._now()
+        rows = self._connection.execute_returning(
+            _RETRY_JOB_SQL,
+            (
+                IngestionJobStatus.FAILED.value,
+                now,
+                self._backoff_base_seconds,
+                MAX_RECONCILIATION_BACKOFF_SECONDS,
+                error,
+                now,
+                job_id,
+                tenant_id,
+                IngestionJobStatus.RUNNING.value,
+                worker_id,
+                lease_token,
             ),
         )
         if not rows:
@@ -329,6 +503,12 @@ class PostgresIngestionJobQueue:
 
     def _payload(self, payload: Mapping[str, object]) -> str:
         return json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+
+    def _validate_lease_token(self, lease_token: str) -> str:
+        normalized = lease_token.strip()
+        if not normalized:
+            raise IngestionJobTransitionError("Ingestion job lease token must not be empty.")
+        return normalized
 
     def _job_from_row(self, row: Mapping[str, object]) -> IngestionJob:
         payload = row.get("payload")
@@ -360,6 +540,7 @@ class PostgresIngestionJobQueue:
         corpus_id = row.get("corpus_id")
         locked_by = row.get("locked_by")
         locked_at = row.get("locked_at")
+        lease_token = row.get("lease_token")
         last_error = row.get("last_error")
         return IngestionJob(
             job_id=job_id,
@@ -373,6 +554,7 @@ class PostgresIngestionJobQueue:
             available_at=available_at,
             locked_by=locked_by if isinstance(locked_by, str) else None,
             locked_at=locked_at if isinstance(locked_at, datetime) else None,
+            lease_token=lease_token if isinstance(lease_token, str) else None,
             last_error=last_error if isinstance(last_error, str) else None,
             created_at=created_at,
             updated_at=updated_at,

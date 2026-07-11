@@ -9,6 +9,8 @@ from scripts.ci.check_rag_persistence_config import (
     LIVE_OPENSEARCH_RAG_SMOKE_TARGET,
     LIVE_PGVECTOR_RAG_SMOKE_SCRIPT,
     LIVE_PGVECTOR_RAG_SMOKE_TARGET,
+    LIVE_HYBRID_RAG_SMOKE_SCRIPT,
+    LIVE_HYBRID_RAG_SMOKE_TARGET,
     RagPersistenceConfigError,
     load_current_config,
     validate_rag_persistence_config,
@@ -56,6 +58,26 @@ def test_rag_persistence_config_requires_tenant_primary_key() -> None:
         )
 
 
+def test_rag_persistence_config_requires_persisted_retrieval_time() -> None:
+    config = list(load_current_config())
+    config[0] = config[0].replace(
+        "ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMPTZ",
+        "ADD COLUMN IF NOT EXISTS observed_at TIMESTAMPTZ",
+    )
+
+    with pytest.raises(RagPersistenceConfigError, match="retrieved_at"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
 def test_rag_persistence_config_requires_opensearch_tenant_filter_metadata() -> None:
     config = list(load_current_config())
     template = copy.deepcopy(config[1])
@@ -77,11 +99,81 @@ def test_rag_persistence_config_requires_opensearch_tenant_filter_metadata() -> 
         )
 
 
+def test_rag_persistence_config_requires_schema_v3_on_concrete_mapping() -> None:
+    config = list(load_current_config())
+    template = copy.deepcopy(config[1])
+    assert isinstance(template, dict)
+    body = template["template"]
+    assert isinstance(body, dict)
+    mappings = body["mappings"]
+    assert isinstance(mappings, dict)
+    mappings.pop("_meta")
+
+    with pytest.raises(RagPersistenceConfigError, match="mappings.*schema v3"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=template,
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_requires_replica_and_opaque_metadata() -> None:
+    config = list(load_current_config())
+    template = copy.deepcopy(config[1])
+    assert isinstance(template, dict)
+    body = template["template"]
+    assert isinstance(body, dict)
+    settings = body["settings"]
+    mappings = body["mappings"]
+    assert isinstance(settings, dict)
+    assert isinstance(mappings, dict)
+    properties = mappings["properties"]
+    assert isinstance(properties, dict)
+    metadata = properties["metadata"]
+    assert isinstance(metadata, dict)
+    settings["number_of_replicas"] = 0
+    metadata["enabled"] = True
+
+    with pytest.raises(RagPersistenceConfigError, match="replicas|enabled=false"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=template,
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_requires_automatic_local_bootstrap() -> None:
+    config = list(load_current_config())
+    config[2] = config[2].replace("condition: service_completed_successfully", "")
+
+    with pytest.raises(RagPersistenceConfigError, match="service_completed_successfully"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
 def test_rag_persistence_config_rejects_unpinned_opensearch_image() -> None:
     config = list(load_current_config())
     config[2] = config[2].replace(
-        "opensearchproject/opensearch:2.15.0",
-        "opensearchproject/opensearch:latest",
+        "hallu-defense-opensearch:ci",
+        "hallu-defense-opensearch:latest",
     )
 
     with pytest.raises(RagPersistenceConfigError, match="latest"):
@@ -99,7 +191,7 @@ def test_rag_persistence_config_rejects_unpinned_opensearch_image() -> None:
 
 def test_rag_persistence_config_requires_compose_backend_wiring() -> None:
     config = list(load_current_config())
-    config[2] = config[2].replace("HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch", "")
+    config[2] = config[2].replace("HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid", "")
 
     with pytest.raises(RagPersistenceConfigError, match="RAG_INDEX_BACKEND"):
         validate_rag_persistence_config(
@@ -309,6 +401,29 @@ def test_rag_persistence_config_requires_live_pgvector_smoke_docs_markers() -> N
     config[4] = config[4].replace("current smoke run", "smoke run")
 
     with pytest.raises(RagPersistenceConfigError, match="RAG docs missing"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
+def test_rag_persistence_config_requires_combined_hybrid_smoke_target() -> None:
+    config = list(load_current_config())
+    config[5] = config[5].replace(
+        f"{LIVE_HYBRID_RAG_SMOKE_TARGET}:",
+        f"{LIVE_HYBRID_RAG_SMOKE_TARGET}-disabled:",
+    ).replace(
+        LIVE_HYBRID_RAG_SMOKE_SCRIPT,
+        "scripts/dev/not_the_hybrid_smoke.py",
+    )
+
+    with pytest.raises(RagPersistenceConfigError, match="live hybrid RAG smoke"):
         validate_rag_persistence_config(
             migration_sql=config[0],
             opensearch_template=config[1],
