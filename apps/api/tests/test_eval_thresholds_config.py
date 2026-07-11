@@ -72,6 +72,17 @@ def test_eval_thresholds_config_rejects_removed_category_floor() -> None:
         validate_thresholds_config(config)
 
 
+def test_eval_thresholds_config_rejects_weakened_blocking_precision_floor() -> None:
+    config = copy.deepcopy(load_thresholds_config(THRESHOLDS_PATH))
+    config["scenarios"]["min"]["blocking_precision"] = 0.919
+
+    with pytest.raises(
+        EvalThresholdsConfigError,
+        match=r"scenarios\.min\.blocking_precision must be >= 0\.92",
+    ):
+        validate_thresholds_config(config)
+
+
 def test_eval_thresholds_config_rejects_wrong_schema_version() -> None:
     config = copy.deepcopy(load_thresholds_config(THRESHOLDS_PATH))
     config["schema_version"] = "eval-thresholds.v0"

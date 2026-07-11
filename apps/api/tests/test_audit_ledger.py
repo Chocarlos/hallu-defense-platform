@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -9,11 +9,14 @@ import pytest
 from hallu_defense.config import Settings
 from hallu_defense.domain.models import (
     AuditEvent,
+    Authority,
     Claim,
     ClaimVerdict,
     Evidence,
     EvidenceKind,
     FinalDecision,
+    Freshness,
+    StalenessClass,
     VerdictAction,
     VerdictStatus,
     VerificationRun,
@@ -27,6 +30,8 @@ from hallu_defense.services.audit import (
     create_audit_ledger,
 )
 from hallu_defense.services.postgres import RecordingSqlProvider
+
+TEST_RETRIEVED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def test_jsonl_audit_ledger_persists_and_reloads_events_by_tenant(tmp_path: Path) -> None:
@@ -101,8 +106,14 @@ def test_jsonl_audit_ledger_redacts_nested_snapshot_fields(tmp_path: Path) -> No
                 Evidence(
                     evidence_id="ev_secret",
                     kind=EvidenceKind.DOCUMENT_CHUNK,
+                    source_ref="audit-source",
                     content="This evidence mentions token handling.",
                     structured_content={"token": "short", "structure": {"secret": "short"}},
+                    authority=Authority.UNKNOWN,
+                    freshness=Freshness(
+                        retrieved_at=TEST_RETRIEVED_AT,
+                        staleness_class=StalenessClass.UNKNOWN,
+                    ),
                 )
             ],
             "verdicts": [
@@ -148,6 +159,12 @@ def test_jsonl_audit_ledger_redacts_source_refs_and_bare_secret_values(tmp_path:
                     kind=EvidenceKind.DOCUMENT_CHUNK,
                     source_ref="https://storage.example/hr.pdf?sig=abcdef1234567890",
                     content=f"Stored value {bare_secret} was present.",
+                    structured_content={},
+                    authority=Authority.UNKNOWN,
+                    freshness=Freshness(
+                        retrieved_at=TEST_RETRIEVED_AT,
+                        staleness_class=StalenessClass.UNKNOWN,
+                    ),
                 )
             ],
         }
@@ -199,31 +216,24 @@ def test_create_audit_ledger_rejects_memory_backend_in_production(tmp_path: Path
         )
 
 
-def test_create_audit_ledger_accepts_jsonl_backend_in_production(tmp_path: Path) -> None:
-    ledger = create_audit_ledger(
-        Settings(
-            environment="production",
-            policy_version="test",
-            auth_required=True,
-            allowed_workspace=tmp_path,
-            max_command_seconds=5,
-            max_output_chars=1000,
-            audit_ledger_backend="jsonl",
-            audit_ledger_path=tmp_path / "audit-ledger.jsonl",
+@pytest.mark.parametrize("environment", ["production", "staging", " production "])
+def test_create_audit_ledger_rejects_jsonl_in_production_like_environments(
+    tmp_path: Path,
+    environment: str,
+) -> None:
+    with pytest.raises(AuditLedgerConfigurationError, match="PostgreSQL"):
+        create_audit_ledger(
+            Settings(
+                environment=environment,
+                policy_version="test",
+                auth_required=True,
+                allowed_workspace=tmp_path,
+                max_command_seconds=5,
+                max_output_chars=1000,
+                audit_ledger_backend="jsonl",
+                audit_ledger_path=tmp_path / "audit-ledger.jsonl",
+            )
         )
-    )
-
-    ledger.append_event(
-        trace_id="tr_jsonl_prod",
-        tenant_id="tenant-a",
-        event_type="http_request",
-        method="GET",
-        path="/health",
-        status_code=200,
-        outcome="success",
-    )
-
-    assert ledger.export_events(trace_id="tr_jsonl_prod")
 
 
 def test_jsonl_audit_ledger_fails_closed_on_corrupt_record(tmp_path: Path) -> None:
@@ -355,6 +365,44 @@ def test_postgres_audit_ledger_export_events_without_filters_uses_bare_select(
     assert [event.trace_id for event in events] == ["tr_evt"]
 
 
+def test_postgres_audit_event_page_filters_type_and_uses_keyset_before_limit(
+    tmp_path: Path,
+) -> None:
+    cursor_time = datetime(2027, 7, 10, 12, 0, tzinfo=timezone.utc)
+    provider = RecordingSqlProvider(
+        fetch_all_rows=[_event_payload_row("tr_completed", event_type="verification_completed")]
+    )
+    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+
+    events = ledger.page_events(
+        tenant_id="tenant-a",
+        event_type="verification_completed",
+        trace_id="tr_completed",
+        before_created_at=cursor_time,
+        before_event_id="evt_cursor",
+        limit=21,
+    )
+
+    assert provider.calls == [
+        (
+            "fetch_all",
+            "SELECT payload FROM audit_events WHERE tenant_id = %s "
+            "AND payload ->> 'event_type' = %s AND trace_id = %s "
+            "AND (created_at, event_id) < (%s, %s) "
+            "ORDER BY created_at DESC, event_id DESC LIMIT %s",
+            (
+                "tenant-a",
+                "verification_completed",
+                "tr_completed",
+                cursor_time,
+                "evt_cursor",
+                21,
+            ),
+        )
+    ]
+    assert [event.trace_id for event in events] == ["tr_completed"]
+
+
 def test_postgres_audit_ledger_export_limit_uses_configured_cap() -> None:
     provider = RecordingSqlProvider(fetch_all_rows=[])
     ledger = AuditLedger(
@@ -424,12 +472,16 @@ def _run_payload_row(trace_id: str) -> dict[str, object]:
     return row
 
 
-def _event_payload_row(trace_id: str) -> dict[str, object]:
+def _event_payload_row(
+    trace_id: str,
+    *,
+    event_type: str = "http_request",
+) -> dict[str, object]:
     event = AuditEvent(
         event_id="evt_row",
         trace_id=trace_id,
         tenant_id="tenant-a",
-        event_type="http_request",
+        event_type=event_type,
         method="GET",
         path="/health",
         status_code=200,
@@ -454,7 +506,14 @@ def _verification_run() -> VerificationRun:
             Evidence(
                 evidence_id="ev_secret",
                 kind=EvidenceKind.DOCUMENT_CHUNK,
+                source_ref="audit-source",
                 content="This evidence mentions token handling.",
+                structured_content={},
+                authority=Authority.UNKNOWN,
+                freshness=Freshness(
+                    retrieved_at=TEST_RETRIEVED_AT,
+                    staleness_class=StalenessClass.UNKNOWN,
+                ),
             )
         ],
         verdicts=[

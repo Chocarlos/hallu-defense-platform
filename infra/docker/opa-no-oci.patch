@@ -1,0 +1,19 @@
+diff --git a/v1/download/oci_downloader.go b/v1/download/oci_downloader.go
+--- a/v1/download/oci_downloader.go
++++ b/v1/download/oci_downloader.go
+@@ -1,3 +1,5 @@
++//go:build !opa_no_oci
++
+ package download
+ 
+ import (
+diff --git a/v1/download/oci_downloader_no_oci.go b/v1/download/oci_downloader_no_oci.go
+new file mode 100644
+--- /dev/null
++++ b/v1/download/oci_downloader_no_oci.go
+@@ -0,0 +1,5 @@
++//go:build opa_no_oci
++
++package download
++
++type OCIDownloader struct{}

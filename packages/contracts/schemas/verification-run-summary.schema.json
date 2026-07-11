@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-run-summary.schema.json",
+  "title": "VerificationRunSummary",
+  "type": "object",
+  "required": ["trace_id", "final_decision", "created_at"],
+  "properties": {
+    "trace_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "final_decision": {
+      "type": "string",
+      "enum": ["allow", "repaired", "abstained", "blocked", "require_human_review"]
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

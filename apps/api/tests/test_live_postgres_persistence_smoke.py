@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -148,6 +149,7 @@ class RecordingPersistenceConnection:
         self._audit_events: list[tuple[str, dict[str, object]]] = []
         self._records: dict[tuple[str, str], dict[str, object]] = {}
         self._grants: dict[str, _GrantRow] = {}
+        self._migration_versions: dict[str, str] = {}
 
     def execute(self, statement: str, parameters: Sequence[object] = ()) -> None:
         params = tuple(parameters)
@@ -170,8 +172,12 @@ class RecordingPersistenceConnection:
                 )
             elif statement.startswith("DELETE FROM"):
                 self._delete_scoped(params)
-            # Anything else (migration DDL, schema_migrations INSERT) is a no-op:
-            # the fake simulates "migrations applied cleanly".
+            elif statement.startswith("INSERT INTO schema_migrations"):
+                self._migration_versions[_as_str(params[0])] = _as_str(params[1])
+            elif statement.startswith("UPDATE schema_migrations SET checksum_sha256"):
+                self._migration_versions[_as_str(params[1])] = _as_str(params[0])
+            # Anything else (advisory lock and migration DDL) is a no-op: the
+            # fake simulates an atomic migration transaction.
 
     def fetch_all(
         self,
@@ -181,8 +187,11 @@ class RecordingPersistenceConnection:
         params = tuple(parameters)
         with self._lock:
             self.calls.append(("fetch_all", statement, params))
-            if statement.startswith("SELECT version FROM schema_migrations"):
-                return []
+            if statement.startswith("SELECT version, checksum_sha256 FROM schema_migrations"):
+                return [
+                    {"version": version, "checksum_sha256": checksum}
+                    for version, checksum in sorted(self._migration_versions.items())
+                ]
             if statement.startswith("SELECT payload FROM audit_runs"):
                 self.audit_run_selects.append(statement)
                 tenant = _as_str(params[0])
@@ -233,6 +242,10 @@ class RecordingPersistenceConnection:
                 return []
         raise AssertionError(f"Unexpected execute_returning statement: {statement}")
 
+    @contextmanager
+    def transaction(self) -> Iterator[smoke.MigrationConnection]:
+        yield self
+
     def _delete_scoped(self, parameters: tuple[object, ...]) -> None:
         tenants = set(_as_str_list(parameters[0]))
         self._audit_runs = [row for row in self._audit_runs if row[0] not in tenants]
@@ -262,6 +275,10 @@ class _MigrationFailingConnection:
         parameters: Sequence[object] = (),
     ) -> Sequence[Mapping[str, object]]:
         return []
+
+    @contextmanager
+    def transaction(self) -> Iterator[smoke.MigrationConnection]:
+        yield self
 
 
 def _load_payload(value: object) -> dict[str, object]:

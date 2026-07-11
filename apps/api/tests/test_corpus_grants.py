@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +17,7 @@ from hallu_defense.domain.models import (
     Authority,
     Claim,
     ClaimType,
+    CorpusGrant,
     CorpusGrantDisableRequest,
     CorpusGrantHistoryDiffRequest,
     CorpusGrantHistoryRequest,
@@ -34,6 +38,7 @@ from hallu_defense.services.corpus_grants import (
     CorpusGrantRegistry,
     CorpusGrantStorageError,
     CorpusGrantVersionConflictError,
+    PostgresCorpusGrantRegistry,
     PostgresCorpusGrantStorage,
     PsycopgCorpusGrantSqlConnection,
     create_corpus_grant_registry,
@@ -146,16 +151,12 @@ def test_jsonl_corpus_grants_disable_reload_and_reenable(tmp_path: Path) -> None
     assert len(storage_path.read_text(encoding="utf-8").splitlines()) == 3
 
 
-def test_postgres_corpus_grants_storage_is_parameterized_and_reloads_history() -> None:
-    connection = RecordingCorpusGrantSqlConnection()
-    registry = CorpusGrantRegistry(
-        storage=PostgresCorpusGrantStorage(
-            table_name="rag_corpus_grants",
-            connection=connection,
-        )
-    )
+def test_postgres_corpus_grants_are_tenant_scoped_and_visible_between_registries() -> None:
+    connection = SharedCorpusGrantSqlConnection()
+    first = _postgres_registry(connection)
+    second = _postgres_registry(connection)
 
-    created = registry.upsert(
+    created = first.upsert(
         tenant_id="tenant-a",
         request=CorpusGrantUpsertRequest(
             corpus_id="hr",
@@ -164,68 +165,114 @@ def test_postgres_corpus_grants_storage_is_parameterized_and_reloads_history() -
         ),
         updated_by="alice",
     )
-    updated = registry.upsert(
+    first.upsert(
+        tenant_id="tenant-b",
+        request=CorpusGrantUpsertRequest(corpus_id="hr", reader_roles=["other_reader"]),
+        updated_by="mallory",
+    )
+
+    assert second.get(tenant_id="tenant-a", corpus_id="hr") == created
+    assert second.get(tenant_id="tenant-b", corpus_id="hr") is not None
+
+    disabled = first.disable(
+        tenant_id="tenant-a",
+        request=CorpusGrantDisableRequest(
+            corpus_id="hr",
+            expected_version=created.version,
+        ),
+        disabled_by="bob",
+    )
+
+    assert disabled.version == 2
+    assert second.get(tenant_id="tenant-a", corpus_id="hr") is None
+    assert second.list_for_tenant(
+        "tenant-a",
+        CorpusGrantListRequest(include_disabled=True),
+    ).grants == [disabled]
+    assert second.list_for_tenant(
+        "tenant-b",
+        CorpusGrantListRequest(),
+    ).grants[0].tenant_id == "tenant-b"
+    assert all(
+        "WHERE tenant_id = %s" in statement
+        for method, statement, _parameters in connection.calls
+        if method == "fetch_all"
+    )
+    assert not any(
+        "SELECT payload FROM rag_corpus_grants ORDER BY sequence_id ASC" in statement
+        for _method, statement, _parameters in connection.calls
+    )
+
+
+def test_postgres_corpus_grants_concurrent_cas_has_one_winner_and_typed_conflict() -> None:
+    connection = SharedCorpusGrantSqlConnection()
+    first = _postgres_registry(connection)
+    second = _postgres_registry(connection)
+    created = first.upsert(
         tenant_id="tenant-a",
         request=CorpusGrantUpsertRequest(
             corpus_id="hr",
-            reader_roles=["senior_hr_reader"],
-            writer_roles=["hr_writer"],
-            expected_version=created.version,
+            reader_roles=["initial_reader"],
+            expected_version=0,
         ),
-        updated_by="bob",
+        updated_by="alice",
     )
 
-    load_statement, load_parameters = connection.fetch_all_calls[0]
-    assert load_statement == "SELECT payload FROM rag_corpus_grants ORDER BY sequence_id ASC"
-    assert load_parameters == ()
-    insert_statement, insert_parameters = connection.execute_calls[0]
-    assert "INSERT INTO rag_corpus_grants" in insert_statement
-    assert "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)" in insert_statement
-    assert insert_parameters[:5] == [
-        "tenant-a",
-        "hr",
-        1,
-        ["hr_reader"],
-        ["hr_writer"],
-    ]
-    assert isinstance(insert_parameters[-1], str)
-    assert json.loads(insert_parameters[-1])["updated_by"] == "alice"
+    start = threading.Barrier(2)
 
-    reloaded_connection = RecordingCorpusGrantSqlConnection(
-        rows=[
-            {"payload": connection.execute_calls[0][1][-1]},
-            {"payload": json.loads(connection.execute_calls[1][1][-1])},
-        ]
-    )
-    reloaded = CorpusGrantRegistry(
-        storage=PostgresCorpusGrantStorage(
-            table_name="rag_corpus_grants",
-            connection=reloaded_connection,
-        )
-    )
-    history = reloaded.history_for_tenant("tenant-a", CorpusGrantHistoryRequest()).grants
+    def update(registry: PostgresCorpusGrantRegistry, role: str) -> object:
+        start.wait()
+        try:
+            return registry.upsert(
+                tenant_id="tenant-a",
+                request=CorpusGrantUpsertRequest(
+                    corpus_id="hr",
+                    reader_roles=[role],
+                    expected_version=created.version,
+                ),
+                updated_by=role,
+            )
+        except CorpusGrantVersionConflictError as exc:
+            return exc
 
-    assert [grant.version for grant in history] == [1, 2]
-    assert reloaded.get(tenant_id="tenant-a", corpus_id="hr") == updated
-
-
-def test_postgres_corpus_grants_storage_fails_closed_on_invalid_payload() -> None:
-    connection = RecordingCorpusGrantSqlConnection(rows=[{"payload": {"tenant_id": "tenant-a"}}])
-
-    with pytest.raises(CorpusGrantStorageError, match="payload is invalid"):
-        CorpusGrantRegistry(
-            storage=PostgresCorpusGrantStorage(
-                table_name="rag_corpus_grants",
-                connection=connection,
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda item: update(*item),
+                ((first, "reader_a"), (second, "reader_b")),
             )
         )
+
+    winners = [result for result in results if not isinstance(result, Exception)]
+    conflicts = [result for result in results if isinstance(result, CorpusGrantVersionConflictError)]
+    assert len(winners) == 1
+    assert len(conflicts) == 1
+    assert "expected 1, current 2" in str(conflicts[0])
+    history = first.history_for_tenant("tenant-a", CorpusGrantHistoryRequest()).grants
+    assert [grant.version for grant in history] == [1, 2]
+    assert connection.transaction_count == 3
+
+
+def test_postgres_corpus_grants_storage_fails_closed_on_column_payload_mismatch() -> None:
+    connection = SharedCorpusGrantSqlConnection()
+    connection.forced_rows = [
+        {
+            "tenant_id": "tenant-a",
+            "corpus_id": "hr",
+            "version": 1,
+            "payload": {"tenant_id": "tenant-b"},
+        }
+    ]
+
+    with pytest.raises(CorpusGrantStorageError, match="payload is invalid|columns do not match"):
+        _postgres_registry(connection).get(tenant_id="tenant-a", corpus_id="hr")
 
 
 def test_postgres_corpus_grants_storage_rejects_unsafe_table_name() -> None:
     with pytest.raises(CorpusGrantConfigurationError, match="identifier"):
         PostgresCorpusGrantStorage(
             table_name="rag_corpus_grants;drop",
-            connection=RecordingCorpusGrantSqlConnection(),
+            connection=SharedCorpusGrantSqlConnection(),
         )
 
 
@@ -466,30 +513,26 @@ def test_create_corpus_grant_registry_rejects_memory_backend_in_production(
         create_corpus_grant_registry(settings)
 
 
-def test_create_corpus_grant_registry_accepts_jsonl_backend_in_production(
+@pytest.mark.parametrize("environment", ["production", "staging", " production "])
+def test_create_corpus_grant_registry_rejects_jsonl_backend_in_production(
     tmp_path: Path,
+    environment: str,
 ) -> None:
     settings = _settings(
         tmp_path,
-        environment="production",
+        environment=environment,
         corpus_grants_backend="jsonl",
         corpus_grants_path=tmp_path / "grants.jsonl",
     )
 
-    registry = create_corpus_grant_registry(settings)
-    registry.upsert(
-        tenant_id="tenant-a",
-        request=CorpusGrantUpsertRequest(corpus_id="hr", reader_roles=["hr_reader"]),
-        updated_by="admin",
-    )
-
-    assert registry.list_for_tenant("tenant-a", CorpusGrantListRequest()).grants[0].corpus_id == "hr"
+    with pytest.raises(CorpusGrantConfigurationError, match="PostgreSQL"):
+        create_corpus_grant_registry(settings)
 
 
 def test_create_corpus_grant_registry_accepts_postgres_backend_with_injected_connection(
     tmp_path: Path,
 ) -> None:
-    connection = RecordingCorpusGrantSqlConnection()
+    connection = SharedCorpusGrantSqlConnection()
     settings = _settings(
         tmp_path,
         environment="production",
@@ -499,12 +542,21 @@ def test_create_corpus_grant_registry_accepts_postgres_backend_with_injected_con
     registry = create_corpus_grant_registry(settings, postgres_connection=connection)
     registry.upsert(
         tenant_id="tenant-a",
-        request=CorpusGrantUpsertRequest(corpus_id="hr", reader_roles=["hr_reader"]),
+        request=CorpusGrantUpsertRequest(
+            corpus_id="hr",
+            reader_roles=["hr_reader"],
+            expected_version=0,
+        ),
         updated_by="admin",
     )
 
-    assert connection.fetch_all_calls[0][0] == "SELECT payload FROM rag_corpus_grants ORDER BY sequence_id ASC"
-    assert connection.execute_calls[0][1][0] == "tenant-a"
+    assert isinstance(registry, PostgresCorpusGrantRegistry)
+    assert connection.transaction_count == 1
+    assert any(
+        "WHERE tenant_id = %s AND corpus_id = %s" in statement
+        for method, statement, _parameters in connection.calls
+        if method == "fetch_all"
+    )
     assert registry.list_for_tenant("tenant-a", CorpusGrantListRequest()).grants[0].corpus_id == "hr"
 
 
@@ -512,13 +564,13 @@ def test_create_corpus_grant_registry_accepts_postgres_backend_with_runtime_dsn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    created_connections: list[RecordingCorpusGrantSqlConnection] = []
-
-    class RecordingRuntimeConnection(RecordingCorpusGrantSqlConnection):
+    class RecordingRuntimeConnection(SharedCorpusGrantSqlConnection):
         def __init__(self, *, dsn: str) -> None:
             super().__init__()
             self.dsn = dsn
             created_connections.append(self)
+
+    created_connections: list[RecordingRuntimeConnection] = []
 
     monkeypatch.setattr(
         corpus_grants_module,
@@ -535,15 +587,21 @@ def test_create_corpus_grant_registry_accepts_postgres_backend_with_runtime_dsn(
     registry = create_corpus_grant_registry(settings)
     registry.upsert(
         tenant_id="tenant-a",
-        request=CorpusGrantUpsertRequest(corpus_id="hr", reader_roles=["hr_reader"]),
+        request=CorpusGrantUpsertRequest(
+            corpus_id="hr",
+            reader_roles=["hr_reader"],
+            expected_version=0,
+        ),
         updated_by="admin",
     )
 
     assert created_connections[0].dsn == "postgresql://postgres@localhost/hallu_defense"
-    assert created_connections[0].fetch_all_calls[0][0] == (
-        "SELECT payload FROM rag_corpus_grants ORDER BY sequence_id ASC"
+    assert created_connections[0].transaction_count == 1
+    assert any(
+        "ON CONFLICT (tenant_id, corpus_id, version) DO NOTHING" in statement
+        for method, statement, _parameters in created_connections[0].calls
+        if method == "execute_returning"
     )
-    assert created_connections[0].execute_calls[0][1][0] == "tenant-a"
 
 
 def test_create_corpus_grant_registry_rejects_postgres_backend_without_connection(
@@ -652,7 +710,10 @@ def test_registry_grant_filters_persistent_evidence_without_reader_role(
                 source_ref="hr-manual",
                 content="Remote work requests need manager approval.",
                 authority=Authority.INTERNAL,
-                freshness=Freshness(staleness_class=StalenessClass.FRESH),
+                freshness=Freshness(
+                    retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    staleness_class=StalenessClass.FRESH,
+                ),
                 structured_content={"metadata": {"corpus_id": "hr"}},
             )
         ]
@@ -692,7 +753,10 @@ def test_registry_grant_allows_persistent_evidence_with_reader_role(
                 source_ref="hr-manual",
                 content="Remote work requests need manager approval.",
                 authority=Authority.INTERNAL,
-                freshness=Freshness(staleness_class=StalenessClass.FRESH),
+                freshness=Freshness(
+                    retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    staleness_class=StalenessClass.FRESH,
+                ),
                 structured_content={"metadata": {"corpus_id": "hr"}},
             )
         ]
@@ -962,22 +1026,168 @@ def test_corpus_grant_history_rejects_inverted_time_range() -> None:
     assert "updated_at_from" in response.json()["message"]
 
 
-class RecordingCorpusGrantSqlConnection:
-    def __init__(self, rows: Sequence[Mapping[str, object]] = ()) -> None:
-        self.execute_calls: list[tuple[str, Sequence[object]]] = []
-        self.fetch_all_calls: list[tuple[str, Sequence[object]]] = []
-        self._rows = list(rows)
+class SharedCorpusGrantSqlConnection:
+    """Shared transactional fake used to exercise multi-registry behavior."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, tuple[object, ...]]] = []
+        self.transaction_count = 0
+        self.forced_rows: list[Mapping[str, object]] | None = None
+        self._history: list[CorpusGrant] = []
+        self._transaction_lock = threading.RLock()
+
+    @contextmanager
+    def transaction(self) -> Iterator[SharedCorpusGrantSqlConnection]:
+        with self._transaction_lock:
+            self.transaction_count += 1
+            yield self
 
     def execute(self, statement: str, parameters: Sequence[object]) -> None:
-        self.execute_calls.append((statement, parameters))
+        self.calls.append(("execute", statement, tuple(parameters)))
 
     def fetch_all(
         self,
         statement: str,
         parameters: Sequence[object],
     ) -> Sequence[Mapping[str, object]]:
-        self.fetch_all_calls.append((statement, parameters))
-        return self._rows
+        self.calls.append(("fetch_all", statement, tuple(parameters)))
+        if self.forced_rows is not None:
+            return list(self.forced_rows)
+        if "ORDER BY version DESC LIMIT 1" in statement:
+            tenant_id, corpus_id = str(parameters[0]), str(parameters[1])
+            candidates = [
+                grant
+                for grant in self._history
+                if grant.tenant_id == tenant_id and grant.corpus_id == corpus_id
+            ]
+            return [] if not candidates else [self._row(candidates[-1])]
+        if "SELECT DISTINCT ON (corpus_id)" in statement:
+            return self._list_current(statement, parameters)
+        if statement.startswith("WITH tenant_history AS"):
+            return self._history_rows(statement, parameters, include_previous=True)
+        if "ORDER BY sequence_id ASC" in statement:
+            return self._history_rows(statement, parameters, include_previous=False)
+        return []
+
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+    ) -> Sequence[Mapping[str, object]]:
+        self.calls.append(("execute_returning", statement, tuple(parameters)))
+        grant = CorpusGrant.model_validate(json.loads(str(parameters[-1])))
+        if any(
+            existing.tenant_id == grant.tenant_id
+            and existing.corpus_id == grant.corpus_id
+            and existing.version == grant.version
+            for existing in self._history
+        ):
+            return []
+        self._history.append(grant)
+        return [self._row(grant)]
+
+    def _list_current(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+    ) -> list[Mapping[str, object]]:
+        tenant_id = str(parameters[0])
+        parameter_index = 1
+        corpus_id: str | None = None
+        if "AND corpus_id = %s" in statement:
+            corpus_id = str(parameters[parameter_index])
+            parameter_index += 1
+        offset = parameters[parameter_index]
+        limit = parameters[parameter_index + 1]
+        assert isinstance(offset, int)
+        assert isinstance(limit, int)
+        latest: dict[str, CorpusGrant] = {}
+        for grant in self._history:
+            if grant.tenant_id != tenant_id:
+                continue
+            if corpus_id is not None and grant.corpus_id != corpus_id:
+                continue
+            latest[grant.corpus_id] = grant
+        grants = sorted(latest.values(), key=lambda grant: (grant.corpus_id, grant.updated_at))
+        if "WHERE disabled_at IS NULL" in statement:
+            grants = [grant for grant in grants if grant.disabled_at is None]
+        return [self._row(grant) for grant in grants[offset : offset + limit]]
+
+    def _history_rows(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+        *,
+        include_previous: bool,
+    ) -> list[Mapping[str, object]]:
+        tenant_id = str(parameters[0])
+        parameter_index = 1
+        corpus_id: str | None = None
+        actor_id: str | None = None
+        updated_at_from: datetime | None = None
+        updated_at_to: datetime | None = None
+        if "corpus_id = %s" in statement:
+            corpus_id = str(parameters[parameter_index])
+            parameter_index += 1
+        if "updated_by = %s" in statement:
+            actor_id = str(parameters[parameter_index])
+            parameter_index += 1
+        if "updated_at >= %s" in statement:
+            value = parameters[parameter_index]
+            assert isinstance(value, datetime)
+            updated_at_from = value
+            parameter_index += 1
+        if "updated_at <= %s" in statement:
+            value = parameters[parameter_index]
+            assert isinstance(value, datetime)
+            updated_at_to = value
+            parameter_index += 1
+        offset = parameters[parameter_index]
+        limit = parameters[parameter_index + 1]
+        assert isinstance(offset, int)
+        assert isinstance(limit, int)
+        previous_by_corpus: dict[str, CorpusGrant] = {}
+        rows: list[Mapping[str, object]] = []
+        for grant in self._history:
+            if grant.tenant_id != tenant_id:
+                continue
+            previous = previous_by_corpus.get(grant.corpus_id)
+            previous_by_corpus[grant.corpus_id] = grant
+            if corpus_id is not None and grant.corpus_id != corpus_id:
+                continue
+            if actor_id is not None and grant.updated_by != actor_id:
+                continue
+            if updated_at_from is not None and grant.updated_at < updated_at_from:
+                continue
+            if updated_at_to is not None and grant.updated_at > updated_at_to:
+                continue
+            row = self._row(grant)
+            if include_previous:
+                row["previous_payload"] = (
+                    None if previous is None else previous.model_dump(mode="json")
+                )
+            rows.append(row)
+        return rows[offset : offset + limit]
+
+    @staticmethod
+    def _row(grant: CorpusGrant) -> dict[str, object]:
+        return {
+            "tenant_id": grant.tenant_id,
+            "corpus_id": grant.corpus_id,
+            "version": grant.version,
+            "payload": grant.model_dump(mode="json"),
+        }
+
+
+def _postgres_registry(
+    connection: SharedCorpusGrantSqlConnection,
+) -> PostgresCorpusGrantRegistry:
+    return PostgresCorpusGrantRegistry(
+        storage=PostgresCorpusGrantStorage(
+            table_name="rag_corpus_grants",
+            connection=connection,
+        )
+    )
 
 
 class RecordingPsycopgCursor:

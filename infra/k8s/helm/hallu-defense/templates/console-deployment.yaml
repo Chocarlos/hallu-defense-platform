@@ -1,3 +1,38 @@
+{{- $originPattern := "^https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?|\\[[0-9a-f:]+\\])(:[1-9][0-9]{0,4})?$" -}}
+{{- $issuerPattern := "^https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?|\\[[0-9a-f:]+\\])(:[1-9][0-9]{0,4})?(/[A-Za-z0-9._~-]+)+$" -}}
+{{- $identifierPattern := "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" -}}
+{{- $publicOrigin := required "console.publicOrigin is required" .Values.console.publicOrigin -}}
+{{- $apiOrigin := required "console.apiOrigin is required" .Values.console.apiOrigin -}}
+{{- $issuer := required "console.oidc.issuer is required" .Values.console.oidc.issuer -}}
+{{- $clientId := required "console.oidc.clientId is required" .Values.console.oidc.clientId -}}
+{{- $apiAudience := required "console.oidc.apiAudience is required" .Values.console.oidc.apiAudience -}}
+{{- if ne (int .Values.console.replicas) 1 -}}
+{{- fail "console.replicas must equal 1 until OIDC session and transaction state use a shared store" -}}
+{{- end -}}
+{{- if not (regexMatch $originPattern $publicOrigin) -}}
+{{- fail "console.publicOrigin must be an exact canonical HTTPS origin without credentials, path, query, fragment, or trailing slash" -}}
+{{- end -}}
+{{- if not (regexMatch $originPattern $apiOrigin) -}}
+{{- fail "console.apiOrigin must be an exact canonical HTTPS origin without credentials, path, query, fragment, or trailing slash" -}}
+{{- end -}}
+{{- if not (regexMatch $issuerPattern $issuer) -}}
+{{- fail "console.oidc.issuer must be an exact canonical HTTPS realm URL without credentials, query, fragment, percent encoding, or trailing slash" -}}
+{{- end -}}
+{{- if not (regexMatch $identifierPattern $clientId) -}}
+{{- fail "console.oidc.clientId must be a canonical public OIDC client identifier" -}}
+{{- end -}}
+{{- if not (regexMatch $identifierPattern $apiAudience) -}}
+{{- fail "console.oidc.apiAudience must be a canonical API audience identifier" -}}
+{{- end -}}
+{{- if not (has $publicOrigin .Values.cors.allowOrigins) -}}
+{{- fail "console.publicOrigin must appear exactly in cors.allowOrigins" -}}
+{{- end -}}
+{{- if ne $issuer .Values.oidc.issuer -}}
+{{- fail "console.oidc.issuer must exactly match oidc.issuer" -}}
+{{- end -}}
+{{- if ne $apiAudience .Values.oidc.audience -}}
+{{- fail "console.oidc.apiAudience must exactly match oidc.audience" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,11 +53,12 @@ spec:
         {{- include "hallu-defense.labels" . | nindent 8 }}
         app.kubernetes.io/component: console
     spec:
+      automountServiceAccountToken: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
       containers:
         - name: console
-          image: "{{ .Values.console.image.repository }}:{{ .Values.console.image.tag }}"
+          image: {{ include "hallu-defense.consoleImage" . | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           securityContext:
             {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
@@ -30,8 +66,26 @@ spec:
             - name: http
               containerPort: 3000
           env:
-            - name: NEXT_PUBLIC_API_BASE_URL
-              value: {{ .Values.console.apiBaseUrl | quote }}
+            - name: HALLU_DEFENSE_ENV
+              value: production
+            - name: HALLU_DEFENSE_CONSOLE_AUTH_MODE
+              value: oidc
+            - name: HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN
+              value: {{ $publicOrigin | quote }}
+            - name: HALLU_DEFENSE_CONSOLE_API_ORIGIN
+              value: {{ $apiOrigin | quote }}
+            - name: HALLU_DEFENSE_CONSOLE_OIDC_ISSUER
+              value: {{ $issuer | quote }}
+            - name: HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID
+              value: {{ $clientId | quote }}
+            - name: HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE
+              value: {{ $apiAudience | quote }}
+            - name: HALLU_DEFENSE_CONSOLE_OIDC_TENANT_CLAIM
+              value: tenant_id
+            - name: HALLU_DEFENSE_CONSOLE_OIDC_ROLES_CLAIM
+              value: roles
+            - name: HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES
+              value: verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -51,7 +105,8 @@ spec:
             {{- toYaml .Values.console.resources | nindent 12 }}
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
 ---
 apiVersion: v1
 kind: Service

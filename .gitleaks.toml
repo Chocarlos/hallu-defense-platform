@@ -1,0 +1,51 @@
+title = "Hallu Defense secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "database-uri-with-credentials"
+description = "Database URI containing an inline password"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss)://[^\s:/@]+:[^\s/@]+@[^\s]+'''
+keywords = ["postgres", "postgresql", "mysql", "mariadb", "mongodb", "redis", "rediss"]
+
+[[rules.allowlists]]
+description = "Committed database fixtures and connection-string templates"
+paths = [
+  '''(^|/)apps/api/tests/''',
+  '''(^|/)scripts/dev/live_[^/]+\.py$''',
+  '''(^|/)docs/security/audit-ledger\.md$''',
+  '''(^|/)infra/k8s/helm/hallu-defense/templates/redis-deployment\.yaml$''',
+]
+
+[[rules]]
+id = "credential-assignment"
+description = "Password or credential synonym assigned a non-placeholder value"
+regex = '''(?i)\b(?:password|passwd|pwd|credential|client_secret|access_token)\s*[:=]\s*["'][A-Za-z0-9_+/.-]{12,}["']'''
+keywords = ["password", "passwd", "pwd", "credential", "client_secret", "access_token"]
+
+[[rules.allowlists]]
+description = "Explicit test and opt-in local-smoke credential literals"
+paths = [
+  '''(^|/)apps/api/tests/''',
+  '''(^|/)packages/[^/]+/tests/''',
+  '''(^|/)scripts/dev/live_[^/]+\.(?:py|mjs)$''',
+]
+
+[[allowlists]]
+description = "Generated and dependency trees are scanned by their own supply-chain gates"
+paths = [
+  '''(^|/)(?:\.git|\.venv|\.claude[^/]*|\.codex[^/]*|node_modules|__pycache__|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.next|var)(/|$)''',
+  '''(^|/)apps/api/tests/test_gitleaks_gate\.py$''',
+]
+
+[[allowlists]]
+description = "Explicit local-only development credentials"
+regexTarget = "match"
+regexes = [
+  '''postgresql://hallu:hallu@''',
+  '''postgresql://user:pass@''',
+  '''(?i)(?:password|credential)\s*[:=]\s*["']?(?:admin|hallu|dev-root|fixture|test-only|local-only)["']?''',
+  '''(?i)(?:secret|token|password)\s*[=:]\s*<[^>]+>''',
+  '''eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiJzbW9rZSJ9\.signaturevalue''',
+]

@@ -37,11 +37,12 @@ spec:
         {{- include "hallu-defense.labels" . | nindent 8 }}
         app.kubernetes.io/component: pgvector
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -53,7 +54,13 @@ spec:
               containerPort: 5432
           envFrom:
             - secretRef:
-                name: {{ include "hallu-defense.fullname" . }}-postgres
+                name: {{ required "secrets.kindPostgres.name is required" .Values.secrets.kindPostgres.name }}
+          env:
+            # Keep PGDATA below the PVC mount root. The PostgreSQL entrypoint
+            # chmods PGDATA; local-path mount roots are not chmod-able by uid
+            # 70 even when the volume is made group-writable via fsGroup.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false

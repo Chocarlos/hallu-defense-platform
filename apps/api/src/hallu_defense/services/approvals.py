@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from hallu_defense.config import Settings
+from hallu_defense.config import Settings, normalize_environment
 from hallu_defense.domain.models import (
     ApprovalDecision,
     ApprovalDecisionRequest,
@@ -26,9 +26,19 @@ from hallu_defense.domain.models import (
     ToolCallEnvelope,
 )
 from hallu_defense.services.postgres import SqlConnectionProvider
+from hallu_defense.services.secrets import (
+    SecretAccessError,
+    SecretConfigurationError,
+    SecretManager,
+    SecretNotFoundError,
+)
 
 SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|secret|token|password)", re.I)
 REDACTED = "[REDACTED]"
+TOOL_CALL_COMMITMENT_DOMAIN = b"hallu-defense:approval-tool-call:v1\x00"
+TOOL_CALL_COMMITMENT_STORAGE_KEY = "_hallu_tool_call_commitment_v1"
+TOOL_CALL_COMMITMENT_RE = re.compile(r"^(?:hmac-)?sha256:[0-9a-f]{64}$")
+MIN_COMMITMENT_KEY_BYTES = 32
 
 
 class ApprovalError(Exception):
@@ -83,6 +93,35 @@ class ApprovalExecutionGrantState:
     consumed_at: datetime | None = None
 
 
+def _set_record_tool_call_commitment(
+    record: ApprovalRecord,
+    commitment: object,
+) -> None:
+    if commitment is None:
+        record._tool_call_commitment = None
+        return
+    if not isinstance(commitment, str) or TOOL_CALL_COMMITMENT_RE.fullmatch(commitment) is None:
+        raise ApprovalQueueStorageError("Approval record tool-call commitment is invalid.")
+    record._tool_call_commitment = commitment
+
+
+def _record_tool_call_commitment(
+    record: ApprovalRecord,
+    *,
+    required: bool,
+) -> str | None:
+    commitment = record._tool_call_commitment
+    if commitment is None:
+        if required:
+            raise ApprovalQueueStorageError(
+                "Approval record is missing its original tool-call commitment."
+            )
+        return None
+    if TOOL_CALL_COMMITMENT_RE.fullmatch(commitment) is None:
+        raise ApprovalQueueStorageError("Approval record tool-call commitment is invalid.")
+    return commitment
+
+
 # --- PostgreSQL backend -------------------------------------------------------
 #
 # The decide-once and consume-once guards below are the security core of the
@@ -112,12 +151,14 @@ _INSERT_GRANT_SQL = (
 )
 _CONSUME_GRANT_ONCE_SQL = (
     "UPDATE approval_execution_grants SET consumed_at=now() "
-    "WHERE token_hash=%s AND tenant_id=%s AND tool_call_fingerprint=%s "
+    "WHERE token_hash=%s AND approval_id=%s AND tenant_id=%s "
+    "AND tool_call_fingerprint=%s "
     "AND consumed_at IS NULL AND expires_at > now() RETURNING approval_id"
 )
 _SELECT_GRANT_SQL = (
     "SELECT consumed_at, expires_at FROM approval_execution_grants "
-    "WHERE token_hash=%s AND tenant_id=%s"
+    "WHERE token_hash=%s AND approval_id=%s AND tenant_id=%s "
+    "AND tool_call_fingerprint=%s"
 )
 
 
@@ -125,30 +166,30 @@ class ApprovalQueueStorage(Protocol):
     """Durable persistence seam for :class:`ApprovalQueue`.
 
     Implementations own persistence plus the two atomic guards; the queue keeps
-    every policy/redaction/fingerprint decision. ``decide_once`` and
+    every policy/redaction/commitment decision. ``decide_with_grant_once`` and
     ``consume_grant_once`` MUST be atomic single-use operations.
     """
 
-    def insert_record(self, record: ApprovalRecord) -> None:
-        ...
+    def insert_record(self, record: ApprovalRecord) -> None: ...
 
-    def list_records(self, tenant_id: str) -> list[ApprovalRecord]:
-        ...
+    def list_records(self, tenant_id: str) -> list[ApprovalRecord]: ...
 
-    def get_record(self, tenant_id: str, approval_id: str) -> ApprovalRecord | None:
-        ...
+    def get_record(self, tenant_id: str, approval_id: str) -> ApprovalRecord | None: ...
 
-    def decide_once(self, *, decided: ApprovalRecord) -> None:
-        """Persist ``decided`` iff the record is still pending, else raise."""
-        ...
-
-    def insert_grant(self, state: ApprovalExecutionGrantState) -> None:
+    def decide_with_grant_once(
+        self,
+        *,
+        decided: ApprovalRecord,
+        grant_state: ApprovalExecutionGrantState | None,
+    ) -> None:
+        """Atomically persist the guarded decision and its optional grant."""
         ...
 
     def consume_grant_once(
         self,
         *,
         tenant_id: str,
+        approval_id: str,
         token_hash: str,
         tool_call_fingerprint: str,
         now: datetime,
@@ -162,8 +203,9 @@ class PostgresApprovalQueueStorage:
 
     The redacted ``ApprovalRecord`` snapshot is the source of truth, stored as
     ``jsonb`` via ``model_dump(mode="json")`` exactly like the JSONL backend, so
-    secrets are never written raw. ``decide_once`` and ``consume_grant_once`` use
-    ``UPDATE ... RETURNING`` guards to enforce single-use under concurrency.
+    secrets are never written raw. Decision plus optional execution grant share
+    one provider transaction; ``UPDATE ... RETURNING`` and the consume guard
+    enforce single-use under concurrency.
     """
 
     def __init__(
@@ -198,56 +240,65 @@ class PostgresApprovalQueueStorage:
             return None
         return self._record_from_row(rows[0], 1)
 
-    def decide_once(self, *, decided: ApprovalRecord) -> None:
-        rows = self._connection.execute_returning(
-            _DECIDE_ONCE_SQL,
-            (
-                decided.status.value,
-                decided.decided_at,
-                self._payload(decided),
-                decided.approval_id,
-                decided.tenant_id,
-            ),
-        )
-        if not rows:
-            raise ApprovalAlreadyDecidedError("Approval has already been decided.")
-
-    def insert_grant(self, state: ApprovalExecutionGrantState) -> None:
-        self._connection.execute(
-            _INSERT_GRANT_SQL,
-            (
-                state.token_hash,
-                state.approval_id,
-                state.tenant_id,
-                state.tool_call_fingerprint,
-                state.expires_at,
-                state.consumed_at,
-                self._now(),
-            ),
-        )
+    def decide_with_grant_once(
+        self,
+        *,
+        decided: ApprovalRecord,
+        grant_state: ApprovalExecutionGrantState | None,
+    ) -> None:
+        with self._connection.transaction() as transaction:
+            rows = transaction.execute_returning(
+                _DECIDE_ONCE_SQL,
+                (
+                    decided.status.value,
+                    decided.decided_at,
+                    self._payload(decided),
+                    decided.approval_id,
+                    decided.tenant_id,
+                ),
+            )
+            if not rows:
+                raise ApprovalAlreadyDecidedError("Approval has already been decided.")
+            if grant_state is not None:
+                transaction.execute(
+                    _INSERT_GRANT_SQL,
+                    (
+                        grant_state.token_hash,
+                        grant_state.approval_id,
+                        grant_state.tenant_id,
+                        grant_state.tool_call_fingerprint,
+                        grant_state.expires_at,
+                        grant_state.consumed_at,
+                        self._now(),
+                    ),
+                )
 
     def consume_grant_once(
         self,
         *,
         tenant_id: str,
+        approval_id: str,
         token_hash: str,
         tool_call_fingerprint: str,
         now: datetime,
     ) -> str:
         rows = self._connection.execute_returning(
             _CONSUME_GRANT_ONCE_SQL,
-            (token_hash, tenant_id, tool_call_fingerprint),
+            (token_hash, approval_id, tenant_id, tool_call_fingerprint),
         )
         if rows:
-            approval_id = rows[0].get("approval_id")
-            if not isinstance(approval_id, str) or not approval_id:
+            returned_approval_id = rows[0].get("approval_id")
+            if returned_approval_id != approval_id:
                 raise ApprovalQueueStorageError(
-                    "Approval execution grant consume returned an invalid approval_id."
+                    "Approval execution grant consume returned an inconsistent approval_id."
                 )
             return approval_id
         # 0 rows: the atomic guard rejected the grant. Disambiguate against the
         # JSONL taxonomy without ever un-guarding the write above.
-        grant_rows = self._connection.fetch_all(_SELECT_GRANT_SQL, (token_hash, tenant_id))
+        grant_rows = self._connection.fetch_all(
+            _SELECT_GRANT_SQL,
+            (token_hash, approval_id, tenant_id, tool_call_fingerprint),
+        )
         if not grant_rows:
             raise ApprovalExecutionGrantError("Approval execution grant is invalid.")
         grant = grant_rows[0]
@@ -258,13 +309,15 @@ class PostgresApprovalQueueStorage:
         expires_at = self._coerce_optional_datetime(grant.get("expires_at"))
         if expires_at is not None and expires_at <= now:
             raise ApprovalExecutionGrantExpiredError("Approval execution grant has expired.")
-        raise ApprovalExecutionGrantError(
-            "Approval execution grant does not match this tool call."
-        )
+        raise ApprovalExecutionGrantError("Approval execution grant does not match this tool call.")
 
     def _payload(self, record: ApprovalRecord) -> str:
+        payload = record.model_dump(mode="json")
+        commitment = _record_tool_call_commitment(record, required=False)
+        if commitment is not None:
+            payload[TOOL_CALL_COMMITMENT_STORAGE_KEY] = commitment
         return json.dumps(
-            record.model_dump(mode="json"),
+            payload,
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -282,12 +335,16 @@ class PostgresApprovalQueueStorage:
             raise ApprovalQueueStorageError(
                 f"Postgres approval record {row_number} payload must be an object"
             )
+        stored_payload = dict(payload)
+        commitment = stored_payload.pop(TOOL_CALL_COMMITMENT_STORAGE_KEY, None)
         try:
-            return ApprovalRecord.model_validate(payload)
+            record = ApprovalRecord.model_validate(stored_payload)
         except ValidationError as exc:
             raise ApprovalQueueStorageError(
                 f"Postgres approval record {row_number} payload is invalid"
             ) from exc
+        _set_record_tool_call_commitment(record, commitment)
+        return record
 
     def _coerce_optional_datetime(self, value: object) -> datetime | None:
         if value is None:
@@ -317,6 +374,7 @@ class ApprovalQueue:
         *,
         storage: ApprovalQueueStorage | None = None,
         execution_grant_ttl_seconds: int = 900,
+        commitment_key: bytes | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if storage_path is not None and storage is not None:
@@ -326,6 +384,13 @@ class ApprovalQueue:
         self._storage_path = storage_path
         self._storage = storage
         self._execution_grant_ttl = timedelta(seconds=execution_grant_ttl_seconds)
+        if commitment_key is not None and (
+            not isinstance(commitment_key, bytes) or len(commitment_key) < MIN_COMMITMENT_KEY_BYTES
+        ):
+            raise ApprovalQueueConfigurationError(
+                "Approval tool-call commitment key must contain at least 32 bytes."
+            )
+        self._commitment_key = commitment_key
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
         self._records: dict[str, ApprovalRecord] = {}
@@ -342,6 +407,7 @@ class ApprovalQueue:
         reason: str,
         requested_by: str = "system",
     ) -> ApprovalRecord:
+        commitment = self._tool_call_commitment(tool_call)
         record = ApprovalRecord(
             approval_id=f"apr_{uuid4().hex}",
             tenant_id=tenant_id,
@@ -352,6 +418,7 @@ class ApprovalQueue:
             reason=reason,
             requested_by=requested_by,
         )
+        _set_record_tool_call_commitment(record, commitment)
         if self._storage is not None:
             self._storage.insert_record(record)
             return record
@@ -448,7 +515,10 @@ class ApprovalQueue:
                 self._hash_execution_token(tool_call.approval_execution_token),
             ):
                 raise ApprovalExecutionGrantError("Approval execution grant is invalid.")
-            if grant_state.tool_call_fingerprint != self._tool_call_fingerprint(tool_call):
+            if not hmac.compare_digest(
+                grant_state.tool_call_fingerprint,
+                self._tool_call_commitment(tool_call),
+            ):
                 raise ApprovalExecutionGrantError(
                     "Approval execution grant does not match this tool call."
                 )
@@ -487,12 +557,16 @@ class ApprovalQueue:
                 }
             )
         )
-        # Atomic decide-once: 0 rows means a concurrent caller already decided it.
-        self._storage.decide_once(decided=decided)
         execution_grant: ApprovalExecutionGrant | None = None
+        grant_state: ApprovalExecutionGrantState | None = None
         if status == ApprovalStatus.APPROVED:
             grant_state, execution_grant = self._create_execution_grant(record)
-            self._storage.insert_grant(grant_state)
+        # The guarded decision and optional grant share one storage transaction.
+        # A grant insert failure must roll the decision back to pending.
+        self._storage.decide_with_grant_once(
+            decided=decided,
+            grant_state=grant_state,
+        )
         return ApprovalDecisionResult(approval=decided, execution_grant=execution_grant)
 
     def _consume_execution_grant_via_storage(
@@ -509,8 +583,9 @@ class ApprovalQueue:
         # Atomic consume-once; storage raises the specific taxonomy error on 0 rows.
         self._storage.consume_grant_once(
             tenant_id=tenant_id,
+            approval_id=tool_call.approval_id or "",
             token_hash=self._hash_execution_token(tool_call.approval_execution_token or ""),
-            tool_call_fingerprint=self._tool_call_fingerprint(tool_call),
+            tool_call_fingerprint=self._tool_call_commitment(tool_call),
             now=self._now(),
         )
         return record
@@ -548,12 +623,15 @@ class ApprovalQueue:
                     grant_state = self._load_grant_state(payload, line_number)
                     grants[grant_state.approval_id] = grant_state
                     continue
+                stored_payload = dict(payload)
+                commitment = stored_payload.pop(TOOL_CALL_COMMITMENT_STORAGE_KEY, None)
                 try:
-                    approval = self._sanitize_record(ApprovalRecord.model_validate(payload))
+                    approval = self._sanitize_record(ApprovalRecord.model_validate(stored_payload))
                 except ValidationError as exc:
                     raise ApprovalQueueStorageError(
                         f"Approval queue record {line_number} payload is invalid"
                     ) from exc
+                _set_record_tool_call_commitment(approval, commitment)
                 records[approval.approval_id] = approval
         self._records = records
         self._grants = grants
@@ -562,9 +640,14 @@ class ApprovalQueue:
         if self._storage_path is None:
             return
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+        sanitized = self._sanitize_record(record)
+        payload = sanitized.model_dump(mode="json")
+        commitment = _record_tool_call_commitment(sanitized, required=False)
+        if commitment is not None:
+            payload[TOOL_CALL_COMMITMENT_STORAGE_KEY] = commitment
         stored_record = {
             "record_type": "approval_record",
-            "payload": self._sanitize_record(record).model_dump(mode="json"),
+            "payload": payload,
         }
         with self._storage_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(stored_record, sort_keys=True, separators=(",", ":")) + "\n")
@@ -602,9 +685,7 @@ class ApprovalQueue:
             expires_at = self._parse_datetime(self._required_str(payload, "expires_at"))
             raw_consumed_at = payload.get("consumed_at")
             consumed_at = (
-                self._parse_datetime(raw_consumed_at)
-                if isinstance(raw_consumed_at, str)
-                else None
+                self._parse_datetime(raw_consumed_at) if isinstance(raw_consumed_at, str) else None
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ApprovalQueueStorageError(
@@ -620,7 +701,13 @@ class ApprovalQueue:
         )
 
     def _sanitize_record(self, record: ApprovalRecord) -> ApprovalRecord:
-        return record.model_copy(update={"tool_call": self._sanitize_tool_call(record.tool_call)}, deep=True)
+        sanitized = record.model_copy(
+            update={"tool_call": self._sanitize_tool_call(record.tool_call)},
+            deep=True,
+        )
+        commitment = _record_tool_call_commitment(record, required=False)
+        _set_record_tool_call_commitment(sanitized, commitment)
+        return sanitized
 
     def _sanitize_tool_call(self, tool_call: ToolCallEnvelope) -> ToolCallEnvelope:
         return tool_call.model_copy(
@@ -652,10 +739,19 @@ class ApprovalQueue:
     ) -> tuple[ApprovalExecutionGrantState, ApprovalExecutionGrant]:
         grant_value = secrets.token_urlsafe(32)
         expires_at = self._now() + self._execution_grant_ttl
+        tool_call_commitment = _record_tool_call_commitment(record, required=True)
+        if tool_call_commitment is None:  # pragma: no cover - required=True fails first
+            raise ApprovalQueueStorageError(
+                "Approval record is missing its original tool-call commitment."
+            )
+        if self._commitment_key is not None and not tool_call_commitment.startswith("hmac-sha256:"):
+            raise ApprovalQueueStorageError(
+                "A keyed approval queue cannot approve a legacy unkeyed tool-call commitment; request approval again."
+            )
         state = ApprovalExecutionGrantState(
             approval_id=record.approval_id,
             tenant_id=record.tenant_id,
-            tool_call_fingerprint=self._tool_call_fingerprint(record.tool_call),
+            tool_call_fingerprint=tool_call_commitment,
             token_hash=self._hash_execution_token(grant_value),
             expires_at=expires_at,
         )
@@ -668,9 +764,8 @@ class ApprovalQueue:
         )
         return state, grant
 
-    def _tool_call_fingerprint(self, tool_call: ToolCallEnvelope) -> str:
-        sanitized = self._sanitize_tool_call(tool_call)
-        normalized = sanitized.model_copy(
+    def _tool_call_commitment(self, tool_call: ToolCallEnvelope) -> str:
+        normalized = tool_call.model_copy(
             update={"approval_id": None, "approval_execution_token": None},
             deep=True,
         )
@@ -680,7 +775,11 @@ class ApprovalQueue:
             exclude_none=True,
         )
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        message = TOOL_CALL_COMMITMENT_DOMAIN + serialized.encode("utf-8")
+        if self._commitment_key is not None:
+            digest = hmac.new(self._commitment_key, message, hashlib.sha256).hexdigest()
+            return f"hmac-sha256:{digest}"
+        return f"sha256:{hashlib.sha256(message).hexdigest()}"
 
     def _hash_execution_token(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -708,24 +807,37 @@ def create_approval_queue(
     settings: Settings,
     *,
     sql_provider: SqlConnectionProvider | None = None,
+    secret_manager: SecretManager | None = None,
+    commitment_key: bytes | None = None,
 ) -> ApprovalQueue:
     backend = settings.approval_queue_backend.strip().lower()
     if settings.approval_execution_grant_ttl_seconds <= 0:
         raise ApprovalQueueConfigurationError(
             "Approval execution grant TTL must be a positive number of seconds."
         )
+    environment = normalize_environment(settings.environment)
+    if environment in {"production", "staging"} and backend not in {
+        "postgres",
+        "postgresql",
+    }:
+        raise ApprovalQueueConfigurationError(
+            "Production and staging require the PostgreSQL approval queue backend for globally atomic decisions and single-use grants."
+        )
+    resolved_commitment_key = _resolve_commitment_key(
+        settings,
+        secret_manager=secret_manager,
+        explicit_key=commitment_key,
+    )
     if backend == "memory":
-        if settings.environment.lower() in {"production", "staging"}:
-            raise ApprovalQueueConfigurationError(
-                "Production and staging must configure a persistent approval queue backend."
-            )
         return ApprovalQueue(
-            execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds
+            execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
+            commitment_key=resolved_commitment_key,
         )
     if backend == "jsonl":
         return ApprovalQueue(
             storage_path=settings.approval_queue_path,
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
+            commitment_key=resolved_commitment_key,
         )
     if backend in {"postgres", "postgresql"}:
         if sql_provider is None:
@@ -735,7 +847,53 @@ def create_approval_queue(
         return ApprovalQueue(
             storage=PostgresApprovalQueueStorage(connection=sql_provider),
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
+            commitment_key=resolved_commitment_key,
         )
     raise ApprovalQueueConfigurationError(
         f"Unsupported approval queue backend: {settings.approval_queue_backend}"
     )
+
+
+def _resolve_commitment_key(
+    settings: Settings,
+    *,
+    secret_manager: SecretManager | None,
+    explicit_key: bytes | None,
+) -> bytes | None:
+    environment = settings.environment.strip().lower()
+    production_like = environment in {"production", "staging"}
+    secret_name = settings.approval_tool_call_commitment_secret_name
+    if production_like and explicit_key is not None:
+        raise ApprovalQueueConfigurationError(
+            "Production approval commitments must resolve a logical SecretManager name."
+        )
+    if secret_name is None or not secret_name.strip():
+        if production_like:
+            raise ApprovalQueueConfigurationError(
+                "Production and staging require an approval commitment SecretManager name."
+            )
+        return explicit_key
+    if explicit_key is not None:
+        raise ApprovalQueueConfigurationError(
+            "Configure either a logical approval commitment secret or an explicit local key."
+        )
+    if production_like and settings.secrets_backend.strip().lower() != "vault":
+        raise ApprovalQueueConfigurationError(
+            "Production approval commitments require the Vault SecretManager backend."
+        )
+    if secret_manager is None:
+        raise ApprovalQueueConfigurationError(
+            "Approval commitment secret resolution requires SecretManager."
+        )
+    try:
+        secret_value = secret_manager.get_secret(secret_name.strip()).reveal()
+    except (SecretAccessError, SecretConfigurationError, SecretNotFoundError):
+        raise ApprovalQueueConfigurationError(
+            "Approval commitment key could not be resolved from SecretManager."
+        ) from None
+    key = secret_value.encode("utf-8")
+    if len(key) < MIN_COMMITMENT_KEY_BYTES:
+        raise ApprovalQueueConfigurationError(
+            "Approval commitment key from SecretManager must contain at least 32 bytes."
+        )
+    return key

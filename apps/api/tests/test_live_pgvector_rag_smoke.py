@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 
 import pytest
 
@@ -56,6 +57,8 @@ def test_live_pgvector_rag_smoke_runs_with_recording_connection() -> None:
         "backend": "pgvector",
         "indexed_count": 2,
         "tenant_isolation": True,
+        "exact_plan": True,
+        "exact_recall": True,
     }
     assert connection.rows == {}
 
@@ -66,7 +69,7 @@ def test_live_pgvector_rag_smoke_runs_with_recording_connection() -> None:
     assert tenant_b_parameters[0] == smoke.SMOKE_TENANT_B
     assert tenant_a_parameters[1] == tenant_b_parameters[1]
     for parameters in (tenant_a_parameters, tenant_b_parameters):
-        metadata = json.loads(_string_parameter(parameters[7]))
+        metadata = json.loads(_string_parameter(parameters[8]))
         assert metadata["smoke_kind"] == smoke.SMOKE_KIND
         assert metadata["smoke_run_id"] == "unit"
         assert metadata["corpus_id"] == "live_smoke"
@@ -78,17 +81,31 @@ def test_live_pgvector_rag_smoke_runs_with_recording_connection() -> None:
     schema_statements = [
         statement
         for statement in statements
-        if statement.startswith("SELECT extname") or statement.startswith("SELECT format_type")
+        if statement.startswith("SELECT extname")
+        or statement.startswith("SELECT format_type")
+        or statement.startswith("SELECT indexname")
     ]
+    explain_statements = [statement for statement in statements if statement.startswith("EXPLAIN")]
+    oracle_statements = [statement for statement in statements if statement.startswith("SELECT evidence_id")]
     assert len(delete_statements) == 2
-    assert len(schema_statements) == 2
-    assert len(search_statements) == 4
+    assert len(schema_statements) == 4
+    assert len(explain_statements) == 1
+    assert len(search_statements) == 6
+    assert len(oracle_statements) == 2
     assert all("DROP" not in statement and "TRUNCATE" not in statement for statement in statements)
     assert all("tenant_id = ANY(%s)" in statement for statement in delete_statements)
     assert all("metadata @> %s::jsonb" in statement for statement in delete_statements)
     assert all("tenant_id = %s" in statement for statement in search_statements)
     assert all("source_ref = ANY(%s)" in statement for statement in search_statements)
-    assert all("ORDER BY embedding <=> %s::vector" in statement for statement in search_statements)
+    assert all(
+        "1 - (embedding <=> %s::vector) AS vector_score" in statement
+        and "ORDER BY vector_score DESC, evidence_id ASC" in statement
+        for statement in search_statements
+    )
+    for statement, parameters in connection.fetch_all_calls:
+        if statement.startswith("SELECT tenant_id"):
+            assert isinstance(parameters[0], str) and parameters[0].startswith("[")
+            assert parameters[1] in smoke.SMOKE_TENANTS
 
 
 def test_pgvector_smoke_cleanup_deletes_only_current_smoke_rows() -> None:
@@ -149,6 +166,34 @@ def test_pgvector_smoke_schema_verification_rejects_wrong_embedding_type() -> No
         smoke.verify_pgvector_schema(connection=connection, table_name="rag_evidence_chunks")
 
 
+@pytest.mark.parametrize(
+    ("retrieved_at_type", "retrieved_at_not_null"),
+    [
+        (None, False),
+        ("timestamp without time zone", True),
+        (smoke.EXPECTED_RETRIEVED_AT_TYPE, False),
+    ],
+)
+def test_pgvector_smoke_schema_verification_requires_retrieved_at_not_null(
+    retrieved_at_type: str | None,
+    retrieved_at_not_null: bool,
+) -> None:
+    connection = RecordingPgVectorConnection(
+        retrieved_at_type=retrieved_at_type,
+        retrieved_at_not_null=retrieved_at_not_null,
+    )
+
+    with pytest.raises(RuntimeError, match="010_add_retrieved_at"):
+        smoke.verify_pgvector_schema(connection=connection, table_name="rag_evidence_chunks")
+
+
+def test_pgvector_smoke_schema_verification_rejects_approximate_index() -> None:
+    connection = RecordingPgVectorConnection(approximate_index_present=True)
+
+    with pytest.raises(RuntimeError, match="approximate vector index"):
+        smoke.verify_pgvector_schema(connection=connection, table_name="rag_evidence_chunks")
+
+
 def test_live_pgvector_rag_smoke_main_returns_failure_for_bad_timeout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -167,12 +212,18 @@ class RecordingPgVectorConnection:
         *,
         extension_present: bool = True,
         embedding_type: str | None = smoke.EXPECTED_EMBEDDING_TYPE,
+        retrieved_at_type: str | None = smoke.EXPECTED_RETRIEVED_AT_TYPE,
+        retrieved_at_not_null: bool = True,
+        approximate_index_present: bool = False,
     ) -> None:
         self.execute_many_calls: list[tuple[str, list[list[object]]]] = []
         self.fetch_all_calls: list[tuple[str, Sequence[object]]] = []
         self.rows: dict[tuple[str, str], dict[str, object]] = {}
         self._extension_present = extension_present
         self._embedding_type = embedding_type
+        self._retrieved_at_type = retrieved_at_type
+        self._retrieved_at_not_null = retrieved_at_not_null
+        self._approximate_index_present = approximate_index_present
 
     def execute_many(self, statement: str, parameters: Sequence[Sequence[object]]) -> None:
         copied_parameters = [list(row) for row in parameters]
@@ -187,9 +238,25 @@ class RecordingPgVectorConnection:
                 "content": _string_parameter(row[3]),
                 "authority": _string_parameter(row[4]),
                 "staleness_class": _string_parameter(row[5]),
-                "published_at": row[6],
-                "metadata": json.loads(_string_parameter(row[7])),
+                "retrieved_at": row[6],
+                "published_at": row[7],
+                "metadata": json.loads(_string_parameter(row[8])),
             }
+
+    def execute_many_transactionally(
+        self,
+        operations: Sequence[tuple[str, Sequence[Sequence[object]]]],
+    ) -> None:
+        for statement, parameters in operations:
+            if statement.startswith("SELECT pg_advisory_xact_lock"):
+                continue
+            if statement.startswith("INSERT INTO"):
+                self.execute_many(statement, parameters)
+                continue
+            if statement.startswith("DELETE FROM"):
+                self._reconcile_source_rows(parameters)
+                continue
+            raise AssertionError(f"Unexpected transactional statement: {statement}")
 
     def fetch_all(
         self,
@@ -200,11 +267,39 @@ class RecordingPgVectorConnection:
         if statement.startswith("SELECT extname"):
             return [{"extname": "vector"}] if self._extension_present else []
         if statement.startswith("SELECT format_type"):
+            if parameters[2] == "retrieved_at":
+                return (
+                    [
+                        {
+                            "retrieved_at_type": self._retrieved_at_type,
+                            "retrieved_at_not_null": self._retrieved_at_not_null,
+                        }
+                    ]
+                    if self._retrieved_at_type is not None
+                    else []
+                )
             return (
                 [{"embedding_type": self._embedding_type}]
                 if self._embedding_type is not None
                 else []
             )
+        if statement.startswith("SELECT indexname"):
+            indexes: list[Mapping[str, object]] = [
+                {
+                    "indexname": "idx_rag_evidence_chunks_tenant_source",
+                    "indexdef": "CREATE INDEX USING btree (tenant_id, source_ref)",
+                }
+            ]
+            if self._approximate_index_present:
+                indexes.append(
+                    {
+                        "indexname": "idx_rag_evidence_chunks_embedding",
+                        "indexdef": "CREATE INDEX USING ivfflat (embedding vector_cosine_ops)",
+                    }
+                )
+            return indexes
+        if statement.startswith("EXPLAIN"):
+            return [{"QUERY PLAN": [{"Plan": {"Node Type": "Sort"}}]}]
         if statement.startswith("DELETE FROM"):
             return self._delete_smoke_rows(parameters)
         if statement.startswith("SELECT "):
@@ -226,20 +321,57 @@ class RecordingPgVectorConnection:
                 del self.rows[key]
         return deleted
 
+    def _reconcile_source_rows(self, parameters: Sequence[Sequence[object]]) -> None:
+        for values in parameters:
+            tenant_id = _string_parameter(values[0])
+            source_ref = _string_parameter(values[1])
+            corpus_filter = json.loads(_string_parameter(values[2]))
+            revision = _string_parameter(values[3])
+            current_ids = set(_string_sequence_parameter(values[4]))
+            for key, row in list(self.rows.items()):
+                metadata = row.get("metadata")
+                if row.get("tenant_id") != tenant_id or row.get("source_ref") != source_ref:
+                    continue
+                if not isinstance(metadata, Mapping) or not _metadata_contains(
+                    metadata,
+                    corpus_filter,
+                ):
+                    continue
+                if (
+                    metadata.get("document_revision") != revision
+                    or row.get("evidence_id") not in current_ids
+                ):
+                    del self.rows[key]
+
     def _select_rows(
         self,
         statement: str,
         parameters: Sequence[object],
     ) -> list[Mapping[str, object]]:
-        tenant_id = _string_parameter(parameters[0])
-        parameter_index = 1
+        production_query = statement.startswith("SELECT tenant_id")
+        parameter_index = 1 if production_query else 0
+        tenant_id = _string_parameter(parameters[parameter_index])
+        parameter_index += 1
         source_refs: set[str] | None = None
         metadata_filter: Mapping[str, object] = {}
         if "source_ref = ANY(%s)" in statement:
             source_refs = set(_string_sequence_parameter(parameters[parameter_index]))
             parameter_index += 1
-        if "metadata @> %s::jsonb" in statement:
-            metadata_filter = json.loads(_string_parameter(parameters[parameter_index]))
+        elif "source_ref = %s" in statement:
+            source_refs = {_string_parameter(parameters[parameter_index])}
+            parameter_index += 1
+        filter_count = statement.count("metadata -> %s = %s::jsonb")
+        parsed_filter: dict[str, object] = {}
+        for _ in range(filter_count):
+            if production_query:
+                containment = json.loads(_string_parameter(parameters[parameter_index]))
+                assert isinstance(containment, Mapping)
+                parameter_index += 1
+            key = _string_parameter(parameters[parameter_index])
+            value = json.loads(_string_parameter(parameters[parameter_index + 1]))
+            parameter_index += 2
+            parsed_filter[key] = value
+        metadata_filter = parsed_filter
 
         limit = parameters[-1]
         assert isinstance(limit, int)
@@ -269,6 +401,7 @@ def _row(
         "content": "Smoke row content.",
         "authority": "internal",
         "staleness_class": "fresh",
+        "retrieved_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "published_at": None,
         "metadata": dict(metadata),
     }

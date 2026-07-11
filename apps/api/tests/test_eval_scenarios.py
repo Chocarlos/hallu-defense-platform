@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from evals.runners.scenarios import evaluate_scenarios, load_scenarios, _history_payload
+from evals.runners.scenarios import (
+    _blocking_precision,
+    _history_payload,
+    evaluate_scenarios,
+    load_scenarios,
+)
 
 
 def test_expanded_eval_scenarios_cover_required_surfaces() -> None:
@@ -45,6 +50,7 @@ def test_expanded_eval_scenarios_pass_deterministically() -> None:
     assert report["metrics"]["tool_contradiction_guard_rate"] == 1.0
     assert report["metrics"]["repo_false_claim_block_rate"] == 1.0
     assert report["metrics"]["repo_semantic_claim_decision_accuracy"] == 1.0
+    assert report["metrics"]["blocking_precision"] == 1.0
     assert report["metrics"]["sandbox_block_rate"] == 1.0
     assert all(scenario["passed"] for scenario in report["scenarios"])
 
@@ -63,6 +69,7 @@ def test_scenario_history_payload_is_bounded_and_ordered() -> None:
         "tool_contradiction_guard_rate": 1.0,
         "repo_false_claim_block_rate": 1.0,
         "repo_semantic_claim_decision_accuracy": 1.0,
+        "blocking_precision": 1.0,
         "sandbox_block_rate": 1.0,
         "p95_latency_ms": 4.2,
     }
@@ -80,3 +87,40 @@ def test_scenario_history_payload_is_bounded_and_ordered() -> None:
 
     assert [run["run_id"] for run in payload["runs"]] == ["scenario-previous", "scenario-latest"]
     assert payload["runs"][-1]["metrics"]["pass_rate"] == 1.0
+
+
+def test_blocking_precision_is_true_positives_over_predicted_blocks() -> None:
+    results = [
+        {
+            "expected": {"final_decision": "blocked"},
+            "observed": {"final_decision": "blocked"},
+        },
+        {
+            "expected": {"final_decision": "allow"},
+            "observed": {"final_decision": "blocked"},
+        },
+        {
+            "expected": {"final_decision": "allow"},
+            "observed": {"final_decision": "allow"},
+        },
+    ]
+
+    assert _blocking_precision(results) == 0.5
+
+
+def test_blocking_precision_fails_closed_without_predicted_blocks() -> None:
+    results = [
+        {
+            "expected": {"final_decision": "allow"},
+            "observed": {"final_decision": "allow"},
+        }
+    ]
+
+    assert _blocking_precision(results) == 0.0
+
+
+def test_blocking_precision_golden_set_has_positive_and_negative_examples() -> None:
+    scenarios = {scenario["id"]: scenario for scenario in load_scenarios()}
+
+    assert scenarios["code_false_test_claim_without_evidence"]["expect"]["final_decision"] == "blocked"
+    assert scenarios["code_fix_claim_supported_by_targeted_command"]["expect"]["final_decision"] == "allow"

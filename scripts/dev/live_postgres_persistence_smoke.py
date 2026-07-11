@@ -37,6 +37,7 @@ import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -48,12 +49,15 @@ from hallu_defense.domain.models import (  # noqa: E402
     ApprovalDecision,
     ApprovalDecisionRequest,
     AuditEvent,
+    Authority,
     Claim,
     ClaimVerdict,
     Evidence,
     EvidenceKind,
     FinalDecision,
+    Freshness,
     RiskLevel,
+    StalenessClass,
     ToolCallEnvelope,
     VerdictAction,
     VerdictStatus,
@@ -361,11 +365,18 @@ def _smoke_run(*, tenant_id: str, trace_id: str) -> VerificationRun:
         input={"message_text": "Live postgres persistence smoke run."},
         claims=[Claim(claim_id=f"clm_{tenant_id}", text="Live smoke persistence claim.")],
         evidence=[
-            Evidence(
-                evidence_id=f"ev_{tenant_id}",
-                kind=EvidenceKind.DOCUMENT_CHUNK,
-                content="Live smoke evidence content.",
-            )
+                Evidence(
+                    evidence_id=f"ev_{tenant_id}",
+                    kind=EvidenceKind.DOCUMENT_CHUNK,
+                    source_ref="live-postgres-persistence-smoke",
+                    content="Live smoke evidence content.",
+                    structured_content={},
+                    authority=Authority.UNKNOWN,
+                    freshness=Freshness(
+                        retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                        staleness_class=StalenessClass.UNKNOWN,
+                    ),
+                )
         ],
         verdicts=[
             ClaimVerdict(

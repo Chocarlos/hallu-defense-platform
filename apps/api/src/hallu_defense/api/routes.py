@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
+
+from hallu_defense.config import Settings
 
 from hallu_defense.api.dependencies import (
     RequestContext,
@@ -17,6 +20,7 @@ from hallu_defense.api.dependencies import (
     document_ingestor,
     eval_report_repository,
     get_settings,
+    get_readiness_service,
     hybrid_retriever,
     ingestion_job_queue,
     metrics_collector,
@@ -44,6 +48,8 @@ from hallu_defense.domain.models import (
     ClaimExtractionResponse,
     ClaimVerificationRequest,
     ClaimVerificationResponse,
+    ClaimVerificationRequestV2,
+    ClaimVerificationResponseV2,
     CorpusGrantDisableRequest,
     CorpusGrantHistoryDiffRequest,
     CorpusGrantHistoryDiffResponse,
@@ -76,7 +82,12 @@ from hallu_defense.domain.models import (
     VerificationReplayRequest,
     VerificationReplayResponse,
     VerificationRun,
+    VerificationRunListRequest,
+    VerificationRunListResponse,
     VerificationRunRequest,
+    VerificationRunRequestV2,
+    VerificationRunV2,
+    V2_SCHEMA_VERSION,
     VerdictAction,
 )
 from hallu_defense.config import INGESTION_MODE_ASYNC
@@ -85,28 +96,48 @@ from hallu_defense.services.approvals import (
     ApprovalExecutionGrantError,
     ApprovalNotFoundError,
 )
+from hallu_defense.services.audit import AuditLedgerError
 from hallu_defense.services.corpus_grants import (
     CorpusGrantNotFoundError,
     CorpusGrantPaginationError,
     CorpusGrantVersionConflictError,
 )
+from hallu_defense.services.contract_v2 import (
+    convert_claim_verdict_v2,
+    convert_verification_request_v1,
+    convert_verification_run_v2,
+)
 from hallu_defense.services.ingestion_jobs import (
     IngestionJob,
     IngestionJobError,
+    IngestionTenantDeletedError,
     IngestionJobType,
 )
 from hallu_defense.services.metrics import PROMETHEUS_CONTENT_TYPE
 from hallu_defense.services.postgres import PostgresProviderError
+from hallu_defense.services.rate_limit import RateLimitUnavailableError
 from hallu_defense.services.rag_access import RagAccessDeniedError
 from hallu_defense.services.rag_index import RagIndexError
+from hallu_defense.services.readiness import ReadinessService
 from hallu_defense.services.sandbox import SandboxError
+from hallu_defense.services.verification_history import (
+    VerificationHistoryCursorError,
+    VerificationHistoryIntegrityError,
+    list_verification_history,
+)
+
+LOGGER = logging.getLogger(__name__)
+READINESS_UNAVAILABLE_MESSAGE = "Service dependencies are not ready."
+RATE_LIMIT_UNAVAILABLE_MESSAGE = "Tool validation rate limit is unavailable."
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse},
     401: {"model": ErrorResponse},
     403: {"model": ErrorResponse},
     404: {"model": ErrorResponse},
+    408: {"model": ErrorResponse},
     409: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
     500: {"model": ErrorResponse},
 }
@@ -114,10 +145,100 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 router = APIRouter(responses=ERROR_RESPONSES)
 
 
+def _authenticated_tenant_id(
+    requested_tenant_id: object | None,
+    context: RequestContext,
+) -> str:
+    if requested_tenant_id is not None and requested_tenant_id != context.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Request tenant_id does not match the authenticated tenant.",
+        )
+    return context.tenant_id
+
+
+def _record_verification_completed(run: VerificationRun, *, path: str) -> None:
+    audit_ledger.append_completed_run(run, path=path)
+
+
+def _canonical_tool_call(
+    request: ToolCallEnvelope,
+    context: RequestContext,
+) -> ToolCallEnvelope:
+    caller_context = dict(request.caller_context)
+    caller_context["tenant_id"] = _authenticated_tenant_id(
+        caller_context.get("tenant_id"),
+        context,
+    )
+    if context.principal.is_authenticated:
+        caller_context["subject"] = context.principal.subject_id
+    elif not isinstance(caller_context.get("subject"), str) or not str(
+        caller_context["subject"]
+    ).strip():
+        caller_context["subject"] = "anonymous"
+    return request.model_copy(update={"caller_context": caller_context}, deep=True)
+
+
+def _enforce_tool_validation_rate_limit(
+    *,
+    context: RequestContext,
+    tool_name: str,
+    phase: str,
+) -> ToolValidationResponse | None:
+    try:
+        allowed = tool_validation_rate_limiter.allow(
+            tenant_id=context.tenant_id,
+            subject_id=context.principal.subject_id,
+            tool_name=f"{tool_name}:{phase}",
+        )
+    except RateLimitUnavailableError as exc:
+        metrics_collector.record_tool_validation_rate_limit(outcome="unavailable")
+        LOGGER.warning(
+            "Tool-validation rate limit backend is unavailable.",
+            extra={"exception_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=RATE_LIMIT_UNAVAILABLE_MESSAGE,
+        ) from exc
+    if allowed:
+        metrics_collector.record_tool_validation_rate_limit(outcome="allowed")
+        return None
+    metrics_collector.record_tool_validation_rate_limit(outcome="blocked")
+    return ToolValidationResponse(
+        allowed=False,
+        action=VerdictAction.BLOCK,
+        reason="Tool validation rate limit exceeded.",
+        approval_required=False,
+        trace_id=context.trace_id,
+    )
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     settings = get_settings()
     return {"status": "ok", "environment": settings.environment}
+
+
+@router.get(
+    "/ready",
+    response_model=dict[str, str],
+    responses={503: {"model": ErrorResponse}},
+)
+def ready(
+    readiness: ReadinessService = Depends(get_readiness_service),
+) -> dict[str, str]:
+    try:
+        result = readiness.check()
+    except Exception as exc:
+        LOGGER.warning(
+            "Readiness service failed unexpectedly.",
+            extra={"exception_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=503, detail=READINESS_UNAVAILABLE_MESSAGE) from exc
+    if not result.ready:
+        raise HTTPException(status_code=503, detail=READINESS_UNAVAILABLE_MESSAGE)
+    return {"status": "ready"}
 
 
 @router.get(
@@ -200,7 +321,7 @@ def retrieve_evidence(
 @router.post(
     "/documents/ingest",
     response_model=DocumentIngestionResponse,
-    responses={503: {"model": ErrorResponse}},
+    responses={409: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
 )
 def ingest_documents(
     request: DocumentIngestionRequest,
@@ -272,6 +393,11 @@ def _enqueue_document_ingestion(
                 "documents": [document.model_dump(mode="json") for document in prepared_documents],
             },
         )
+    except IngestionTenantDeletedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Tenant deletion fence forbids new ingestion.",
+        ) from exc
     except (IngestionJobError, PostgresProviderError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     audit_ledger.append_event(
@@ -473,6 +599,18 @@ def verify_claims(
     return ClaimVerificationResponse(verdicts=claim_verifier.verify(request.claims, request.evidence))
 
 
+@router.post("/v2/claims/verify", response_model=ClaimVerificationResponseV2)
+def verify_claims_v2(
+    request: ClaimVerificationRequestV2,
+    _context: RequestContext = Depends(require_endpoint_roles("POST /v2/claims/verify")),
+) -> ClaimVerificationResponseV2:
+    verdicts = claim_verifier.verify(request.claims, request.evidence)
+    return ClaimVerificationResponseV2(
+        schema_version=V2_SCHEMA_VERSION,
+        verdicts=[convert_claim_verdict_v2(verdict) for verdict in verdicts],
+    )
+
+
 @router.post("/response/repair", response_model=ResponseRepairResponse)
 def repair_response(
     request: ResponseRepairRequest,
@@ -486,50 +624,65 @@ def repair_response(
     )
 
 
-@router.post("/tools/validate-input", response_model=ToolValidationResponse)
+@router.post(
+    "/tools/validate-input",
+    response_model=ToolValidationResponse,
+    responses={503: {"model": ErrorResponse}},
+)
 def validate_tool_input(
     request: ToolCallEnvelope,
     context: RequestContext = Depends(require_endpoint_roles("POST /tools/validate-input")),
 ) -> ToolValidationResponse:
-    result = tool_safety.validate_input(request)
+    tool_request = _canonical_tool_call(request, context)
+    rate_limit_response = _enforce_tool_validation_rate_limit(
+        context=context,
+        tool_name=tool_request.tool_name,
+        phase="input",
+    )
+    if rate_limit_response is not None:
+        return rate_limit_response
+    result = tool_safety.validate_input(
+        tool_request,
+        trace_id=context.trace_id,
+        tenant_id=context.tenant_id,
+    )
+
     if result.approval_required and (
-        request.approval_id is not None or request.approval_execution_token is not None
+        tool_request.approval_id is not None
+        or tool_request.approval_execution_token is not None
     ):
         try:
-            approval = approval_queue.consume_execution_grant(context.tenant_id, request)
+            approval = approval_queue.consume_execution_grant(
+                context.tenant_id,
+                tool_request,
+            )
         except ApprovalNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ApprovalExecutionGrantError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-        return ToolValidationResponse(
-            allowed=True,
-            action=VerdictAction.ALLOW,
-            reason="Tool call was authorized by an approved execution grant.",
-            approval_required=False,
-            approval_id=approval.approval_id,
+        authorized = tool_safety.validate_input(
+            tool_request,
+            trace_id=context.trace_id,
+            tenant_id=context.tenant_id,
+            approval_granted=True,
         )
-
-    if not tool_validation_rate_limiter.allow(
-        tenant_id=context.tenant_id,
-        subject_id=context.principal.subject_id,
-        tool_name=request.tool_name,
-    ):
-        return ToolValidationResponse(
-            allowed=False,
-            action=VerdictAction.BLOCK,
-            reason="Tool validation rate limit exceeded.",
-            approval_required=False,
-        )
+        if not authorized.allowed:
+            return authorized
+        return authorized.model_copy(update={"approval_id": approval.approval_id})
 
     if result.approval_required:
         approval = approval_queue.request_approval(
             tenant_id=context.tenant_id,
             trace_id=context.trace_id,
-            tool_call=request,
+            tool_call=tool_request,
             reason=result.reason,
-            requested_by=str(request.caller_context.get("subject", "system")),
+            requested_by=(
+                context.principal.subject_id
+                if context.principal.is_authenticated
+                else str(tool_request.caller_context.get("subject", "system"))
+            ),
         )
-        metrics_collector.record_approval_request(risk_level=request.risk_level.value)
+        metrics_collector.record_approval_request(risk_level=tool_request.risk_level.value)
         return result.model_copy(update={"approval_id": approval.approval_id})
     return result
 
@@ -537,9 +690,21 @@ def validate_tool_input(
 @router.post("/tools/validate-output", response_model=ToolValidationResponse)
 def validate_tool_output(
     request: ToolCallEnvelope,
-    _context: RequestContext = Depends(require_endpoint_roles("POST /tools/validate-output")),
+    context: RequestContext = Depends(require_endpoint_roles("POST /tools/validate-output")),
 ) -> ToolValidationResponse:
-    return tool_safety.validate_output(request)
+    tool_request = _canonical_tool_call(request, context)
+    rate_limit_response = _enforce_tool_validation_rate_limit(
+        context=context,
+        tool_name=tool_request.tool_name,
+        phase="output",
+    )
+    if rate_limit_response is not None:
+        return rate_limit_response
+    return tool_safety.validate_output(
+        tool_request,
+        trace_id=context.trace_id,
+        tenant_id=context.tenant_id,
+    )
 
 
 @router.post("/policy/evaluate", response_model=PolicyEvaluationResponse)
@@ -600,7 +765,16 @@ def decide_approval(
 def run_repo_checks(
     request: RepoChecksRunRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /repo/checks/run")),
+    runtime_settings: Settings = Depends(get_settings),
 ) -> SandboxRun:
+    if (
+        runtime_settings.sandbox_backend == "kubernetes"
+        and context.tenant_id != runtime_settings.sandbox_kubernetes_tenant_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Kubernetes sandbox workspace is bound to a different tenant",
+        )
     started_at = time.perf_counter()
     with telemetry.span(
         "sandbox.run",
@@ -640,7 +814,7 @@ def export_audit(
     request: AuditExportRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /audit/export")),
 ) -> AuditExportResponse:
-    tenant_id = request.tenant_id or context.tenant_id
+    tenant_id = _authenticated_tenant_id(request.tenant_id, context)
     return AuditExportResponse(
         trace_id=context.trace_id,
         runs=audit_ledger.export(tenant_id=tenant_id, trace_id=request.trace_id),
@@ -711,13 +885,63 @@ def list_eval_reports(
     )
 
 
+@router.post(
+    "/verification/runs/list",
+    response_model=VerificationRunListResponse,
+    responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+def list_verification_runs(
+    request: VerificationRunListRequest,
+    context: RequestContext = Depends(require_endpoint_roles("POST /verification/runs/list")),
+) -> VerificationRunListResponse:
+    try:
+        runs, next_cursor = list_verification_history(
+            audit_ledger,
+            tenant_id=context.tenant_id,
+            request=request,
+        )
+    except VerificationHistoryCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (VerificationHistoryIntegrityError, AuditLedgerError, PostgresProviderError) as exc:
+        LOGGER.error(
+            "verification history integrity check failed",
+            extra={"trace_id": context.trace_id},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Verification history is unavailable.",
+        ) from exc
+    return VerificationRunListResponse(
+        trace_id=context.trace_id,
+        runs=runs,
+        next_cursor=next_cursor,
+    )
+
+
 @router.post("/verification/run", response_model=VerificationRun)
 def run_verification(
     request: VerificationRunRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /verification/run")),
 ) -> VerificationRun:
-    tenant_request = request.model_copy(update={"tenant_id": request.tenant_id or context.tenant_id})
-    return orchestrator.run(tenant_request)
+    tenant_request = request.model_copy(
+        update={"tenant_id": _authenticated_tenant_id(request.tenant_id, context)}
+    )
+    run = orchestrator.run(tenant_request)
+    _record_verification_completed(run, path="/verification/run")
+    return run
+
+
+@router.post("/v2/verification/run", response_model=VerificationRunV2)
+def run_verification_v2(
+    request: VerificationRunRequestV2,
+    context: RequestContext = Depends(require_endpoint_roles("POST /v2/verification/run")),
+) -> VerificationRunV2:
+    legacy_request = convert_verification_request_v1(request).model_copy(
+        update={"tenant_id": _authenticated_tenant_id(request.tenant_id, context)}
+    )
+    run = orchestrator.run(legacy_request)
+    _record_verification_completed(run, path="/v2/verification/run")
+    return convert_verification_run_v2(run)
 
 
 @router.post("/verification/replay", response_model=VerificationReplayResponse)
@@ -734,6 +958,7 @@ def replay_verification(
         )
     source = source_candidates[-1]
     replayed_run = orchestrator.replay(source)
+    _record_verification_completed(replayed_run, path="/verification/replay")
     decision_changed = replayed_run.final_decision != source.final_decision
     audit_ledger.append_event(
         trace_id=context.trace_id,

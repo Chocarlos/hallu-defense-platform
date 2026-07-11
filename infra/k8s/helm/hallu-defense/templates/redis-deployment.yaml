@@ -1,0 +1,314 @@
+{{- if and .Values.kindDependencies.enabled .Values.kindDependencies.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-redis
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  ports:
+    - name: rediss
+      port: 6379
+      targetPort: rediss
+  selector:
+    app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-redis
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "hallu-defense.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        - name: generate-redis-auth
+          image: {{ include "hallu-defense.apiImage" . | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: HALLU_KIND_REDIS_SERVICE
+              value: {{ printf "%s-redis" (include "hallu-defense.fullname" .) | quote }}
+          command:
+            - python
+            - -c
+            - |
+              import os
+              import secrets
+              from pathlib import Path
+
+              root = Path("/run/hallu-defense/redis-auth")
+              acl_credential = secrets.token_hex(32)
+              service = os.environ["HALLU_KIND_REDIS_SERVICE"]
+              (root / "users.acl").write_text(
+                  "user default off\n"
+                  "user hallu-rate-limiter on >"
+                  + acl_credential
+                  + " ~hallu-defense:tool-validation-rate-limit:v1:*"
+                  " +ping +eval +incr +pexpire\n",
+                  encoding="utf-8",
+              )
+              (root / "redis.conf").write_text(
+                  "bind 0.0.0.0 ::\n"
+                  "protected-mode yes\n"
+                  "port 0\n"
+                  "tls-port 6379\n"
+                  "tls-cert-file /run/hallu-defense/redis-tls/tls.crt\n"
+                  "tls-key-file /run/hallu-defense/redis-tls/tls.key\n"
+                  "tls-ca-cert-file /run/hallu-defense/redis-tls/ca.crt\n"
+                  "tls-auth-clients no\n"
+                  "tls-protocols \"TLSv1.2 TLSv1.3\"\n"
+                  "aclfile /run/hallu-defense/redis-auth/users.acl\n"
+                  "save \"\"\n"
+                  "appendonly no\n"
+                  "dir /tmp\n",
+                  encoding="utf-8",
+              )
+              (root / "redis-url").write_text(
+                  f"rediss://hallu-rate-limiter:{acl_credential}@{service}:6379/0\n",
+                  encoding="utf-8",
+              )
+              for name in ("users.acl", "redis.conf", "redis-url"):
+                  (root / name).chmod(0o400)
+          volumeMounts:
+            - name: redis-auth
+              mountPath: /run/hallu-defense/redis-auth
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.kindDependencies.redis.resources.guard | nindent 12 }}
+        # Native sidecar: startupProbe must pass before the Vault seeder init
+        # runs. Kubernetes >=1.34 is required by Chart.yaml.
+        - name: redis
+          restartPolicy: Always
+          image: {{ .Values.kindDependencies.redis.image | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - redis-server
+            - /run/hallu-defense/redis-auth/redis.conf
+          ports:
+            - name: rediss
+              containerPort: 6379
+              protocol: TCP
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: redis-auth
+              mountPath: /run/hallu-defense/redis-auth
+              readOnly: true
+            - name: redis-tls
+              mountPath: /run/hallu-defense/redis-tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  output="$(redis-cli --tls --cacert /run/hallu-defense/redis-tls/ca.crt \
+                    --sni {{ include "hallu-defense.fullname" . }}-redis \
+                    -h 127.0.0.1 -p 6379 --user invalid --pass invalid \
+                    --no-auth-warning ping 2>&1 || true)"
+                  case "$output" in *WRONGPASS*) exit 0;; *) exit 1;; esac
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  output="$(redis-cli --tls --cacert /run/hallu-defense/redis-tls/ca.crt \
+                    --sni {{ include "hallu-defense.fullname" . }}-redis \
+                    -h 127.0.0.1 -p 6379 --user invalid --pass invalid \
+                    --no-auth-warning ping 2>&1 || true)"
+                  case "$output" in *WRONGPASS*) exit 0;; *) exit 1;; esac
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  output="$(redis-cli --tls --cacert /run/hallu-defense/redis-tls/ca.crt \
+                    --sni {{ include "hallu-defense.fullname" . }}-redis \
+                    -h 127.0.0.1 -p 6379 --user invalid --pass invalid \
+                    --no-auth-warning ping 2>&1 || true)"
+                  case "$output" in *WRONGPASS*) exit 0;; *) exit 1;; esac
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.kindDependencies.redis.resources.server | nindent 12 }}
+        - name: seed-redis-url-in-vault
+          image: {{ include "hallu-defense.apiImage" . | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - python
+            - scripts/dev/bootstrap_kind_vault.py
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: HALLU_DEFENSE_KIND_VAULT_ADDR
+              value: {{ .Values.vault.address | quote }}
+            - name: HALLU_DEFENSE_KIND_VAULT_CA_PATH
+              value: /run/hallu-defense/kind-vault/ca.crt
+            - name: HALLU_DEFENSE_KIND_VAULT_TOKEN_PATH
+              value: /run/hallu-defense/kind-vault/root-token
+            - name: HALLU_DEFENSE_KIND_VAULT_SEED_CORE_CREDENTIALS
+              value: "false"
+            - name: HALLU_DEFENSE_KIND_REDIS_SECRET_NAME
+              value: {{ .Values.rateLimit.redis.urlSecretName | quote }}
+            - name: HALLU_DEFENSE_KIND_REDIS_URL_PATH
+              value: /run/hallu-defense/redis-auth/redis-url
+            - name: HALLU_DEFENSE_KIND_READY_MARKER_PATH
+              value: /run/hallu-defense/redis-status/seeded
+            - name: HALLU_DEFENSE_KIND_VAULT_WAIT_SECONDS
+              value: {{ .Values.migrations.waitTimeoutSeconds | quote }}
+          volumeMounts:
+            - name: redis-auth
+              mountPath: /run/hallu-defense/redis-auth
+            - name: redis-status
+              mountPath: /run/hallu-defense/redis-status
+            - name: kind-vault
+              mountPath: /run/hallu-defense/kind-vault
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.kindDependencies.redis.resources.guard | nindent 12 }}
+      containers:
+        - name: redis-guard
+          image: {{ include "hallu-defense.apiImage" . | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import time
+
+              while True:
+                  time.sleep(3600)
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: redis-status
+              mountPath: /run/hallu-defense/redis-status
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - test -s /run/hallu-defense/redis-status/seeded
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - test -s /run/hallu-defense/redis-status/seeded
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.kindDependencies.redis.resources.guard | nindent 12 }}
+      volumes:
+        - name: redis-auth
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: redis-status
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Ki
+        - name: redis-tls
+          secret:
+            secretName: {{ required "secrets.kindRedisTls.name is required" .Values.secrets.kindRedisTls.name }}
+            defaultMode: 0440
+        - name: kind-vault
+          secret:
+            secretName: {{ required "secrets.kindVault.name is required" .Values.secrets.kindVault.name }}
+            defaultMode: 0440
+            items:
+              - key: root-token
+                path: root-token
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-redis
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: vault
+      ports:
+        - protocol: TCP
+          port: 8200
+{{- end }}

@@ -6,6 +6,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +16,14 @@ if str(API_SRC) not in sys.path:
     sys.path.insert(0, str(API_SRC))
 
 from hallu_defense.domain.models import (  # noqa: E402
+    Authority,
     Claim,
     ClaimType,
     Evidence,
     EvidenceKind,
+    Freshness,
     RiskLevel,
+    StalenessClass,
     VerdictAction,
     VerdictStatus,
 )
@@ -28,6 +32,7 @@ from hallu_defense.services.verifier import ClaimVerifier  # noqa: E402
 OUTPUT_PATH = ROOT / "evals" / "reports" / "verifier-calibration.json"
 SCHEMA_VERSION = "verifier-calibration.v1"
 CONFIDENCE_THRESHOLDS = (0.4, 0.55, 0.7, 0.82, 0.9, 0.95, 0.98)
+CALIBRATION_RETRIEVED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,28 @@ class CalibrationCase:
     evidence: tuple[Evidence, ...]
     expected_status: VerdictStatus
     expected_action: VerdictAction
+
+
+def _evidence(
+    *,
+    evidence_id: str,
+    kind: EvidenceKind,
+    source_ref: str,
+    content: str,
+    structured_content: dict[str, object] | None = None,
+) -> Evidence:
+    return Evidence(
+        evidence_id=evidence_id,
+        kind=kind,
+        source_ref=source_ref,
+        content=content,
+        structured_content=structured_content or {},
+        authority=Authority.UNKNOWN,
+        freshness=Freshness(
+            retrieved_at=CALIBRATION_RETRIEVED_AT,
+            staleness_class=StalenessClass.UNKNOWN,
+        ),
+    )
 
 
 def build_report() -> dict[str, object]:
@@ -104,7 +131,7 @@ def calibration_cases() -> list[CalibrationCase]:
                 risk_level=RiskLevel.MEDIUM,
             ),
             evidence=(
-                Evidence(
+                _evidence(
                     evidence_id="ev_supported",
                     kind=EvidenceKind.DOCUMENT_CHUNK,
                     source_ref="hr-policy",
@@ -124,7 +151,7 @@ def calibration_cases() -> list[CalibrationCase]:
                 risk_level=RiskLevel.MEDIUM,
             ),
             evidence=(
-                Evidence(
+                _evidence(
                     evidence_id="ev_partial",
                     kind=EvidenceKind.DOCUMENT_CHUNK,
                     source_ref="hr-policy",
@@ -144,7 +171,7 @@ def calibration_cases() -> list[CalibrationCase]:
                 risk_level=RiskLevel.MEDIUM,
             ),
             evidence=(
-                Evidence(
+                _evidence(
                     evidence_id="ev_numeric",
                     kind=EvidenceKind.DOCUMENT_CHUNK,
                     source_ref="runbook",
@@ -164,7 +191,7 @@ def calibration_cases() -> list[CalibrationCase]:
                 risk_level=RiskLevel.MEDIUM,
             ),
             evidence=(
-                Evidence(
+                _evidence(
                     evidence_id="ev_unrelated",
                     kind=EvidenceKind.DOCUMENT_CHUNK,
                     source_ref="hr-policy",
@@ -211,7 +238,7 @@ def calibration_cases() -> list[CalibrationCase]:
                 risk_level=RiskLevel.HIGH,
             ),
             evidence=(
-                Evidence(
+                _evidence(
                     evidence_id="ev_pytest_ok",
                     kind=EvidenceKind.COMMAND_OUTPUT,
                     source_ref="pytest",
@@ -232,7 +259,7 @@ def calibration_cases() -> list[CalibrationCase]:
                 risk_level=RiskLevel.HIGH,
             ),
             evidence=(
-                Evidence(
+                _evidence(
                     evidence_id="ev_pytest_failed",
                     kind=EvidenceKind.COMMAND_OUTPUT,
                     source_ref="pytest",

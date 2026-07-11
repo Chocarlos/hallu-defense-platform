@@ -50,12 +50,15 @@ Until a private intake process exists, report security issues directly to the re
 
 These are tracked in `docs/TRACEABILITY_MATRIX.md` and must not be represented as complete:
 
-- Deployed identity-provider smoke for the OIDC JWT/JWKS path is wired through
-  `scripts/ci/oidc_provider_smoke.py`; local CI skips it unless provider URL and
-  short-lived test JWT environment variables are supplied.
-- Deployed identity-provider smoke tests cover direct JWKS URL, OIDC discovery,
-  and refresh on unknown `kid` when the required provider environment variables
-  are supplied.
+- The live workflow proves the local realm through real Keycloak OIDC discovery/
+  JWKS service and a separately deployed Uvicorn API. It checks unauthenticated
+  rejection, reviewer authorization, least-privilege denial, JWT/header tenant
+  mismatch rejection, and JWT-tenant audit propagation across actual HTTP.
+- External identity-provider smoke remains opt-in through
+  `scripts/ci/oidc_provider_smoke.py`; it covers direct JWKS URL, discovery, and
+  refresh on unknown `kid` only when a provider URL and short-lived test JWT are
+  supplied. The local Keycloak/Uvicorn result is not evidence for an external
+  deployment.
 - Tenant identity is JWT-derived in `oidc_jwt` mode; local and trusted-gateway
   modes still rely on boundary headers.
 - Persistent tenant-aware database layer.

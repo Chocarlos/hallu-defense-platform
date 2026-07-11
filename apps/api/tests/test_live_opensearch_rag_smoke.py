@@ -55,7 +55,7 @@ def test_live_opensearch_rag_smoke_runs_with_recording_transport() -> None:
     }
     paths = [call[1] for call in transport.calls]
     assert "/_index_template/hallu_evidence_template" in paths
-    assert paths.count("/hallu_evidence_live_smoke?ignore_unavailable=true") == 2
+    assert paths.count("/hallu_evidence_live_smoke?ignore_unavailable=true") == 3
     assert "/hallu_evidence_live_smoke/_refresh" in paths
 
 
@@ -82,6 +82,8 @@ class RecordingOpenSearchTransport:
             ]
         ] = []
         self._documents: list[dict[str, object]] = []
+        self._installed_template: Mapping[str, object] | None = None
+        self._index_exists = False
 
     def request_json(
         self,
@@ -93,19 +95,40 @@ class RecordingOpenSearchTransport:
         timeout_seconds: float,
     ) -> Mapping[str, object]:
         self.calls.append((method, path, body, headers, timeout_seconds))
-        if path.startswith("/_index_template/"):
+        if method == "PUT" and path.startswith("/_index_template/"):
+            assert isinstance(body, Mapping)
+            self._installed_template = body
             return {"acknowledged": True}
+        if method == "GET" and path.startswith("/_index_template/"):
+            assert self._installed_template is not None
+            return {
+                "index_templates": [
+                    {
+                        "name": path.rsplit("/", maxsplit=1)[-1],
+                        "index_template": self._installed_template,
+                    }
+                ]
+            }
+        if method == "GET" and "_mapping" in path:
+            if not self._index_exists:
+                return {}
+            mappings = self._installed_template["template"]["mappings"]  # type: ignore[index]
+            return {"hallu_evidence_live_smoke": {"mappings": mappings}}
         if method == "DELETE" and path == "/hallu_evidence_live_smoke?ignore_unavailable=true":
             self._documents.clear()
+            self._index_exists = False
             return {"acknowledged": True}
         if method == "PUT" and path == "/hallu_evidence_live_smoke":
+            self._index_exists = True
             return {"acknowledged": True}
-        if method == "POST" and path == "/_bulk":
+        if method == "POST" and path == "/_bulk?refresh=wait_for":
             assert isinstance(body, Sequence)
             for item in body:
                 if isinstance(item, Mapping) and "tenant_id" in item:
                     self._documents.append(dict(item))
             return {"errors": False}
+        if method == "POST" and "_delete_by_query" in path:
+            return {"timed_out": False, "version_conflicts": 0, "failures": []}
         if method == "POST" and path == "/hallu_evidence_live_smoke/_refresh":
             return {"_shards": {"successful": 1}}
         if method == "POST" and path == "/hallu_evidence_live_smoke/_search":

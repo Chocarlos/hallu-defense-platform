@@ -6166,3 +6166,83 @@ Remaining risks:
 - Production profile e2e still requires a real deployed API and OIDC token when
   enabled.
 - No row is marked `accepted`.
+
+## 2026-07-09 - Traceability and production runtime hardening
+
+Slice selected:
+
+- Audited the integrated Batch 5-7 runtime against `docs/PLAN_MASTER.md`, the
+  traceability matrix, production deployment profiles, and worker terminal
+  behavior.
+- Chose the smallest cross-cutting hardening slice that closes deterministic
+  evidence gaps without claiming live infrastructure: plan-ID coverage,
+  production backend construction, migration-image contents, and authoritative
+  ingestion completion state.
+- Requirement IDs added to the matrix: `CTR-026`, `CTR-027`, `API-022`,
+  `API-023`, `API-024`, `SEC-015`, `SEC-016`, `RAG-009`, and `EVAL-005`.
+
+Implementation:
+
+- Extended `scripts/ci/check_traceability_matrix.py` to extract full and
+  shorthand requirement sequences such as `EVAL-003/004/005` from the master
+  plan and fail when any declared ID is absent from the matrix; added positive
+  and negative tests.
+- Added the nine previously omitted M6 rows with implementation, tests,
+  evidence, status, and explicit live-evidence caveats; refreshed stale matrix
+  evidence without promoting any row to `accepted`.
+- Changed PostgreSQL ingestion completion to return and parse the guarded
+  terminal row, then made the worker audit that authoritative result. Successful
+  events now record both outcome and `job_status` as `succeeded` instead of
+  retaining the claimed job's `running` metadata.
+- Made the production Compose API and ingestion worker share the same
+  fail-closed environment, including a non-mock provider and PostgreSQL eval
+  report repository. Extended the production gate and construction tests to
+  reject mock/memory/local regressions.
+- Added equivalent non-mock provider and PostgreSQL eval settings to Helm.
+  Packaged `apply_postgres_migrations.py` and all pgvector SQL migrations in the
+  API image used by the migration Job, with static gate and negative tests.
+- Updated production deployment documentation and ADR language so it no longer
+  describes integrated Batch 5/6 runtime as pending.
+
+Validation:
+
+- The initial plan-coverage test failed as intended with exactly the nine M6
+  IDs listed above; after the matrix update,
+  `.venv\Scripts\python.exe scripts\ci\check_traceability_matrix.py` validated
+  182 rows and `test_traceability_matrix.py` passed 8 tests.
+- `.venv\Scripts\python.exe -m pytest` over the eleven focused eval, ingestion,
+  lifecycle, contracts, production, Helm, and traceability modules: 83 passed
+  with the existing Starlette/httpx warning.
+- `.venv\Scripts\python.exe -m pytest apps\api\tests -q`: 642 passed, 1
+  skipped, with the existing Starlette/httpx warning.
+- `.venv\Scripts\python.exe -m ruff check apps scripts`: all checks passed;
+  `.venv\Scripts\python.exe -m mypy apps\api\src`: no issues in 44 source
+  files. An exploratory mypy invocation that also treated `scripts/` as a
+  package failed on duplicate module naming, so the canonical Makefile scope was
+  rerun directly and passed.
+- `npm run typecheck`: all five workspaces passed; `npm run test`: SDK 11,
+  agent-adapters 5, MCP 6, and console 6 tests passed; `npm run build` completed
+  every workspace and the optimized Next.js build.
+- Production, Helm, ingestion, eval-ingestion, JSON Schema, OpenAPI, backup,
+  secrets, observability, RAG persistence, local runtime, and secret-scan gates
+  passed. The production gate also executed the base+overlay Docker Compose
+  configuration; local runtime validated 12 services and 3 volumes.
+- `docker build -f infra/docker/api.Dockerfile -t
+  hallu-defense-api:migration-smoke .` succeeded. A container file-presence
+  smoke then verified the migration runner plus `000_schema_migrations.sql` and
+  `006_ingestion_outbox.sql` under the exact `/app` paths used by the Helm Job.
+- `git diff --check` passed with only expected LF-to-CRLF working-copy warnings
+  on Windows.
+
+Remaining risks:
+
+- Helm static invariants passed, but rendered `helm template`, kind install,
+  migration Job completion, and live cluster probes remain pending because the
+  Helm/kind toolchain is unavailable in this shell.
+- Docker image construction proves packaging, not a live PostgreSQL migration;
+  real concurrent outbox recovery, backup/restore, and production OIDC/provider
+  flows remain deployment evidence.
+- The provider URL/model and Vault secret name are deployment-safe placeholders
+  that operators must override with their approved gateway and credential.
+- GNU Make is unavailable on this host; its canonical Python/npm subcommands
+  were executed directly. No row is marked `accepted`.

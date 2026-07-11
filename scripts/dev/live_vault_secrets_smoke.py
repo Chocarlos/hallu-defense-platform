@@ -43,6 +43,7 @@ LOCAL_VAULT_SECRET_NAMES: tuple[str, ...] = (
     "observability/metrics-scrape-token",
     "auth/trusted-header-signing-key",
     BACKUP_ENCRYPTION_SECRET_NAME,
+    "providers/openai/api-key",
 )
 
 

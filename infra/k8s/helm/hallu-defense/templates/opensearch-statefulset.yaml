@@ -37,6 +37,7 @@ spec:
         {{- include "hallu-defense.labels" . | nindent 8 }}
         app.kubernetes.io/component: opensearch
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -54,18 +55,20 @@ spec:
           env:
             - name: discovery.type
               value: single-node
-            - name: plugins.security.disabled
+            - name: transport.host
+              value: 127.0.0.1
+            - name: DISABLE_INSTALL_DEMO_CONFIG
+              value: "true"
+            - name: DISABLE_SECURITY_PLUGIN
+              value: "true"
+            - name: DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI
               value: "true"
             - name: OPENSEARCH_JAVA_OPTS
-              value: "-Xms512m -Xmx512m"
-            - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "hallu-defense.fullname" . }}-opensearch
-                  key: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+              value: "-Xms512m -Xmx512m -Dorg.bouncycastle.native.cpu_variant=java"
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -86,6 +89,23 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /usr/share/opensearch/data
+            - name: tmp
+              mountPath: /tmp
+            - name: logs
+              mountPath: /usr/share/opensearch/logs
+            - name: config
+              mountPath: /usr/share/opensearch/config
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
+        - name: logs
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
+        - name: config
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
   volumeClaimTemplates:
     - metadata:
         name: data

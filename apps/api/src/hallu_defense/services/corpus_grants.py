@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import import_module
@@ -13,7 +14,7 @@ from typing import Protocol, Self, cast
 
 from pydantic import ValidationError
 
-from hallu_defense.config import Settings
+from hallu_defense.config import Settings, normalize_environment
 from hallu_defense.domain.models import (
     CorpusGrant,
     CorpusGrantDisableRequest,
@@ -78,6 +79,16 @@ class CorpusGrantSqlConnection(Protocol):
         ...
 
     def fetch_all(self, statement: str, parameters: Sequence[object]) -> Sequence[Mapping[str, object]]:
+        ...
+
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+    ) -> Sequence[Mapping[str, object]]:
+        ...
+
+    def transaction(self) -> AbstractContextManager[CorpusGrantSqlConnection]:
         ...
 
 
@@ -148,8 +159,56 @@ class PsycopgCorpusGrantSqlConnection:
                 cursor.execute(statement, parameters)
                 return cursor.fetchall()
 
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+    ) -> Sequence[Mapping[str, object]]:
+        return self.fetch_all(statement, parameters)
+
+    @contextmanager
+    def transaction(self) -> Iterator[CorpusGrantSqlConnection]:
+        with self._connect(self._dsn, row_factory=self._row_factory) as connection:
+            yield _PsycopgCorpusGrantTransaction(connection)
+
+
+class _PsycopgCorpusGrantTransaction:
+    def __init__(self, connection: PsycopgConnection) -> None:
+        self._connection = connection
+
+    def execute(self, statement: str, parameters: Sequence[object]) -> None:
+        with self._connection.cursor() as cursor:
+            cursor.execute(statement, parameters)
+
+    def fetch_all(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+    ) -> Sequence[Mapping[str, object]]:
+        with self._connection.cursor() as cursor:
+            cursor.execute(statement, parameters)
+            return cursor.fetchall()
+
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object],
+    ) -> Sequence[Mapping[str, object]]:
+        return self.fetch_all(statement, parameters)
+
+    @contextmanager
+    def transaction(self) -> Iterator[CorpusGrantSqlConnection]:
+        yield self
+
 
 class PostgresCorpusGrantStorage:
+    """Tenant-scoped append-only grant repository.
+
+    No method loads grants for more than one tenant. Mutations are serialized per
+    tenant/corpus inside the database transaction and append with
+    ``ON CONFLICT DO NOTHING`` so stale interleavings become a typed conflict.
+    """
+
     def __init__(
         self,
         *,
@@ -160,53 +219,161 @@ class PostgresCorpusGrantStorage:
         self._table_name = table_name
         self._connection = connection
 
-    def load(self) -> list[CorpusGrant]:
-        statement = f"SELECT payload FROM {self._table_name} ORDER BY sequence_id ASC"
-        rows = self._connection.fetch_all(statement, ())
-        grants: list[CorpusGrant] = []
-        for row_number, row in enumerate(rows, start=1):
-            payload = row.get("payload")
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except json.JSONDecodeError as exc:
-                    raise CorpusGrantStorageError(
-                        f"Postgres corpus grant row {row_number} payload is not valid JSON"
-                    ) from exc
-            if not isinstance(payload, Mapping):
-                raise CorpusGrantStorageError(
-                    f"Postgres corpus grant row {row_number} payload must be an object"
-                )
-            try:
-                grants.append(CorpusGrant.model_validate(payload))
-            except ValidationError as exc:
-                raise CorpusGrantStorageError(
-                    f"Postgres corpus grant row {row_number} payload is invalid"
-                ) from exc
-        return grants
+    def transaction(self) -> AbstractContextManager[CorpusGrantSqlConnection]:
+        return self._connection.transaction()
 
-    def append(self, grant: CorpusGrant) -> None:
+    def lock_latest(
+        self,
+        transaction: CorpusGrantSqlConnection,
+        *,
+        tenant_id: str,
+        corpus_id: str,
+    ) -> CorpusGrant | None:
+        lock_key = json.dumps([tenant_id, corpus_id], separators=(",", ":"))
+        transaction.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (lock_key,),
+        )
+        return self.latest(
+            tenant_id=tenant_id,
+            corpus_id=corpus_id,
+            connection=transaction,
+        )
+
+    def latest(
+        self,
+        *,
+        tenant_id: str,
+        corpus_id: str,
+        connection: CorpusGrantSqlConnection | None = None,
+    ) -> CorpusGrant | None:
+        executor = connection or self._connection
+        rows = executor.fetch_all(
+            f"SELECT tenant_id, corpus_id, version, payload FROM {self._table_name} "
+            "WHERE tenant_id = %s AND corpus_id = %s "
+            "ORDER BY version DESC LIMIT 1",
+            (tenant_id, corpus_id),
+        )
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise CorpusGrantStorageError("Postgres corpus grant latest query was ambiguous.")
+        return _grant_from_postgres_row(rows[0], row_label="latest grant")
+
+    def append_if_current(
+        self,
+        transaction: CorpusGrantSqlConnection,
+        grant: CorpusGrant,
+    ) -> bool:
         statement = (
             f"INSERT INTO {self._table_name} "
             "(tenant_id, corpus_id, version, reader_roles, writer_roles, created_by, "
             "updated_by, created_at, updated_at, disabled_by, disabled_at, payload) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+            "ON CONFLICT (tenant_id, corpus_id, version) DO NOTHING "
+            "RETURNING tenant_id, corpus_id, version, payload"
         )
-        parameters = [
-            grant.tenant_id,
-            grant.corpus_id,
-            grant.version,
-            grant.reader_roles,
-            grant.writer_roles,
-            grant.created_by,
-            grant.updated_by,
-            grant.created_at,
-            grant.updated_at,
-            grant.disabled_by,
-            grant.disabled_at,
-            json.dumps(grant.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
-        ]
-        self._connection.execute(statement, parameters)
+        rows = transaction.execute_returning(statement, _grant_insert_parameters(grant))
+        if not rows:
+            return False
+        if len(rows) != 1:
+            raise CorpusGrantStorageError("Postgres corpus grant insert returned multiple rows.")
+        inserted = _grant_from_postgres_row(rows[0], row_label="inserted grant")
+        if inserted != grant:
+            raise CorpusGrantStorageError("Postgres corpus grant insert returned inconsistent state.")
+        return True
+
+    def list_current(
+        self,
+        *,
+        tenant_id: str,
+        request: CorpusGrantListRequest,
+        offset: int,
+    ) -> list[CorpusGrant]:
+        inner_filters = ["tenant_id = %s"]
+        parameters: list[object] = [tenant_id]
+        if request.corpus_id is not None:
+            inner_filters.append("corpus_id = %s")
+            parameters.append(request.corpus_id)
+        active_filter = "" if request.include_disabled else "WHERE disabled_at IS NULL "
+        statement = (
+            "SELECT tenant_id, corpus_id, version, payload FROM ("
+            "SELECT DISTINCT ON (corpus_id) tenant_id, corpus_id, version, updated_at, "
+            f"disabled_at, payload FROM {self._table_name} "
+            f"WHERE {' AND '.join(inner_filters)} "
+            "ORDER BY corpus_id ASC, version DESC"
+            f") AS latest {active_filter}"
+            "ORDER BY corpus_id ASC, updated_at ASC OFFSET %s LIMIT %s"
+        )
+        parameters.extend([offset, request.limit + 1])
+        return _grants_from_postgres_rows(
+            self._connection.fetch_all(statement, parameters),
+            row_label="current grant",
+        )
+
+    def history(
+        self,
+        *,
+        tenant_id: str,
+        request: CorpusGrantHistoryRequest,
+        offset: int,
+    ) -> list[CorpusGrant]:
+        filters, parameters = _postgres_history_filters(tenant_id, request)
+        statement = (
+            f"SELECT tenant_id, corpus_id, version, payload FROM {self._table_name} "
+            f"WHERE {' AND '.join(filters)} ORDER BY sequence_id ASC OFFSET %s LIMIT %s"
+        )
+        parameters.extend([offset, request.limit + 1])
+        return _grants_from_postgres_rows(
+            self._connection.fetch_all(statement, parameters),
+            row_label="history grant",
+        )
+
+    def history_with_previous(
+        self,
+        *,
+        tenant_id: str,
+        request: CorpusGrantHistoryDiffRequest,
+        offset: int,
+    ) -> list[tuple[CorpusGrant | None, CorpusGrant]]:
+        outer_filters, outer_parameters = _postgres_history_filters(
+            tenant_id,
+            request,
+            include_tenant=False,
+        )
+        statement = (
+            "WITH tenant_history AS ("
+            "SELECT tenant_id, corpus_id, version, sequence_id, updated_by, updated_at, payload, "
+            "LAG(payload) OVER (PARTITION BY corpus_id ORDER BY version ASC) AS previous_payload "
+            f"FROM {self._table_name} WHERE tenant_id = %s"
+            ") SELECT tenant_id, corpus_id, version, payload, previous_payload "
+            f"FROM tenant_history WHERE {' AND '.join(outer_filters) if outer_filters else 'TRUE'} "
+            "ORDER BY sequence_id ASC OFFSET %s LIMIT %s"
+        )
+        parameters = [tenant_id, *outer_parameters, offset, request.limit + 1]
+        rows = self._connection.fetch_all(statement, parameters)
+        pairs: list[tuple[CorpusGrant | None, CorpusGrant]] = []
+        for row_number, row in enumerate(rows, start=1):
+            grant = _grant_from_postgres_row(row, row_label=f"history diff grant {row_number}")
+            previous_payload = row.get("previous_payload")
+            previous = (
+                None
+                if previous_payload is None
+                else _grant_from_payload(
+                    previous_payload,
+                    row_label=f"history diff previous grant {row_number}",
+                )
+            )
+            if previous is not None and (
+                previous.tenant_id != grant.tenant_id
+                or previous.corpus_id != grant.corpus_id
+                or previous.version + 1 != grant.version
+            ):
+                raise CorpusGrantStorageError(
+                    "Postgres corpus grant history predecessor is inconsistent."
+                )
+            pairs.append((previous, grant))
+        return pairs
 
 
 class CorpusGrantRegistry:
@@ -215,6 +382,7 @@ class CorpusGrantRegistry:
         storage_path: Path | None = None,
         *,
         storage: CorpusGrantStorage | None = None,
+        require_expected_version: bool = False,
     ) -> None:
         if storage_path is not None and storage is not None:
             raise CorpusGrantConfigurationError(
@@ -222,6 +390,7 @@ class CorpusGrantRegistry:
             )
         self._storage_path = storage_path
         self._storage = storage
+        self._require_expected_version = require_expected_version
         self._lock = threading.RLock()
         self._grants: dict[tuple[str, str], CorpusGrant] = {}
         self._history: list[CorpusGrant] = []
@@ -433,6 +602,10 @@ class CorpusGrantRegistry:
         existing: CorpusGrant | None,
     ) -> None:
         if expected_version is None:
+            if self._require_expected_version:
+                raise CorpusGrantVersionConflictError(
+                    "Corpus grant expected_version is required for production-like mutations."
+                )
             return
         current_version = existing.version if existing is not None else 0
         if current_version != expected_version:
@@ -515,20 +688,197 @@ class CorpusGrantRegistry:
         return offset
 
 
+class PostgresCorpusGrantRegistry(CorpusGrantRegistry):
+    """Database-authoritative registry with no process-local grant cache."""
+
+    def __init__(
+        self,
+        *,
+        storage: PostgresCorpusGrantStorage,
+        require_expected_version: bool = False,
+    ) -> None:
+        super().__init__(require_expected_version=require_expected_version)
+        self._postgres_storage = storage
+
+    def upsert(
+        self,
+        *,
+        tenant_id: str,
+        request: CorpusGrantUpsertRequest,
+        updated_by: str,
+    ) -> CorpusGrant:
+        now = self._now()
+        with self._postgres_storage.transaction() as transaction:
+            existing = self._postgres_storage.lock_latest(
+                transaction,
+                tenant_id=tenant_id,
+                corpus_id=request.corpus_id,
+            )
+            self._enforce_expected_version(
+                corpus_id=request.corpus_id,
+                expected_version=request.expected_version,
+                existing=existing,
+            )
+            grant = CorpusGrant(
+                tenant_id=tenant_id,
+                corpus_id=request.corpus_id,
+                reader_roles=request.reader_roles,
+                writer_roles=request.writer_roles,
+                version=(existing.version + 1) if existing is not None else 1,
+                created_by=existing.created_by if existing is not None else updated_by,
+                updated_by=updated_by,
+                created_at=existing.created_at if existing is not None else now,
+                updated_at=now,
+                disabled_by=None,
+                disabled_at=None,
+            )
+            if not self._postgres_storage.append_if_current(transaction, grant):
+                current = self._postgres_storage.latest(
+                    tenant_id=tenant_id,
+                    corpus_id=request.corpus_id,
+                    connection=transaction,
+                )
+                self._raise_version_conflict(
+                    corpus_id=request.corpus_id,
+                    expected_version=(existing.version if existing is not None else 0),
+                    current=current,
+                )
+            return grant
+
+    def disable(
+        self,
+        *,
+        tenant_id: str,
+        request: CorpusGrantDisableRequest,
+        disabled_by: str,
+    ) -> CorpusGrant:
+        now = self._now()
+        with self._postgres_storage.transaction() as transaction:
+            existing = self._postgres_storage.lock_latest(
+                transaction,
+                tenant_id=tenant_id,
+                corpus_id=request.corpus_id,
+            )
+            if existing is None:
+                raise CorpusGrantNotFoundError(
+                    f"Corpus grant not found for corpus_id={request.corpus_id!r}."
+                )
+            self._enforce_expected_version(
+                corpus_id=request.corpus_id,
+                expected_version=request.expected_version,
+                existing=existing,
+            )
+            if existing.disabled_at is not None:
+                return existing
+            grant = existing.model_copy(
+                update={
+                    "version": existing.version + 1,
+                    "updated_by": disabled_by,
+                    "updated_at": now,
+                    "disabled_by": disabled_by,
+                    "disabled_at": now,
+                }
+            )
+            if not self._postgres_storage.append_if_current(transaction, grant):
+                current = self._postgres_storage.latest(
+                    tenant_id=tenant_id,
+                    corpus_id=request.corpus_id,
+                    connection=transaction,
+                )
+                self._raise_version_conflict(
+                    corpus_id=request.corpus_id,
+                    expected_version=existing.version,
+                    current=current,
+                )
+            return grant
+
+    def get(self, *, tenant_id: str, corpus_id: str) -> CorpusGrant | None:
+        grant = self._postgres_storage.latest(tenant_id=tenant_id, corpus_id=corpus_id)
+        if grant is None or grant.disabled_at is not None:
+            return None
+        return grant
+
+    def list_for_tenant(
+        self,
+        tenant_id: str,
+        request: CorpusGrantListRequest,
+    ) -> CorpusGrantListPage:
+        offset = self._cursor_offset(request.cursor)
+        grants = self._postgres_storage.list_current(
+            tenant_id=tenant_id,
+            request=request,
+            offset=offset,
+        )
+        page = grants[: request.limit]
+        next_cursor = str(offset + request.limit) if len(grants) > request.limit else None
+        return CorpusGrantListPage(grants=page, next_cursor=next_cursor)
+
+    def history_for_tenant(
+        self,
+        tenant_id: str,
+        request: CorpusGrantHistoryRequest,
+    ) -> CorpusGrantListPage:
+        offset = self._cursor_offset(request.cursor)
+        grants = self._postgres_storage.history(
+            tenant_id=tenant_id,
+            request=request,
+            offset=offset,
+        )
+        page = grants[: request.limit]
+        next_cursor = str(offset + request.limit) if len(grants) > request.limit else None
+        return CorpusGrantListPage(grants=page, next_cursor=next_cursor)
+
+    def history_diffs_for_tenant(
+        self,
+        tenant_id: str,
+        request: CorpusGrantHistoryDiffRequest,
+    ) -> CorpusGrantDiffPage:
+        offset = self._cursor_offset(request.cursor)
+        pairs = self._postgres_storage.history_with_previous(
+            tenant_id=tenant_id,
+            request=request,
+            offset=offset,
+        )
+        page = pairs[: request.limit]
+        next_cursor = str(offset + request.limit) if len(pairs) > request.limit else None
+        return CorpusGrantDiffPage(
+            diffs=[self._diff_grant(previous, grant) for previous, grant in page],
+            next_cursor=next_cursor,
+        )
+
+    def _raise_version_conflict(
+        self,
+        *,
+        corpus_id: str,
+        expected_version: int,
+        current: CorpusGrant | None,
+    ) -> None:
+        current_version = current.version if current is not None else 0
+        raise CorpusGrantVersionConflictError(
+            "Corpus grant version conflict for "
+            f"corpus_id={corpus_id!r}: expected {expected_version}, current {current_version}."
+        )
+
+
 def create_corpus_grant_registry(
     settings: Settings,
     *,
     postgres_connection: CorpusGrantSqlConnection | None = None,
 ) -> CorpusGrantRegistry:
     backend = settings.corpus_grants_backend.strip().lower()
+    environment = normalize_environment(settings.environment)
+    require_expected_version = environment in {"production", "staging"}
+    if require_expected_version and backend not in {"postgres", "postgresql"}:
+        raise CorpusGrantConfigurationError(
+            "Production and staging require the PostgreSQL persistent corpus grants backend."
+        )
     if backend == "memory":
-        if settings.environment.lower() in {"production", "staging"}:
-            raise CorpusGrantConfigurationError(
-                "Production and staging must configure a persistent corpus grants backend."
-            )
         return CorpusGrantRegistry()
     if backend == "jsonl":
-        return CorpusGrantRegistry(storage_path=settings.corpus_grants_path)
+        return CorpusGrantRegistry(
+            storage_path=settings.corpus_grants_path,
+            require_expected_version=require_expected_version,
+        )
     if backend in {"postgres", "postgresql"}:
         connection = postgres_connection
         if connection is None and settings.postgres_dsn:
@@ -538,15 +888,111 @@ def create_corpus_grant_registry(
                 "Postgres corpus grants backend requires HALLU_DEFENSE_POSTGRES_DSN "
                 "or an injected CorpusGrantSqlConnection."
             )
-        return CorpusGrantRegistry(
+        return PostgresCorpusGrantRegistry(
             storage=PostgresCorpusGrantStorage(
                 table_name=settings.corpus_grants_table_name,
                 connection=connection,
-            )
+            ),
+            require_expected_version=require_expected_version,
         )
     raise CorpusGrantConfigurationError(
         f"Unsupported corpus grants backend: {settings.corpus_grants_backend}"
     )
+
+
+def _grant_insert_parameters(grant: CorpusGrant) -> list[object]:
+    return [
+        grant.tenant_id,
+        grant.corpus_id,
+        grant.version,
+        grant.reader_roles,
+        grant.writer_roles,
+        grant.created_by,
+        grant.updated_by,
+        grant.created_at,
+        grant.updated_at,
+        grant.disabled_by,
+        grant.disabled_at,
+        json.dumps(grant.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+    ]
+
+
+def _grant_from_payload(payload: object, *, row_label: str) -> CorpusGrant:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise CorpusGrantStorageError(
+                f"Postgres corpus grant {row_label} payload is not valid JSON."
+            ) from exc
+    if not isinstance(payload, Mapping):
+        raise CorpusGrantStorageError(
+            f"Postgres corpus grant {row_label} payload must be an object."
+        )
+    try:
+        return CorpusGrant.model_validate(payload)
+    except ValidationError as exc:
+        raise CorpusGrantStorageError(
+            f"Postgres corpus grant {row_label} payload is invalid."
+        ) from exc
+
+
+def _grant_from_postgres_row(
+    row: Mapping[str, object],
+    *,
+    row_label: str,
+) -> CorpusGrant:
+    grant = _grant_from_payload(row.get("payload"), row_label=row_label)
+    tenant_id = row.get("tenant_id")
+    corpus_id = row.get("corpus_id")
+    version = row.get("version")
+    if (
+        tenant_id != grant.tenant_id
+        or corpus_id != grant.corpus_id
+        or version != grant.version
+        or isinstance(version, bool)
+    ):
+        raise CorpusGrantStorageError(
+            f"Postgres corpus grant {row_label} columns do not match its payload."
+        )
+    return grant
+
+
+def _grants_from_postgres_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    row_label: str,
+) -> list[CorpusGrant]:
+    return [
+        _grant_from_postgres_row(row, row_label=f"{row_label} {row_number}")
+        for row_number, row in enumerate(rows, start=1)
+    ]
+
+
+def _postgres_history_filters(
+    tenant_id: str,
+    request: CorpusGrantHistoryRequest,
+    *,
+    include_tenant: bool = True,
+) -> tuple[list[str], list[object]]:
+    filters: list[str] = []
+    parameters: list[object] = []
+    if include_tenant:
+        filters.append("tenant_id = %s")
+        parameters.append(tenant_id)
+    if request.corpus_id is not None:
+        filters.append("corpus_id = %s")
+        parameters.append(request.corpus_id)
+    if request.actor_id is not None:
+        filters.append("updated_by = %s")
+        parameters.append(request.actor_id)
+    if request.updated_at_from is not None:
+        filters.append("updated_at >= %s")
+        parameters.append(request.updated_at_from)
+    if request.updated_at_to is not None:
+        filters.append("updated_at <= %s")
+        parameters.append(request.updated_at_to)
+    return filters, parameters
 
 
 def _validate_identifier(value: str, label: str) -> None:

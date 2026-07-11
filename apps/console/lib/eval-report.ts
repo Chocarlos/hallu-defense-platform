@@ -81,6 +81,7 @@ const EXPANDED_METRIC_KEYS = [
   "tool_contradiction_guard_rate",
   "repo_false_claim_block_rate",
   "repo_semantic_claim_decision_accuracy",
+  "blocking_precision",
   "sandbox_block_rate",
   "p95_latency_ms"
 ] as const satisfies readonly (keyof EvalScenarioMetrics)[];

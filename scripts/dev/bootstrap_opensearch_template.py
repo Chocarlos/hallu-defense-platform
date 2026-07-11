@@ -6,13 +6,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from hallu_defense.config import load_settings
+from hallu_defense.config import (
+    RUNTIME_ROLE_OPENSEARCH_BOOTSTRAP,
+    Settings,
+    load_settings,
+)
 from hallu_defense.services.rag_index import (
+    OPENSEARCH_TEMPLATE_SCHEMA_VERSION,
     OpenSearchRagIndexBackend,
     OpenSearchTransport,
     RagIndexConfigurationError,
-    RagIndexTransportError,
+    create_opensearch_rag_backend,
 )
+from hallu_defense.services.secrets import create_secret_manager
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEMPLATE_PATH = ROOT / "infra" / "rag" / "opensearch" / "evidence-index-template.json"
@@ -28,6 +34,9 @@ class OpenSearchTemplateBootstrapResult:
     dry_run: bool
     installed: bool
     acknowledged: bool
+    schema_version: str
+    index_state: str
+    schema_ready: bool
 
     def to_jsonable(self) -> dict[str, object]:
         return {
@@ -38,6 +47,9 @@ class OpenSearchTemplateBootstrapResult:
             "dry_run": self.dry_run,
             "installed": self.installed,
             "acknowledged": self.acknowledged,
+            "schema_version": self.schema_version,
+            "index_state": self.index_state,
+            "schema_ready": self.schema_ready,
         }
 
 
@@ -57,16 +69,17 @@ def bootstrap_opensearch_template(
     timeout_seconds: float,
     dry_run: bool = False,
     transport: OpenSearchTransport | None = None,
+    backend: OpenSearchRagIndexBackend | None = None,
 ) -> OpenSearchTemplateBootstrapResult:
     template = load_template(template_path)
-    backend = OpenSearchRagIndexBackend(
+    active_backend = backend or OpenSearchRagIndexBackend(
         endpoint=endpoint,
         index_name=index_name,
         timeout_seconds=timeout_seconds,
         transport=_ValidationOnlyOpenSearchTransport() if dry_run else transport,
     )
     if dry_run:
-        backend.install_index_template(
+        active_backend.install_index_template(
             template_name=template_name,
             template=template,
         )
@@ -78,16 +91,15 @@ def bootstrap_opensearch_template(
             dry_run=True,
             installed=False,
             acknowledged=False,
+            schema_version=OPENSEARCH_TEMPLATE_SCHEMA_VERSION,
+            index_state="not_checked",
+            schema_ready=False,
         )
 
-    result = backend.install_index_template(
+    provisioned = active_backend.provision_index_schema(
         template_name=template_name,
         template=template,
     )
-    if not result.acknowledged:
-        raise RagIndexTransportError(
-            f"OpenSearch did not acknowledge index template installation at {result.path}"
-        )
     return OpenSearchTemplateBootstrapResult(
         template_name=template_name,
         endpoint=endpoint,
@@ -96,11 +108,18 @@ def bootstrap_opensearch_template(
         dry_run=False,
         installed=True,
         acknowledged=True,
+        schema_version=OPENSEARCH_TEMPLATE_SCHEMA_VERSION,
+        index_state=provisioned.index_state,
+        schema_ready=True,
     )
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    settings = load_settings()
+def parse_args(
+    argv: Sequence[str] | None = None,
+    *,
+    settings: Settings | None = None,
+) -> argparse.Namespace:
+    settings = settings or load_settings()
     parser = argparse.ArgumentParser(description="Install the RAG OpenSearch index template.")
     parser.add_argument("--endpoint", default=settings.opensearch_endpoint)
     parser.add_argument("--index-name", default=settings.opensearch_index_name)
@@ -120,7 +139,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = parse_args(argv)
+    settings = load_settings(
+        expected_runtime_role=RUNTIME_ROLE_OPENSEARCH_BOOTSTRAP
+    )
+    args = parse_args(argv, settings=settings)
+    backend: OpenSearchRagIndexBackend | None = None
+    if not args.dry_run:
+        if (
+            args.endpoint != settings.opensearch_endpoint
+            or args.index_name != settings.opensearch_index_name
+            or args.timeout_seconds != float(settings.rag_index_timeout_seconds)
+        ):
+            raise RagIndexConfigurationError(
+                "Runtime OpenSearch provisioning must use the validated Settings endpoint, "
+                "index, and timeout."
+            )
+        backend = create_opensearch_rag_backend(
+            settings,
+            secret_manager=create_secret_manager(settings),
+        )
     result = bootstrap_opensearch_template(
         endpoint=args.endpoint,
         index_name=args.index_name,
@@ -128,6 +165,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         template_path=args.template_path,
         timeout_seconds=args.timeout_seconds,
         dry_run=args.dry_run,
+        backend=backend,
     )
     print(json.dumps(result.to_jsonable(), sort_keys=True))
 

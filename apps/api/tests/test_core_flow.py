@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
-from collections.abc import Mapping
+import sys
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -33,11 +36,85 @@ from hallu_defense.services.content_security import ContentSecurityScanner
 from hallu_defense.services.policy import PolicyEngine
 from hallu_defense.services.retrieval import HybridRetriever
 from hallu_defense.services.sandbox import SandboxError, SandboxRunner
+from hallu_defense.services.sandbox_exec import ExecutionResult
 from hallu_defense.services.tool_safety import ToolSafetyService, ToolValidationRateLimiter
 from hallu_defense.services.verifier import ClaimVerifier
 
+TEST_RETRIEVED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
 
 client = TestClient(app)
+
+
+class _LocalSnapshotTestBackend:
+    """Test-only process runner; production code never exposes a host backend."""
+
+    @property
+    def git_inspector_path(self) -> str:
+        return str(
+            Path(__file__).resolve().parents[3]
+            / "infra"
+            / "docker"
+            / "sandbox_git_inspector.py"
+        )
+
+    @property
+    def git_inspector_python(self) -> str:
+        return sys.executable
+
+    @property
+    def git_inspector_environment(self) -> dict[str, str]:
+        return {"PATH": os.environ.get("PATH", os.defpath)}
+
+    def execute(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        source_cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+    ) -> ExecutionResult:
+        del output_caps
+        assert cwd.resolve() != source_cwd.resolve()
+        try:
+            completed = subprocess.run(
+                list(argv),
+                cwd=cwd,
+                env=dict(env),
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return ExecutionResult(
+                returncode=124,
+                stdout=exc.stdout or "",
+                stderr=exc.stderr or "",
+                timed_out=True,
+            )
+        return ExecutionResult(
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+
+
+def _tool_safety_service() -> ToolSafetyService:
+    settings = Settings(
+        environment="test",
+        policy_version="tool-safety-test-v1",
+        auth_required=False,
+        allowed_workspace=Path.cwd(),
+        max_command_seconds=5,
+        max_output_chars=1000,
+    )
+    return ToolSafetyService(
+        policy_engine=PolicyEngine(settings),
+        content_scanner=ContentSecurityScanner(),
+    )
 
 
 def test_eval_metrics_capture_supported_and_unsupported_claims() -> None:
@@ -103,6 +180,7 @@ def test_verification_run_returns_trace_claims_and_verdicts() -> None:
                 }
             ],
         },
+        headers={"x-tenant-id": "tests"},
     )
 
     assert response.status_code == 200
@@ -222,17 +300,25 @@ def test_claim_verification_endpoint_detects_contradictory_document_sources() ->
                     "evidence_id": "ev_hr_current",
                     "kind": "document_chunk",
                     "source_ref": "hr-manual-v7",
-                    "content": "Full-time employees receive 15 days of paid vacation per year.",
-                    "authority": "internal",
-                    "freshness": {"staleness_class": "fresh"},
+                        "content": "Full-time employees receive 15 days of paid vacation per year.",
+                        "structured_content": {},
+                        "authority": "internal",
+                        "freshness": {
+                            "retrieved_at": "2026-01-01T00:00:00Z",
+                            "staleness_class": "fresh",
+                        },
                 },
                 {
                     "evidence_id": "ev_hr_legacy",
                     "kind": "document_chunk",
                     "source_ref": "hr-manual-v3",
-                    "content": "Full-time employees receive 20 days of paid vacation per year.",
-                    "authority": "internal",
-                    "freshness": {"staleness_class": "stale"},
+                        "content": "Full-time employees receive 20 days of paid vacation per year.",
+                        "structured_content": {},
+                        "authority": "internal",
+                        "freshness": {
+                            "retrieved_at": "2026-01-01T00:00:00Z",
+                            "staleness_class": "stale",
+                        },
                 },
             ],
         },
@@ -295,9 +381,13 @@ def test_response_repair_endpoint_keeps_supported_claims_with_citations() -> Non
                     "evidence_id": "ev_hr_current",
                     "kind": "document_chunk",
                     "source_ref": "hr-manual-v7",
-                    "content": "Full-time employees receive 15 days of paid vacation per year.",
-                    "authority": "internal",
-                    "freshness": {"staleness_class": "fresh"},
+                        "content": "Full-time employees receive 15 days of paid vacation per year.",
+                        "structured_content": {},
+                        "authority": "internal",
+                        "freshness": {
+                            "retrieved_at": "2026-01-01T00:00:00Z",
+                            "staleness_class": "fresh",
+                        },
                 }
             ],
         },
@@ -345,7 +435,7 @@ def test_metrics_endpoint_exposes_prometheus_http_metrics() -> None:
     )
 
 
-def test_opentelemetry_http_span_uses_trace_id_without_sensitive_attrs() -> None:
+def test_opentelemetry_cross_tenant_tool_context_is_blocked_without_sensitive_attrs() -> None:
     trace_id = "tr_otel_safe_trace"
     telemetry.clear_finished_spans()
 
@@ -362,7 +452,7 @@ def test_opentelemetry_http_span_uses_trace_id_without_sensitive_attrs() -> None
         headers={"x-tenant-id": "otel-tenant", "x-trace-id": trace_id},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 403
     spans = [
         span for span in telemetry.finished_spans() if span.attributes.get("app.trace_id") == trace_id
     ]
@@ -373,10 +463,10 @@ def test_opentelemetry_http_span_uses_trace_id_without_sensitive_attrs() -> None
     assert span.resource.attributes["service.name"] == "hallu-defense-api"
     assert attrs["app.trace_id"] == trace_id
     assert attrs["http.request.method"] == "POST"
-    assert attrs["url.path"] == "/tools/validate-input"
+    assert "url.path" not in attrs
     assert attrs["http.route"] == "/tools/validate-input"
-    assert attrs["http.response.status_code"] == 200
-    assert attrs["app.outcome"] == "success"
+    assert attrs["http.response.status_code"] == 403
+    assert attrs["app.outcome"] == "error"
     assert isinstance(attrs["app.duration_ms"], float)
     _assert_span_attrs_do_not_leak_sensitive_values(attrs)
 
@@ -513,7 +603,8 @@ def test_opentelemetry_sandbox_span_uses_safe_execution_attrs(
                 allowed_workspace=tmp_path,
                 max_command_seconds=5,
                 max_output_chars=1000,
-            )
+            ),
+            execution_backend=_LocalSnapshotTestBackend(),
         ),
     )
 
@@ -555,7 +646,8 @@ def test_metrics_endpoint_exposes_domain_safety_metrics(
                 allowed_workspace=sandbox_workspace,
                 max_command_seconds=5,
                 max_output_chars=1000,
-            )
+            ),
+            execution_backend=_LocalSnapshotTestBackend(),
         ),
     )
 
@@ -669,7 +761,11 @@ def test_test_result_claim_is_blocked_without_matching_exit_code() -> None:
         source_ref="pytest",
         content="2 failed, 8 passed",
         structured_content={"exit_code": 1},
-        freshness=Freshness(staleness_class=StalenessClass.FRESH),
+        authority=Authority.INTERNAL,
+        freshness=Freshness(
+            retrieved_at=TEST_RETRIEVED_AT,
+            staleness_class=StalenessClass.FRESH,
+        ),
     )
 
     verdict = ClaimVerifier().verify([claim], [evidence])[0]
@@ -907,16 +1003,24 @@ def test_verifier_detects_contradictory_sources_without_arbitrary_choice() -> No
             kind=EvidenceKind.DOCUMENT_CHUNK,
             source_ref="hr-manual-v7",
             content="Full-time employees receive 15 days of paid vacation per year.",
+            structured_content={},
             authority=Authority.INTERNAL,
-            freshness=Freshness(staleness_class=StalenessClass.FRESH),
+            freshness=Freshness(
+                retrieved_at=TEST_RETRIEVED_AT,
+                staleness_class=StalenessClass.FRESH,
+            ),
         ),
         Evidence(
             evidence_id="ev_legacy",
             kind=EvidenceKind.DOCUMENT_CHUNK,
             source_ref="legacy-handbook",
             content="Full-time employees receive 10 days of paid vacation per year.",
+            structured_content={},
             authority=Authority.UNKNOWN,
-            freshness=Freshness(staleness_class=StalenessClass.STALE),
+            freshness=Freshness(
+                retrieved_at=TEST_RETRIEVED_AT,
+                staleness_class=StalenessClass.STALE,
+            ),
         ),
     ]
 
@@ -942,6 +1046,12 @@ def test_repo_file_claim_requires_sandbox_inspection_evidence() -> None:
         kind=EvidenceKind.REPO_FILE,
         source_ref="manual-note",
         content="service.py appears in this note but no sandbox inspection was run.",
+        structured_content={},
+        authority=Authority.UNKNOWN,
+        freshness=Freshness(
+            retrieved_at=TEST_RETRIEVED_AT,
+            staleness_class=StalenessClass.UNKNOWN,
+        ),
     )
 
     verdict = ClaimVerifier().verify([claim], [loose_text_evidence])[0]
@@ -1077,7 +1187,7 @@ def test_repo_diff_claim_supported_by_sandbox_git_inspection() -> None:
 
 
 def test_tool_input_requires_approval_for_high_risk_tool() -> None:
-    service = ToolSafetyService()
+    service = _tool_safety_service()
 
     result = service.validate_input(
         ToolCallEnvelope(
@@ -1312,7 +1422,7 @@ def test_high_risk_tool_validation_creates_tenant_scoped_approval() -> None:
 
 
 def test_tool_output_redacts_secrets() -> None:
-    service = ToolSafetyService()
+    service = _tool_safety_service()
 
     result = service.validate_output(
         ToolCallEnvelope(
@@ -1326,11 +1436,12 @@ def test_tool_output_redacts_secrets() -> None:
     )
 
     assert result.sanitized_output == {"api_key": "[REDACTED]", "safe": "ok"}
-    assert result.action == "rewrite"
+    assert result.allowed is False
+    assert result.action == "block"
 
 
 def test_tool_output_redacts_common_pii_values() -> None:
-    service = ToolSafetyService()
+    service = _tool_safety_service()
 
     result = service.validate_output(
         ToolCallEnvelope(
@@ -1362,7 +1473,7 @@ def test_tool_output_redacts_common_pii_values() -> None:
 
 
 def test_tool_output_keeps_unlabeled_plain_numbers() -> None:
-    service = ToolSafetyService()
+    service = _tool_safety_service()
 
     result = service.validate_output(
         ToolCallEnvelope(
@@ -1567,8 +1678,8 @@ def test_opa_policy_evaluator_maps_opa_eval_response(tmp_path: Path) -> None:
         def _resolve_opa_path(self) -> str | None:
             return "opa"
 
-        def _run_opa(self, opa_path: str, input_path: Path) -> subprocess.CompletedProcess[str]:
-            self.input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+        def _run_opa(self, opa_path: str, input_text: str) -> subprocess.CompletedProcess[str]:
+            self.input_payload = json.loads(input_text)
             return subprocess.CompletedProcess(
                 args=[opa_path],
                 returncode=0,
@@ -1653,11 +1764,12 @@ def test_policy_engine_blocks_when_opa_evaluation_fails(tmp_path: Path) -> None:
     assert response.allowed is False
     assert response.action == "block"
     assert response.matched_rules == ["opa_policy_evaluation_failed"]
-    assert "syntax error" in response.explanation
+    assert response.explanation == "OPA policy evaluation failed closed."
+    assert "syntax error" not in response.explanation
 
 
 def test_sandbox_rejects_paths_outside_workspace(tmp_path: Path) -> None:
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     with pytest.raises(SandboxError):
         runner.run(RepoChecksRunRequest(repo_ref="..", commands=["python --version"]))
@@ -1667,7 +1779,7 @@ def test_sandbox_rejects_script_paths_outside_repo(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (tmp_path / "outside.py").write_text("print('outside')\n", encoding="utf-8")
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     with pytest.raises(SandboxError, match="script path escapes"):
         runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python ../outside.py"]))
@@ -1680,7 +1792,7 @@ def test_sandbox_blocks_destructive_python_script(tmp_path: Path) -> None:
         "import shutil\nshutil.rmtree('important')\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     with pytest.raises(SandboxError, match="destructive-operation"):
         runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python danger.py"]))
@@ -1693,7 +1805,7 @@ def test_sandbox_blocks_network_attempt_when_policy_is_deny(tmp_path: Path) -> N
         "import urllib.request\nurllib.request.urlopen('https://example.com')\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     with pytest.raises(SandboxError, match="network policy is deny"):
         runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python net.py"]))
@@ -1708,13 +1820,14 @@ def test_sandbox_captures_artifacts(tmp_path: Path) -> None:
         "Path('artifacts/report.txt').write_text('ok', encoding='utf-8')\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python write_artifact.py"]))
 
     assert run.exit_codes == [0]
     assert run.verdict == "SUPPORTED"
-    assert run.artifacts == ["artifacts/report.txt", "reports/sandbox-inspection.json"]
+    assert run.artifacts == ["artifacts/report.txt"]
+    assert not (repo / "reports").exists()
     assert [item.evidence_id for item in run.evidence] == [
         "ev_sandbox_cmd_001",
         "ev_sandbox_inspection",
@@ -1725,7 +1838,7 @@ def test_sandbox_captures_artifacts(tmp_path: Path) -> None:
     assert run.evidence[0].structured_content["command_kind"] == "script"
     assert "write_artifact.py" in run.evidence[0].structured_content["command_target_tokens"]
     assert run.evidence[1].kind == EvidenceKind.REPO_FILE
-    assert run.evidence[1].source_ref == "reports/sandbox-inspection.json"
+    assert run.evidence[1].source_ref == "sandbox://inspection"
 
 
 def test_sandbox_command_evidence_includes_structured_test_targets(tmp_path: Path) -> None:
@@ -1738,7 +1851,7 @@ def test_sandbox_command_evidence_includes_structured_test_targets(tmp_path: Pat
         "    assert True\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python -m pytest tests/test_cache.py -k cache"]))
 
@@ -1762,13 +1875,13 @@ def test_sandbox_static_inspection_reports_python_symbols(tmp_path: Path) -> Non
         "    return 'fresh'\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
-    report = json.loads((repo / "reports/sandbox-inspection.json").read_text(encoding="utf-8"))
+    report = run.evidence[1].structured_content
     symbols = report["static"]["python_symbols"]
 
-    assert "reports/sandbox-inspection.json" in run.artifacts
+    assert not (repo / "reports").exists()
     assert report["schema_version"] == "sandbox_inspection.v1"
     assert "service.py" in report["static"]["files"]
     assert run.evidence[1].structured_content["schema_version"] == "sandbox_inspection.v1"
@@ -1805,10 +1918,10 @@ def test_sandbox_static_inspection_reports_typescript_symbols(tmp_path: Path) ->
         "export function parseUser(raw: string): string { return raw; }\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
-    report = json.loads((repo / "reports/sandbox-inspection.json").read_text(encoding="utf-8"))
+    report = run.evidence[1].structured_content
     symbols = report["static"]["javascript_symbols"]
 
     assert "service.ts" in report["static"]["files"]
@@ -1848,7 +1961,7 @@ def test_sandbox_evidence_feeds_repo_claim_verification(tmp_path: Path) -> None:
         "    return 'fresh'\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
     claim = Claim(
@@ -1878,7 +1991,7 @@ def test_sandbox_evidence_feeds_typescript_repo_claim_verification(tmp_path: Pat
         "export const loadUser = async (id: string) => id;\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
     claim = Claim(
@@ -1911,13 +2024,13 @@ def test_sandbox_inspection_reports_git_diff(tmp_path: Path) -> None:
     tracked.write_text("def value():\n    return 1\n", encoding="utf-8")
     _git_commit_all(repo)
     tracked.write_text("def value():\n    return 2\n", encoding="utf-8")
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
-    report = json.loads((repo / "reports/sandbox-inspection.json").read_text(encoding="utf-8"))
+    report = run.evidence[1].structured_content
     git_report = report["git"]
 
-    assert "reports/sandbox-inspection.json" in run.artifacts
+    assert not (repo / "reports").exists()
     assert git_report["is_repository"] is True
     assert "tracked.py" in git_report["diff_files"]
     assert any("tracked.py" in line for line in git_report["status"])
@@ -1938,7 +2051,7 @@ def test_sandbox_git_inspection_correlates_python_diff_to_changed_symbol(tmp_pat
     service.write_text('def fetch():\n    return "old"\n', encoding="utf-8")
     _git_commit_all(repo)
     service.write_text('def fetch():\n    return "new"\n', encoding="utf-8")
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
     report = run.evidence[1].structured_content
@@ -1962,7 +2075,7 @@ def test_sandbox_git_inspection_correlates_typescript_diff_to_changed_symbol(tmp
     service.write_text('export const loadUser = async () => "old";\n', encoding="utf-8")
     _git_commit_all(repo)
     service.write_text('export const loadUser = async () => "new";\n', encoding="utf-8")
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
     report = run.evidence[1].structured_content
@@ -1986,7 +2099,7 @@ def test_diff_symbol_claim_requires_changed_symbol_evidence(tmp_path: Path) -> N
     service.write_text('export const loadUser = async () => "old";\n', encoding="utf-8")
     _git_commit_all(repo)
     service.write_text('export const loadUser = async () => "new";\n', encoding="utf-8")
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
     changed_claim = Claim(
         claim_id="clm_changed_symbol",
@@ -2077,7 +2190,7 @@ def test_implementation_claim_supported_by_changed_symbol_and_added_terms(tmp_pa
         "};\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python --version"]))
     claim = Claim(
         claim_id="clm_impl_cache",
@@ -2199,7 +2312,7 @@ def test_sandbox_scrubs_sensitive_environment(monkeypatch: pytest.MonkeyPatch, t
         "import os\nprint(os.environ.get('API_KEY', 'missing'))\n",
         encoding="utf-8",
     )
-    runner = SandboxRunner(_sandbox_settings(tmp_path))
+    runner = _test_sandbox_runner(tmp_path)
 
     run = runner.run(RepoChecksRunRequest(repo_ref="repo", commands=["python env_probe.py"]))
 
@@ -2211,10 +2324,14 @@ def _sandbox_inspection_evidence(report: dict[str, object]) -> Evidence:
     return Evidence(
         evidence_id="ev_sandbox_inspection",
         kind=EvidenceKind.REPO_FILE,
-        source_ref="reports/sandbox-inspection.json",
+        source_ref="sandbox://inspection",
         content=json.dumps(report),
         structured_content=report,
-        freshness=Freshness(staleness_class=StalenessClass.FRESH),
+        authority=Authority.INTERNAL,
+        freshness=Freshness(
+            retrieved_at=TEST_RETRIEVED_AT,
+            staleness_class=StalenessClass.FRESH,
+        ),
     )
 
 
@@ -2275,7 +2392,11 @@ def _command_evidence(
         source_ref=f"sandbox://command/{command}",
         content=f"command: {command}\nexit_code: {exit_code}\n{output}",
         structured_content=structured_content,
-        freshness=Freshness(staleness_class=StalenessClass.FRESH),
+        authority=Authority.INTERNAL,
+        freshness=Freshness(
+            retrieved_at=TEST_RETRIEVED_AT,
+            staleness_class=StalenessClass.FRESH,
+        ),
     )
 
 
@@ -2379,4 +2500,11 @@ def _sandbox_settings(tmp_path: Path) -> Settings:
         allowed_workspace=tmp_path,
         max_command_seconds=5,
         max_output_chars=1000,
+    )
+
+
+def _test_sandbox_runner(tmp_path: Path) -> SandboxRunner:
+    return SandboxRunner(
+        _sandbox_settings(tmp_path),
+        execution_backend=_LocalSnapshotTestBackend(),
     )

@@ -4,6 +4,12 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from hallu_defense.domain.models import DocumentInput, Evidence
+from hallu_defense.domain.rag_metadata import (
+    RagMetadataValidationError,
+    reject_reserved_ingestion_metadata,
+    validate_metadata as validate_bounded_metadata,
+    validate_metadata_filter as validate_bounded_metadata_filter,
+)
 from hallu_defense.services.auth import ADMIN_ROLE
 from hallu_defense.services.corpus_grants import CorpusGrantRegistry
 
@@ -45,15 +51,16 @@ class RagAccessPolicy:
             corpus_id=corpus_id,
             principal_roles=principal_roles,
         )
-        return document.model_copy(
-            update={
-                "metadata": {
-                    **document.metadata,
-                    self.corpus_metadata_key: corpus_id,
-                    self.owner_metadata_key: tenant_id,
-                }
-            }
-        )
+        stamped_metadata = {
+            **document.metadata,
+            self.corpus_metadata_key: corpus_id,
+            self.owner_metadata_key: tenant_id,
+        }
+        try:
+            stamped_metadata = dict(validate_bounded_metadata(stamped_metadata))
+        except RagMetadataValidationError as exc:
+            raise RagAccessDeniedError(str(exc)) from None
+        return document.model_copy(update={"metadata": stamped_metadata})
 
     def validate_ingestion_metadata(
         self,
@@ -63,8 +70,12 @@ class RagAccessPolicy:
         corpus_id: str,
         principal_roles: frozenset[str] = frozenset(),
     ) -> None:
+        try:
+            reject_reserved_ingestion_metadata(metadata)
+            validate_bounded_metadata(metadata)
+        except RagMetadataValidationError as exc:
+            raise RagAccessDeniedError(str(exc)) from None
         self.validate_metadata(metadata, tenant_id=tenant_id)
-        self._validate_corpus_id(metadata, corpus_id)
         self._validate_corpus_role_metadata(metadata)
         writer_roles = self._role_set(metadata.get(self.corpus_writer_roles_key))
         if writer_roles and not self._has_any_role(principal_roles, writer_roles):
@@ -83,6 +94,10 @@ class RagAccessPolicy:
         *,
         tenant_id: str,
     ) -> None:
+        try:
+            validate_bounded_metadata_filter(metadata_filter)
+        except RagMetadataValidationError as exc:
+            raise RagAccessDeniedError(str(exc)) from None
         self.validate_metadata(metadata_filter, tenant_id=tenant_id)
         self._validate_corpus_role_metadata(metadata_filter)
 
@@ -119,6 +134,10 @@ class RagAccessPolicy:
         return readable, filtered_map
 
     def validate_metadata(self, metadata: dict[str, object], *, tenant_id: str) -> None:
+        try:
+            validate_bounded_metadata(metadata)
+        except RagMetadataValidationError as exc:
+            raise RagAccessDeniedError(str(exc)) from None
         for key in sorted(self.tenant_metadata_keys.intersection(metadata.keys())):
             if not self._tenant_value_allowed(metadata[key], tenant_id):
                 raise RagAccessDeniedError(

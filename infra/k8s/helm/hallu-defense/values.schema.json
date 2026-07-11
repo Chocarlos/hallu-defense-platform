@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["console"],
+  "properties": {
+    "console": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replicas",
+        "image",
+        "publicOrigin",
+        "apiOrigin",
+        "oidc",
+        "service",
+        "resources"
+      ],
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "const": 1
+        },
+        "image": {
+          "type": "object"
+        },
+        "publicOrigin": {
+          "type": "string"
+        },
+        "apiOrigin": {
+          "type": "string"
+        },
+        "oidc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuer", "clientId", "apiAudience"],
+          "properties": {
+            "issuer": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "apiAudience": {
+              "type": "string"
+            }
+          }
+        },
+        "service": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

@@ -31,6 +31,7 @@ def main() -> None:
         return
 
     run([opa, "version"])
+    run([opa, "check", "--strict", OPA_TEST_TARGET])
     run([opa, "test", OPA_TEST_TARGET])
 
 

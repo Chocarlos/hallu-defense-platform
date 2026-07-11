@@ -171,6 +171,7 @@ def compute_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             len(semantic_repo_claims),
         ),
+        "blocking_precision": _blocking_precision(results),
         "sandbox_block_rate": _ratio(
             sum(1 for result in sandbox if result["observed"].get("blocked") is True),
             len(sandbox),
@@ -435,8 +436,40 @@ def _blocked_result(result: Mapping[str, Any]) -> bool:
     return (
         observed.get("action") == "block"
         or observed.get("final_decision") == "blocked"
+        or observed.get("blocked") is True
         or "block" in observed.get("verdict_actions", [])
     )
+
+
+def _expected_blocked_result(result: Mapping[str, Any]) -> bool:
+    expected = result.get("expected")
+    if not isinstance(expected, dict):
+        return False
+    return (
+        expected.get("action") == "block"
+        or expected.get("final_decision") == "blocked"
+        or expected.get("blocked") is True
+        or "block" in expected.get("verdict_actions", [])
+    )
+
+
+def _blocking_precision(results: Iterable[Mapping[str, Any]]) -> float:
+    true_positives = 0
+    false_positives = 0
+    for result in results:
+        if not _blocked_result(result):
+            continue
+        if _expected_blocked_result(result):
+            true_positives += 1
+        else:
+            false_positives += 1
+
+    predicted_blocks = true_positives + false_positives
+    if predicted_blocks == 0:
+        # Precision is undefined without a predicted positive. Returning zero
+        # makes the quality gate fail closed instead of reporting a vacuous 1.0.
+        return 0.0
+    return round(true_positives / predicted_blocks, 6)
 
 
 def _ratio(numerator: int, denominator: int) -> float:

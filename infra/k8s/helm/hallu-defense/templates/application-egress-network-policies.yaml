@@ -1,0 +1,502 @@
+{{- if ne .Values.ragIndex.backend "hybrid" }}
+{{- fail "ragIndex.backend must be hybrid for the production chart" }}
+{{- end }}
+{{- if le (int .Values.ragIndex.timeoutSeconds) 0 }}
+{{- fail "ragIndex.timeoutSeconds must be positive" }}
+{{- end }}
+{{- if .Values.kindDependencies.enabled }}
+{{- if not .Values.kindDependencies.opensearch.enabled }}
+{{- fail "kind hybrid RAG requires kindDependencies.opensearch.enabled=true" }}
+{{- end }}
+{{- if ne .Values.opensearch.endpoint "http://hallu-defense-opensearch:9200" }}
+{{- fail "kind OpenSearch endpoint must be exactly http://hallu-defense-opensearch:9200" }}
+{{- end }}
+{{- if .Values.opensearch.authorizationSecretName }}
+{{- fail "kind OpenSearch must not receive an authorization secret" }}
+{{- end }}
+{{- if .Values.opensearch.caSecretName }}
+{{- fail "kind OpenSearch must not receive a managed CA secret" }}
+{{- end }}
+{{- if not .Values.postgres.kindInsecureTlsEnabled }}
+{{- fail "kind PostgreSQL requires the explicit exact-host insecure TLS exception" }}
+{{- end }}
+{{- if .Values.postgres.caSecretName }}
+{{- fail "kind PostgreSQL must not receive a managed CA secret" }}
+{{- end }}
+{{- else }}
+{{- if not (hasPrefix "https://" .Values.opensearch.endpoint) }}
+{{- fail "production OpenSearch endpoint must use HTTPS" }}
+{{- end }}
+{{- $_ := required "opensearch.authorizationSecretName is required outside kind" .Values.opensearch.authorizationSecretName }}
+{{- if .Values.postgres.kindInsecureTlsEnabled }}
+{{- fail "postgres.kindInsecureTlsEnabled is forbidden outside the exact Kind fixture" }}
+{{- end }}
+{{- $_ := required "postgres.caSecretName is required outside kind" .Values.postgres.caSecretName }}
+{{- end }}
+{{- if and (eq .Values.sandbox.backend "kubernetes") (empty .Values.networkPolicy.kubernetesApi) }}
+{{- fail "networkPolicy.kubernetesApi requires at least one explicit API-only CIDR and port" }}
+{{- end }}
+{{- if and (not .Values.kindDependencies.enabled) (empty .Values.networkPolicy.api.external) }}
+{{- fail "networkPolicy.api.external requires explicit production CIDRs and ports" }}
+{{- end }}
+{{- if and (not .Values.kindDependencies.enabled) (empty .Values.networkPolicy.console.external) }}
+{{- fail "networkPolicy.console.external requires explicit production OIDC CIDRs and ports" }}
+{{- end }}
+{{- if and .Values.worker.enabled (not .Values.kindDependencies.enabled) (empty .Values.networkPolicy.worker.external) }}
+{{- fail "networkPolicy.worker.external requires explicit production CIDRs and ports" }}
+{{- end }}
+{{- if and .Values.migrations.enabled (not .Values.kindDependencies.enabled) (empty .Values.networkPolicy.migrations.external) }}
+{{- fail "networkPolicy.migrations.external requires explicit production CIDRs and ports" }}
+{{- end }}
+{{- if empty .Values.networkPolicy.ingress.api.callers }}
+{{- fail "networkPolicy.ingress.api.callers requires at least one explicit namespace and pod-label peer" }}
+{{- end }}
+{{- if empty .Values.networkPolicy.ingress.api.metricsScrapers }}
+{{- fail "networkPolicy.ingress.api.metricsScrapers requires at least one explicit namespace and pod-label peer" }}
+{{- end }}
+{{- if and .Values.worker.enabled (empty .Values.networkPolicy.ingress.worker.metricsScrapers) }}
+{{- fail "networkPolicy.ingress.worker.metricsScrapers requires at least one explicit namespace and pod-label peer" }}
+{{- end }}
+{{- if empty .Values.networkPolicy.ingress.console.callers }}
+{{- fail "networkPolicy.ingress.console.callers requires at least one explicit namespace and pod-label peer" }}
+{{- end }}
+{{- $ingressPeerGroups := list
+      (dict "path" "networkPolicy.ingress.api.callers" "peers" .Values.networkPolicy.ingress.api.callers)
+      (dict "path" "networkPolicy.ingress.api.metricsScrapers" "peers" .Values.networkPolicy.ingress.api.metricsScrapers)
+      (dict "path" "networkPolicy.ingress.worker.metricsScrapers" "peers" .Values.networkPolicy.ingress.worker.metricsScrapers)
+      (dict "path" "networkPolicy.ingress.console.callers" "peers" .Values.networkPolicy.ingress.console.callers) -}}
+{{- range $group := $ingressPeerGroups }}
+{{- range $peer := $group.peers }}
+{{- $_ := required (printf "%s[].name is required" $group.path) $peer.name -}}
+{{- $namespace := required (printf "%s[].namespace is required" $group.path) $peer.namespace | trim -}}
+{{- if and (ne $namespace "$release") (or (gt (len $namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $namespace))) -}}
+{{- fail (printf "%s[].namespace must be $release or a valid Kubernetes DNS label" $group.path) -}}
+{{- end }}
+{{- $labelKey := required (printf "%s[].podLabelKey is required" $group.path) $peer.podLabelKey | trim -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9./_-]*[A-Za-z0-9]$" $labelKey) -}}
+{{- fail (printf "%s[].podLabelKey contains invalid characters" $group.path) -}}
+{{- end }}
+{{- $labelValue := required (printf "%s[].podLabelValue is required" $group.path) $peer.podLabelValue | trim -}}
+{{- if or (gt (len $labelValue) 63) (not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$" $labelValue)) -}}
+{{- fail (printf "%s[].podLabelValue must be a valid Kubernetes label value" $group.path) -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $peer := .Values.networkPolicy.kubernetesApi }}
+{{- $cidr := required "networkPolicy.kubernetesApi[].cidr is required" $peer.cidr | trim }}
+{{- if not (or (regexMatch "^[0-9.]+/32$" $cidr) (regexMatch "^[0-9A-Fa-f:]+/128$" $cidr)) }}
+{{- fail "networkPolicy.kubernetesApi CIDRs must identify exactly one host (/32 IPv4 or /128 IPv6)" }}
+{{- end }}
+{{- if or (lt (int $peer.port) 1) (gt (int $peer.port) 65535) }}
+{{- fail "networkPolicy.kubernetesApi[].port must be between 1 and 65535" }}
+{{- end }}
+{{- end }}
+{{- range $role := list "api" "console" "worker" "migrations" }}
+{{- $roleConfig := index $.Values.networkPolicy $role }}
+{{- range $peer := $roleConfig.external }}
+{{- $_ := required (printf "networkPolicy.%s.external[].name is required" $role) $peer.name }}
+{{- $cidr := required (printf "networkPolicy.%s.external[].cidr is required" $role) $peer.cidr | trim }}
+{{- if not (or (regexMatch "^[0-9.]+/32$" $cidr) (regexMatch "^[0-9A-Fa-f:]+/128$" $cidr)) }}
+{{- fail (printf "networkPolicy.%s.external CIDRs must identify exactly one host (/32 IPv4 or /128 IPv6)" $role) }}
+{{- end }}
+{{- if or (lt (int $peer.port) 1) (gt (int $peer.port) 65535) }}
+{{- fail (printf "networkPolicy.%s.external[].port must be between 1 and 65535" $role) }}
+{{- end }}
+{{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-default-deny-ingress
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: network-boundary
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-console-egress
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: console
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- range $peer := .Values.networkPolicy.ingress.console.callers }}
+    {{- $namespace := $peer.namespace }}
+    {{- if eq $namespace "$release" }}{{- $namespace = $.Release.Namespace }}{{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{ $peer.podLabelKey | quote }}: {{ $peer.podLabelValue | quote }}
+      ports:
+        - protocol: TCP
+          port: 3000
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- range $peer := .Values.networkPolicy.console.external }}
+    - to:
+        - ipBlock:
+            cidr: {{ $peer.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $peer.port }}
+    {{- end }}
+{{- if .Values.migrations.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-migrations-egress
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: migrations
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.pgvector.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pgvector
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- range $peer := .Values.networkPolicy.migrations.external }}
+    - to:
+        - ipBlock:
+            cidr: {{ $peer.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $peer.port }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.kindDependencies.enabled .Values.kindDependencies.vault.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-vault-bootstrap-egress
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-bootstrap
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: vault-bootstrap
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: vault
+      ports:
+        - protocol: TCP
+          port: 8200
+{{- end }}
+{{- range $component := list "pgvector" "opensearch" "vault" }}
+{{- $dependency := index $.Values.kindDependencies $component }}
+{{- if and $.Values.kindDependencies.enabled $dependency.enabled }}
+{{- $sources := list }}
+{{- $port := 0 }}
+{{- if eq $component "pgvector" }}
+{{- $sources = list "api" "worker" "migrations" }}
+{{- $port = 5432 }}
+{{- else if eq $component "opensearch" }}
+{{- $sources = list "api" "worker" }}
+{{- $port = 9200 }}
+{{- else if eq $component "vault" }}
+{{- $sources = list "api" "worker" "vault-bootstrap" "redis" }}
+{{- $port = 8200 }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" $ }}-{{ $component }}-egress
+  labels:
+    {{- include "hallu-defense.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $component }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+      {{- range $source := $sources }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" $ }}
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+              app.kubernetes.io/component: {{ $source }}
+      {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+  egress: []
+{{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-api-egress
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- range $peer := concat .Values.networkPolicy.ingress.api.callers .Values.networkPolicy.ingress.api.metricsScrapers }}
+    {{- $namespace := $peer.namespace }}
+    {{- if eq $namespace "$release" }}{{- $namespace = $.Release.Namespace }}{{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{ $peer.podLabelKey | quote }}: {{ $peer.podLabelValue | quote }}
+      ports:
+        - protocol: TCP
+          port: 8000
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.pgvector.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pgvector
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.vault.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    {{- end }}
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.redis.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    {{- end }}
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.opensearch.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: opensearch
+      ports:
+        - protocol: TCP
+          port: 9200
+    {{- end }}
+    {{- range $peer := .Values.networkPolicy.kubernetesApi }}
+    - to:
+        - ipBlock:
+            cidr: {{ $peer.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $peer.port }}
+    {{- end }}
+    {{- range $peer := .Values.networkPolicy.api.external }}
+    - to:
+        - ipBlock:
+            cidr: {{ $peer.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $peer.port }}
+    {{- end }}
+{{- if .Values.worker.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-worker-egress
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- range $peer := .Values.networkPolicy.ingress.worker.metricsScrapers }}
+    {{- $namespace := $peer.namespace }}
+    {{- if eq $namespace "$release" }}{{- $namespace = $.Release.Namespace }}{{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{ $peer.podLabelKey | quote }}: {{ $peer.podLabelValue | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $.Values.worker.metricsPort }}
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.pgvector.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pgvector
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.vault.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    {{- end }}
+    {{- if and .Values.kindDependencies.enabled .Values.kindDependencies.opensearch.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hallu-defense.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: opensearch
+      ports:
+        - protocol: TCP
+          port: 9200
+    {{- end }}
+    {{- range $peer := .Values.networkPolicy.worker.external }}
+    - to:
+        - ipBlock:
+            cidr: {{ $peer.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $peer.port }}
+    {{- end }}
+{{- end }}

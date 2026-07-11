@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -22,9 +23,12 @@ from hallu_defense.services.data_lifecycle import (  # noqa: E402
     load_data_lifecycle_policy,
 )
 from hallu_defense.services.postgres import (  # noqa: E402
-    PooledPostgresProvider,
     SqlConnectionProvider,
     build_postgres_provider,
+)
+from hallu_defense.services.rag_index import (  # noqa: E402
+    PersistentRagDeletionBackend,
+    create_rag_index_backend,
 )
 
 ENABLED_ENV = "HALLU_DEFENSE_RETENTION_EXECUTION_ENABLED"
@@ -47,6 +51,7 @@ def run_from_env(
     env: Mapping[str, str] | None = None,
     connection: SqlConnectionProvider | None = None,
     audit: AuditLedger | None = None,
+    rag_deletion_backend: PersistentRagDeletionBackend | None = None,
 ) -> dict[str, object]:
     effective_env = env if env is not None else os.environ
     args = _parse_args(argv)
@@ -73,18 +78,28 @@ def run_from_env(
         policy_path=config.policy_path,
         connection=connection,
         audit=audit,
+        rag_index_backend=effective_env.get("HALLU_DEFENSE_RAG_INDEX_BACKEND", "hybrid"),
+        rag_deletion_backend=rag_deletion_backend,
     )
     dry_run = bool(args.dry_run or (config.dry_run and not args.no_dry_run))
     if args.operation == "delete-tenant":
-        report = service.delete_tenant_data(
+        tenant_report = service.delete_tenant_data(
             args.tenant_id,
             dry_run=dry_run,
             actor_id=args.actor_id,
         )
-        return {"status": "passed", "operation": args.operation, **report.to_json_dict()}
+        return {
+            "status": "passed",
+            "operation": args.operation,
+            **tenant_report.to_json_dict(),
+        }
 
-    report = service.execute_retention(dry_run=dry_run, actor_id=args.actor_id)
-    return {"status": "passed", "operation": args.operation, **report.to_json_dict()}
+    retention_report = service.execute_retention(dry_run=dry_run, actor_id=args.actor_id)
+    return {
+        "status": "passed",
+        "operation": args.operation,
+        **retention_report.to_json_dict(),
+    }
 
 
 def main(
@@ -93,9 +108,16 @@ def main(
     env: Mapping[str, str] | None = None,
     connection: SqlConnectionProvider | None = None,
     audit: AuditLedger | None = None,
+    rag_deletion_backend: PersistentRagDeletionBackend | None = None,
 ) -> int:
     try:
-        result = run_from_env(argv, env=env, connection=connection, audit=audit)
+        result = run_from_env(
+            argv,
+            env=env,
+            connection=connection,
+            audit=audit,
+            rag_deletion_backend=rag_deletion_backend,
+        )
     except Exception as exc:
         print(_json_result({"status": "failed", "error": str(exc)}))
         return 1
@@ -108,21 +130,57 @@ def _build_service(
     policy_path: Path,
     connection: SqlConnectionProvider | None,
     audit: AuditLedger | None,
+    rag_index_backend: str,
+    rag_deletion_backend: PersistentRagDeletionBackend | None,
 ) -> DataLifecycleService:
-    sql_provider = connection or _build_postgres_provider()
-    audit_ledger = audit or AuditLedger(
-        storage=PostgresAuditLedgerStorage(connection=sql_provider)
-    )
+    normalized_backend = rag_index_backend.strip().lower()
+    settings = None
+    if connection is None or (
+        normalized_backend in {"hybrid", "opensearch"}
+        and rag_deletion_backend is None
+    ):
+        settings = load_settings()
+    sql_provider = connection or build_postgres_provider(settings or load_settings())
+    deletion_backend = rag_deletion_backend
+    if normalized_backend in {"hybrid", "opensearch"} and deletion_backend is None:
+        assert settings is not None
+        created_backend = create_rag_index_backend(settings)
+        if created_backend is None or not callable(
+            getattr(created_backend, "delete_evidence_ids", None)
+        ):
+            raise RuntimeError(
+                "Persistent RAG lifecycle deletion backend is unavailable."
+            )
+        deletion_backend = cast(PersistentRagDeletionBackend, created_backend)
+    if audit is None:
+        # Dry-runs remain SQL read-only. Mutating executions replace this
+        # process-local ledger with a transaction-bound Postgres ledger below.
+        audit_ledger = AuditLedger()
+
+        def transactional_audit_factory(
+            transaction: SqlConnectionProvider,
+        ) -> AuditLedger:
+            return AuditLedger(
+                storage=PostgresAuditLedgerStorage(connection=transaction)
+            )
+
+    else:
+        audit_ledger = audit
+
+        def transactional_audit_factory(
+            transaction: SqlConnectionProvider,
+        ) -> AuditLedger:
+            del transaction
+            return audit_ledger
+
     return DataLifecycleService(
         connection=sql_provider,
         audit=audit_ledger,
+        transactional_audit_factory=transactional_audit_factory,
         policy=load_data_lifecycle_policy(policy_path),
+        rag_index_backend=rag_index_backend,
+        rag_deletion_backend=deletion_backend,
     )
-
-
-def _build_postgres_provider() -> PooledPostgresProvider:
-    settings = load_settings()
-    return build_postgres_provider(settings)
 
 
 def _config_from_env(env: Mapping[str, str]) -> RetentionCliConfig:

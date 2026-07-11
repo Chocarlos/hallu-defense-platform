@@ -1,0 +1,102 @@
+{{- if .Values.sandbox.fixture.enabled }}
+{{- if not .Values.kindDependencies.enabled }}
+{{- fail "sandbox.fixture.enabled=true is allowed only when kindDependencies.enabled=true" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-sandbox-fixture-{{ .Release.Revision }}
+  namespace: {{ include "hallu-defense.sandboxNamespace" . }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-fixture
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "hallu-defense.labels" . | nindent 8 }}
+        app.kubernetes.io/component: sandbox-fixture
+        hallu-defense.openai.com/network-policy: deny-egress
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: prepare-sandbox-fixture
+          image: {{ include "hallu-defense.sandboxImage" . | quote }}
+          imagePullPolicy: {{ .Values.sandbox.image.pullPolicy }}
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: HALLU_FIXTURE_ROOT
+              value: {{ printf "%s/%s" .Values.sandbox.workspace.mountPath .Values.sandbox.fixture.repositoryName | quote }}
+          command:
+            - python
+            - -c
+            - |
+              import os
+              import subprocess
+              from pathlib import Path
+
+              root = Path(os.environ["HALLU_FIXTURE_ROOT"])
+              root.mkdir(parents=True, exist_ok=True)
+              (root / "probe.py").write_text(
+                  """from pathlib import Path
+              import sys
+
+              Path("artifacts").mkdir(exist_ok=True)
+              Path("artifacts/sandbox-smoke.txt").write_text("sandbox-artifact\n", encoding="utf-8")
+              print("sandbox-stdout")
+              print("sandbox-stderr", file=sys.stderr)
+              raise SystemExit(7)
+              """,
+                  encoding="utf-8",
+              )
+              (root / "timeout.py").write_text(
+                  """import time
+
+              time.sleep(30)
+              """,
+                  encoding="utf-8",
+              )
+              (root / "egress.py").write_text(
+                  """import sys
+
+              module = __import__("".join(("so", "cket")))
+              connect = getattr(module, "".join(("create", "_connection")))
+              try:
+                  connection = connect(("1.1.1.1", 443), 2)
+              except OSError:
+                  print("egress-blocked")
+                  raise SystemExit(0)
+              connection.close()
+              print("egress-unexpectedly-allowed", file=sys.stderr)
+              raise SystemExit(9)
+              """,
+                  encoding="utf-8",
+              )
+              subprocess.run(
+                  ["git", "init", "--quiet", str(root)],
+                  check=True,
+                  timeout=10,
+              )
+          volumeMounts:
+            - name: workspace
+              mountPath: {{ .Values.sandbox.workspace.mountPath | quote }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: {{ include "hallu-defense.sandboxWorkspaceClaimName" . }}
+{{- end }}

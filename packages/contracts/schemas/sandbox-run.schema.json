@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hallu-defense.local/schemas/sandbox-run.schema.json",
   "title": "SandboxRun",
+  "x-contract-version": "1.0",
   "type": "object",
   "required": [
     "repo_ref",

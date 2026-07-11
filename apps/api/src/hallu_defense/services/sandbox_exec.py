@@ -1,20 +1,36 @@
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
+from pathlib import Path, PurePosixPath
+from typing import Protocol, cast, runtime_checkable
 
 from hallu_defense.config import PRODUCTION_LIKE_ENVIRONMENTS, Settings
 from hallu_defense.services.text import bounded
 
 SANDBOX_BACKEND_DOCKER = "docker"
-SANDBOX_BACKEND_HOST = "host"
+SANDBOX_BACKEND_KUBERNETES = "kubernetes"
 DOCKER_WORKDIR = "/workspace"
+DOCKER_SOURCE_DIR = "/hallu-source"
 DOCKER_USER = "10001"
-DOCKER_TIMEOUT_RETURN_CODE = 124
+SANDBOX_TIMEOUT_RETURN_CODE = 124
+DOCKER_TIMEOUT_RETURN_CODE = SANDBOX_TIMEOUT_RETURN_CODE
+SANDBOX_GIT_INSPECTOR_PATH = "/opt/hallu-defense/sandbox_git_inspector.py"
+SANDBOX_RUNNER_PATH = "/opt/hallu-defense/sandbox_runner.py"
+SANDBOX_BATCH_RUNNER_PATH = "/opt/hallu-defense/sandbox_batch_runner.py"
+MAX_SANDBOX_WORKSPACE_FILES = 50_000
+MAX_SANDBOX_WORKSPACE_BYTES = 512 * 1024 * 1024
+MAX_SANDBOX_COMMANDS = 10
+MAX_SANDBOX_COMMAND_ARGUMENTS = 256
+MAX_SANDBOX_COMMAND_BYTES = 32 * 1024
+MAX_SANDBOX_BATCH_CONTROL_CHARS = 1_048_576
+MAX_SANDBOX_ARTIFACTS = 10_000
+SANDBOX_STREAM_RESULTS_ENV = "HALLU_DEFENSE_SANDBOX_STREAM_RESULTS"
+SANDBOX_SNAPSHOT_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _CONTAINER_ENV_DEFAULTS = {
     "CI": "true",
@@ -44,17 +60,41 @@ class ExecutionResult:
     timed_out: bool = False
 
 
+@dataclass(frozen=True)
+class SandboxExecutionBatchResult:
+    executions: tuple[ExecutionResult, ...]
+    pre_snapshot_fingerprint: str
+    post_snapshot_fingerprint: str
+    artifacts: tuple[str, ...] = ()
+
+
 class SandboxExecutionBackend(Protocol):
     def execute(
         self,
         argv: Sequence[str],
         *,
         cwd: Path,
+        source_cwd: Path,
         env: Mapping[str, str],
         timeout: float,
         output_caps: int,
     ) -> ExecutionResult:
         """Execute one already-parsed command and return bounded process output."""
+
+
+@runtime_checkable
+class SandboxBatchExecutionBackend(Protocol):
+    def execute_batch(
+        self,
+        commands: Sequence[Sequence[str]],
+        *,
+        cwd: Path,
+        source_cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+    ) -> SandboxExecutionBatchResult:
+        """Execute all commands against one ephemeral working copy."""
 
 
 class DockerCommandRunner(Protocol):
@@ -65,54 +105,6 @@ class DockerCommandRunner(Protocol):
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a Docker CLI argv list. Used for injected unit-test fakes."""
-
-
-class HostSubprocessBackend:
-    def execute(
-        self,
-        argv: Sequence[str],
-        *,
-        cwd: Path,
-        env: Mapping[str, str],
-        timeout: float,
-        output_caps: int,
-    ) -> ExecutionResult:
-        try:
-            completed = subprocess.run(
-                list(argv),
-                cwd=cwd,
-                env=dict(env),
-                text=True,
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout = bounded(_coerce_output(exc.stdout), output_caps)
-            stderr = bounded(
-                "\n".join(
-                    part
-                    for part in [
-                        _coerce_output(exc.stderr).rstrip(),
-                        f"host sandbox command timed out after {timeout} second(s)",
-                    ]
-                    if part
-                )
-                + "\n",
-                output_caps,
-            )
-            return ExecutionResult(
-                returncode=DOCKER_TIMEOUT_RETURN_CODE,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=True,
-            )
-        return ExecutionResult(
-            returncode=completed.returncode,
-            stdout=bounded(completed.stdout, output_caps),
-            stderr=bounded(completed.stderr, output_caps),
-            timed_out=False,
-        )
 
 
 class DockerContainerBackend:
@@ -182,13 +174,101 @@ class DockerContainerBackend:
         argv: Sequence[str],
         *,
         cwd: Path,
+        source_cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+    ) -> ExecutionResult:
+        batch = self.execute_batch(
+            [argv],
+            cwd=cwd,
+            source_cwd=source_cwd,
+            env=env,
+            timeout=timeout,
+            output_caps=output_caps,
+        )
+        return batch.executions[0]
+
+    def execute_batch(
+        self,
+        commands: Sequence[Sequence[str]],
+        *,
+        cwd: Path,
+        source_cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+    ) -> SandboxExecutionBatchResult:
+        normalized_commands = _validated_batch_commands(
+            commands,
+            timeout=timeout,
+            output_caps=output_caps,
+        )
+        resolved_cwd = cwd.resolve(strict=True)
+        resolved_source = source_cwd.resolve(strict=True)
+        if resolved_cwd != resolved_source:
+            raise SandboxExecutionError(
+                "Docker backend owns the ephemeral working copy; cwd must be the source repository."
+            )
+        serialized_commands = json.dumps(
+            normalized_commands,
+            separators=(",", ":"),
+        )
+        control_output_caps = min(
+            MAX_SANDBOX_BATCH_CONTROL_CHARS,
+            max(65_536, output_caps * len(normalized_commands) * 4),
+        )
+        outer_timeout = timeout * len(normalized_commands) + max(
+            5.0,
+            min(30.0, timeout),
+        )
+        completed = self._execute_control_command(
+            [
+                "python",
+                SANDBOX_BATCH_RUNNER_PATH,
+                f"{timeout:.6f}",
+                str(output_caps),
+                serialized_commands,
+            ],
+            cwd=resolved_cwd,
+            source_cwd=resolved_source,
+            env=env,
+            timeout=outer_timeout,
+            output_caps=control_output_caps,
+        )
+        if completed.timed_out:
+            raise SandboxExecutionError(
+                "Docker sandbox batch exceeded its orchestration deadline."
+            )
+        if completed.returncode != 0:
+            raise SandboxExecutionError(
+                "Docker sandbox batch orchestration failed."
+            )
+        return decode_sandbox_execution_batch(
+            completed.stdout,
+            expected_count=len(normalized_commands),
+            output_caps=output_caps,
+        )
+
+    def _execute_control_command(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        source_cwd: Path,
         env: Mapping[str, str],
         timeout: float,
         output_caps: int,
     ) -> ExecutionResult:
         with tempfile.TemporaryDirectory(prefix="hallu-sandbox-") as temp_dir:
             cidfile = Path(temp_dir) / "container.cid"
-            run_argv = self.build_run_argv(argv, cwd=cwd, env=env, cidfile=cidfile)
+            run_argv = self.build_run_argv(
+                argv,
+                cwd=cwd,
+                source_cwd=source_cwd,
+                env=env,
+                cidfile=cidfile,
+            )
             try:
                 completed = self._runner(run_argv, timeout=timeout)
             except FileNotFoundError as exc:
@@ -218,9 +298,23 @@ class DockerContainerBackend:
         argv: Sequence[str],
         *,
         cwd: Path,
+        source_cwd: Path,
         env: Mapping[str, str],
         cidfile: Path | None = None,
     ) -> list[str]:
+        resolved_workspace = cwd.resolve(strict=True)
+        resolved_source = source_cwd.resolve(strict=True)
+        if resolved_workspace != resolved_source:
+            raise SandboxExecutionError(
+                "Docker backend owns the ephemeral working copy; cwd must be the source repository."
+            )
+        source_mount = (
+            f"type=bind,source={resolved_source},target={DOCKER_SOURCE_DIR},readonly"
+        )
+        workspace_mount = (
+            f"type=tmpfs,target={DOCKER_WORKDIR},"
+            f"tmpfs-size={MAX_SANDBOX_WORKSPACE_BYTES},tmpfs-mode=1777"
+        )
         run_argv = [
             self._docker_path,
             "run",
@@ -242,24 +336,33 @@ class DockerContainerBackend:
             "--user",
             DOCKER_USER,
             "--mount",
-            f"type=bind,source={cwd.resolve()},target={DOCKER_WORKDIR}",
+            source_mount,
+            "--mount",
+            workspace_mount,
             "--workdir",
             DOCKER_WORKDIR,
         ]
         if cidfile is not None:
             run_argv.extend(["--cidfile", str(cidfile)])
-        for key, value in sorted(self._container_env(env).items()):
+        container_env = self._container_env(env)
+        container_env[SANDBOX_STREAM_RESULTS_ENV] = "1"
+        for key, value in sorted(container_env.items()):
             run_argv.extend(["--env", f"{key}={value}"])
-        run_argv.extend([self._image, *list(argv)])
+        run_argv.extend(
+            [
+                self._image,
+                "python",
+                SANDBOX_RUNNER_PATH,
+                str(self._pids_limit),
+                str(MAX_SANDBOX_WORKSPACE_FILES),
+                str(MAX_SANDBOX_WORKSPACE_BYTES),
+                *list(argv),
+            ]
+        )
         return run_argv
 
     def _container_env(self, env: Mapping[str, str]) -> dict[str, str]:
-        container_env = dict(_CONTAINER_ENV_DEFAULTS)
-        for key in _CONTAINER_ENV_ALLOWLIST:
-            value = env.get(key)
-            if value is not None:
-                container_env[key] = value
-        return container_env
+        return sanitized_container_environment(env)
 
     def _kill_container(self, cidfile: Path, output_caps: int) -> str:
         try:
@@ -281,21 +384,166 @@ class DockerContainerBackend:
         return "docker kill completed"
 
 
+def _validated_batch_commands(
+    commands: Sequence[Sequence[str]],
+    *,
+    timeout: float,
+    output_caps: int,
+) -> list[list[str]]:
+    if timeout <= 0 or output_caps <= 0:
+        raise SandboxExecutionError("sandbox execution limits must be positive")
+    if not commands or len(commands) > MAX_SANDBOX_COMMANDS:
+        raise SandboxExecutionError(
+            "sandbox batch must contain between 1 and 10 commands"
+        )
+    normalized = [list(command) for command in commands]
+    for command in normalized:
+        if (
+            not command
+            or len(command) > MAX_SANDBOX_COMMAND_ARGUMENTS
+            or any(not argument or "\x00" in argument for argument in command)
+            or sum(len(argument.encode("utf-8")) for argument in command)
+            > MAX_SANDBOX_COMMAND_BYTES
+        ):
+            raise SandboxExecutionError("sandbox command exceeded its safety limit")
+    return normalized
+
+
+def decode_sandbox_execution_batch(
+    raw: str,
+    *,
+    expected_count: int,
+    output_caps: int,
+) -> SandboxExecutionBatchResult:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        raise SandboxExecutionError("sandbox batch returned invalid JSON") from None
+    if not isinstance(payload, Mapping):
+        raise SandboxExecutionError("sandbox batch returned a non-object result")
+    if set(payload) != {
+        "schema_version",
+        "pre_snapshot_fingerprint",
+        "post_snapshot_fingerprint",
+        "executions",
+        "artifacts",
+    }:
+        raise SandboxExecutionError("sandbox batch returned unexpected fields")
+    if payload.get("schema_version") != "sandbox_execution_batch.v3":
+        raise SandboxExecutionError("sandbox batch returned an unsupported schema")
+    fingerprints: dict[str, str] = {}
+    for field_name in ("pre_snapshot_fingerprint", "post_snapshot_fingerprint"):
+        fingerprint = payload.get(field_name)
+        if (
+            not isinstance(fingerprint, str)
+            or SANDBOX_SNAPSHOT_FINGERPRINT_RE.fullmatch(fingerprint) is None
+        ):
+            raise SandboxExecutionError(
+                f"sandbox batch returned an invalid {field_name}"
+            )
+        fingerprints[field_name] = fingerprint
+    raw_executions = payload.get("executions")
+    if not isinstance(raw_executions, list) or len(raw_executions) != expected_count:
+        raise SandboxExecutionError("sandbox batch returned an unexpected result count")
+    executions: list[ExecutionResult] = []
+    for item in raw_executions:
+        if not isinstance(item, Mapping) or set(item) != {
+            "returncode",
+            "stdout",
+            "stderr",
+            "timed_out",
+        }:
+            raise SandboxExecutionError("sandbox batch returned an invalid command result")
+        returncode = item.get("returncode")
+        stdout = item.get("stdout")
+        stderr = item.get("stderr")
+        timed_out = item.get("timed_out")
+        if (
+            not isinstance(returncode, int)
+            or isinstance(returncode, bool)
+            or not isinstance(stdout, str)
+            or not isinstance(stderr, str)
+            or not isinstance(timed_out, bool)
+            or len(stdout) > output_caps
+            or len(stderr) > output_caps
+        ):
+            raise SandboxExecutionError("sandbox batch returned an invalid command value")
+        executions.append(
+            ExecutionResult(
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=timed_out,
+            )
+        )
+    raw_artifacts = payload.get("artifacts")
+    if (
+        not isinstance(raw_artifacts, list)
+        or len(raw_artifacts) > MAX_SANDBOX_ARTIFACTS
+        or not all(isinstance(item, str) for item in raw_artifacts)
+    ):
+        raise SandboxExecutionError("sandbox batch returned an invalid artifact inventory")
+    artifacts: list[str] = []
+    for artifact in cast(list[str], raw_artifacts):
+        path = PurePosixPath(artifact)
+        if (
+            not artifact
+            or artifact.startswith("/")
+            or "\\" in artifact
+            or "\x00" in artifact
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path.parts[0] not in {"artifacts", "reports"}
+        ):
+            raise SandboxExecutionError("sandbox batch returned an unsafe artifact path")
+        artifacts.append(artifact)
+    if artifacts != sorted(set(artifacts)):
+        raise SandboxExecutionError(
+            "sandbox batch artifact inventory must be unique and sorted"
+        )
+    return SandboxExecutionBatchResult(
+        executions=tuple(executions),
+        pre_snapshot_fingerprint=fingerprints["pre_snapshot_fingerprint"],
+        post_snapshot_fingerprint=fingerprints["post_snapshot_fingerprint"],
+        artifacts=tuple(artifacts),
+    )
+
+
 def build_sandbox_execution_backend(settings: Settings) -> SandboxExecutionBackend:
     backend = settings.sandbox_backend.strip().lower()
     if (
         settings.environment.strip().lower() in PRODUCTION_LIKE_ENVIRONMENTS
-        and backend == SANDBOX_BACKEND_HOST
+        and backend != SANDBOX_BACKEND_KUBERNETES
     ):
         raise SandboxExecutionConfigurationError(
-            "Production and staging must set HALLU_DEFENSE_SANDBOX_BACKEND=docker."
+            "Production and staging require "
+            "HALLU_DEFENSE_SANDBOX_BACKEND=kubernetes for tenant-bound isolation."
         )
-    if backend == SANDBOX_BACKEND_HOST:
-        return HostSubprocessBackend()
     if backend == SANDBOX_BACKEND_DOCKER:
         return DockerContainerBackend.from_settings(settings)
+    if backend == SANDBOX_BACKEND_KUBERNETES:
+        from hallu_defense.services.sandbox_kubernetes import KubernetesJobBackend
+
+        return KubernetesJobBackend.from_settings(settings)
     raise SandboxExecutionConfigurationError(
-        "HALLU_DEFENSE_SANDBOX_BACKEND must be host or docker."
+        "HALLU_DEFENSE_SANDBOX_BACKEND must be docker or kubernetes; "
+        "host subprocess execution cannot enforce sandbox network isolation."
+    )
+
+
+def sanitized_container_environment(env: Mapping[str, str]) -> dict[str, str]:
+    container_env = dict(_CONTAINER_ENV_DEFAULTS)
+    for key in _CONTAINER_ENV_ALLOWLIST:
+        value = env.get(key)
+        if value is not None:
+            container_env[key] = value
+    return container_env
+
+
+def is_git_inspector_command(argv: Sequence[str]) -> bool:
+    return (
+        len(argv) >= 2
+        and argv[0] == "python"
+        and argv[1] == SANDBOX_GIT_INSPECTOR_PATH
     )
 
 

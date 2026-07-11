@@ -1,0 +1,9 @@
+{
+  "schema_version": "sandbox-npm-lock.v1",
+  "package": "npm",
+  "version": "12.0.0",
+  "tarball": "https://registry.npmjs.org/npm/-/npm-12.0.0.tgz",
+  "bytes": 3087816,
+  "sha256": "e810af397525cfe6fdc0b299bd748694744e6a21fb476895a7ec8309a39efced",
+  "integrity": "sha512-qzvPQfNSY7louiM6rv7dL0hi5esBGLn1lLwxbdyL5XOIssWzoYMwn8xqvWhYcZL6onTkenYSxrtKxsFrFbUFyw=="
+}

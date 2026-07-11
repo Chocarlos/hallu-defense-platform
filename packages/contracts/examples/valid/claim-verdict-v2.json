@@ -1,0 +1,12 @@
+{
+  "schema_version": "2.0",
+  "claim_id": "clm_0001",
+  "status": "supported",
+  "confidence": 0.95,
+  "evidence_ids": ["ev_0001"],
+  "action": "allow",
+  "reason": "Evidence supports the claim.",
+  "validator_trace": {
+    "overlap": 0.92
+  }
+}

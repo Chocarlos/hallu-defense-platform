@@ -5,26 +5,45 @@ on:
   push:
     branches: ["master", "main"]
 
+permissions:
+  contents: read
+
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
       - name: Install API
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/compile_python_locks.py --check
+          python scripts/ci/install_python_lock.py dev
+          python scripts/ci/check_python_reproducibility.py
+      - name: Lint Python
+        run: python -m ruff check apps/api/src apps/api/tests scripts evals
+      - name: Typecheck Python
+        run: python -m mypy apps/api/src
+      - name: Check JSON Schema contracts
+        run: python scripts/ci/check_json_schemas.py
       - name: Test API
         run: python -m pytest apps/api/tests
       - name: Check OpenAPI drift
         run: python scripts/ci/check_openapi.py
+      - name: Check semantic contract versions
+        run: python scripts/ci/check_contract_versions.py
       - name: Check foundation docs
         run: python scripts/ci/check_foundation_docs.py
       - name: Check foundation infrastructure
         run: python scripts/ci/check_foundation_infra.py
+      - name: Check pinned Gitleaks configuration
+        run: python scripts/ci/check_gitleaks_config.py
       - name: Check traceability matrix
         run: python scripts/ci/check_traceability_matrix.py
       - name: Check worklog
@@ -36,9 +55,9 @@ jobs:
       - name: Check verifier calibration drift
         run: python scripts/ci/check_verifier_calibration.py
       - name: Install OPA
-        uses: open-policy-agent/setup-opa@v2.4.0
+        uses: open-policy-agent/setup-opa@b2b258e089860efaadaaf71bf6e3aecb4a3eeff1 # v2.4.0
         with:
-          version: 0.70.0
+          version: 1.17.0
           static: "true"
       - name: Test policies
         run: python scripts/ci/run_policy_tests.py
@@ -58,8 +77,12 @@ jobs:
         run: python scripts/ci/check_corpus_grants_config.py
       - name: Check backup and retention config
         run: python scripts/ci/check_backup_retention_config.py
+      - name: Check encrypted MinIO backup drill
+        run: python scripts/ci/check_minio_backup_drill.py
       - name: Check RAG persistence config
         run: python scripts/ci/check_rag_persistence_config.py
+      - name: Check PostgreSQL migration invariants
+        run: python scripts/ci/check_postgres_migrations.py
       - name: Dry-run OpenSearch template bootstrap
         run: python scripts/dev/bootstrap_opensearch_template.py --dry-run
       - name: Check ingestion pipeline config
@@ -70,6 +93,8 @@ jobs:
         run: python scripts/ci/check_grafana_dashboards.py
       - name: Check local runtime config
         run: python scripts/ci/check_local_runtime_config.py
+      - name: Check metrics token materializer
+        run: python scripts/ci/check_metrics_token_materializer.py
       - name: Check observability config
         run: python scripts/ci/check_observability_config.py
       - name: Check production profile config
@@ -78,21 +103,29 @@ jobs:
         run: python scripts/ci/check_helm_chart.py
 
   typescript:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          node-version: "24"
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
           cache: npm
       - name: Install API for live contract tests
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e "apps/api[dev]"
-      - run: npm install
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
+      - run: test "$(npm --version)" = "11.16.0"
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build

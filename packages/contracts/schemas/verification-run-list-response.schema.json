@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-run-list-response.schema.json",
+  "title": "VerificationRunListResponse",
+  "type": "object",
+  "required": ["trace_id", "runs", "next_cursor"],
+  "properties": {
+    "trace_id": { "type": "string", "minLength": 1 },
+    "runs": {
+      "type": "array",
+      "items": { "$ref": "verification-run-summary.schema.json" }
+    },
+    "next_cursor": { "type": ["string", "null"], "minLength": 1, "maxLength": 2048 }
+  },
+  "additionalProperties": false
+}

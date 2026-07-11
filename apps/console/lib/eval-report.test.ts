@@ -75,6 +75,7 @@ describe("expanded eval scenario report loading", () => {
           tool_contradiction_guard_rate: 1,
           repo_false_claim_block_rate: 1,
           repo_semantic_claim_decision_accuracy: 1,
+          blocking_precision: 1,
           sandbox_block_rate: 1,
           p95_latency_ms: 4.42
         },
@@ -119,6 +120,7 @@ describe("expanded eval scenario history loading", () => {
       tool_contradiction_guard_rate: 1,
       repo_false_claim_block_rate: 1,
       repo_semantic_claim_decision_accuracy: 1,
+      blocking_precision: 1,
       sandbox_block_rate: 1,
       p95_latency_ms: 4.42
     };

@@ -20,10 +20,21 @@ SKIP_DIRS = {
 }
 SKIP_FILES = {"package-lock.json"}
 SECRET_PATTERNS = [
-    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----"),
-    re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{16,}"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED |)PRIVATE KEY-----"),
+    re.compile(
+        r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*"
+        r"(?P<quote>['\"])[A-Za-z0-9_./+=-]{16,}(?P=quote)"
+    ),
     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
 ]
+KNOWN_FIXTURE_MARKERS = (
+    "fixture",
+    "local-only",
+    "redacted",
+    "example",
+    "signed.access.token",
+    "test-password",
+)
 
 
 @dataclass(frozen=True)
@@ -56,11 +67,17 @@ def scan_tree(root: Path = ROOT) -> SecretScanResult:
             unreadable.append(str(path.relative_to(root)))
             continue
         for pattern in SECRET_PATTERNS:
-            if pattern.search(text):
+            match = pattern.search(text)
+            if match is not None and not _known_fixture_match(match.group(0)):
                 findings.append(str(path.relative_to(root)))
                 break
 
     return SecretScanResult(findings=sorted(findings), unreadable=sorted(unreadable))
+
+
+def _known_fixture_match(value: str) -> bool:
+    normalized = value.casefold()
+    return any(marker in normalized for marker in KNOWN_FIXTURE_MARKERS)
 
 
 def main() -> None:

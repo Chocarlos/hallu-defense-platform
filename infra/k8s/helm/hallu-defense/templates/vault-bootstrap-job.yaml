@@ -1,0 +1,73 @@
+{{- if and .Values.kindDependencies.enabled .Values.kindDependencies.vault.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hallu-defense.fullname" . }}-vault-bootstrap-{{ .Release.Revision }}
+  labels:
+    {{- include "hallu-defense.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vault-bootstrap
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ .Values.migrations.waitTimeoutSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "hallu-defense.labels" . | nindent 8 }}
+        app.kubernetes.io/component: vault-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: vault-bootstrap
+          image: {{ include "hallu-defense.apiImage" . | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - python
+            - scripts/dev/bootstrap_kind_vault.py
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: HALLU_DEFENSE_KIND_VAULT_ADDR
+              value: {{ .Values.vault.address | quote }}
+            - name: HALLU_DEFENSE_KIND_VAULT_CA_PATH
+              value: /run/hallu-defense/kind-vault/ca.crt
+            - name: HALLU_DEFENSE_KIND_VAULT_TOKEN_PATH
+              value: /run/hallu-defense/kind-vault/root-token
+            - name: HALLU_DEFENSE_KIND_PROVIDER_SECRET_NAME
+              value: {{ .Values.provider.apiKeySecretName | quote }}
+            - name: HALLU_DEFENSE_KIND_METRICS_SECRET_NAME
+              value: observability/metrics-scrape-token
+            - name: HALLU_DEFENSE_KIND_APPROVAL_COMMITMENT_SECRET_NAME
+              value: approvals/tool-call-commitment-key
+            - name: HALLU_DEFENSE_KIND_VAULT_WAIT_SECONDS
+              value: {{ .Values.migrations.waitTimeoutSeconds | quote }}
+          volumeMounts:
+            - name: kind-vault
+              mountPath: /run/hallu-defense/kind-vault
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: kind-vault
+          secret:
+            secretName: {{ required "secrets.kindVault.name is required" .Values.secrets.kindVault.name }}
+            defaultMode: 0440
+            items:
+              - key: root-token
+                path: root-token
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
+{{- end }}

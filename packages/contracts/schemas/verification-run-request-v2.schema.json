@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/verification-run-request-v2.schema.json",
+  "title": "VerificationRunRequestV2",
+  "x-contract-version": "2.0",
+  "type": "object",
+  "required": ["schema_version", "message_text"],
+  "properties": {
+    "schema_version": { "const": "2.0", "type": "string" },
+    "tenant_id": { "type": ["string", "null"] },
+    "message_text": { "type": "string", "minLength": 1 },
+    "documents": {
+      "type": "array",
+      "items": { "$ref": "document-input.schema.json" }
+    },
+    "tool_outputs": {
+      "type": "array",
+      "items": { "$ref": "evidence.schema.json" }
+    },
+    "execution_artifacts": { "type": "object", "additionalProperties": true },
+    "task_type": { "type": "string", "minLength": 1 },
+    "message_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

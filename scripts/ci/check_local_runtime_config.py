@@ -23,6 +23,8 @@ CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 REQUIRED_SERVICES = {
     "api",
     "ingestion-worker",
+    "opensearch-bootstrap",
+    "postgres-migrations",
     "console",
     "prometheus",
     "grafana",
@@ -34,31 +36,28 @@ REQUIRED_SERVICES = {
     "keycloak",
     "vault",
 }
-REQUIRED_VOLUMES = {"postgres-data", "opensearch-data", "minio-data"}
+REQUIRED_VOLUMES = {"postgres-data", "grafana-data", "opensearch-data", "seaweedfs-data"}
 REQUIRED_PORTS = {
-    "api": "8000:8000",
+    "api": "127.0.0.1:8000:8000",
     "ingestion-worker": (),
-    "console": "3000:3000",
-    "prometheus": "9090:9090",
-    "grafana": "3001:3000",
-    "otel-collector": ("4317:4317", "4318:4318"),
-    "postgres": "5432:5432",
-    "opensearch": ("9200:9200", "9600:9600"),
-    "redis": "6379:6379",
-    "minio": ("9000:9000", "9001:9001"),
-    "keycloak": "8081:8080",
-    "vault": "8200:8200",
+    "opensearch-bootstrap": (),
+    "postgres-migrations": (),
+    "console": "127.0.0.1:3000:3000",
+    "prometheus": "127.0.0.1:9090:9090",
+    "grafana": "127.0.0.1:3001:3000",
+    "otel-collector": ("127.0.0.1:4317:4317", "127.0.0.1:4318:4318"),
+    "postgres": "127.0.0.1:5432:5432",
+    "opensearch": "127.0.0.1:9200:9200",
+    "redis": "127.0.0.1:6379:6379",
+    "minio": "127.0.0.1:9000:9000",
+    "keycloak": "127.0.0.1:8081:8080",
+    "vault": "127.0.0.1:8200:8200",
 }
-PINNED_IMAGE_PREFIXES = {
-    "prometheus": "prom/prometheus:v",
-    "grafana": "grafana/grafana:",
-    "otel-collector": "otel/opentelemetry-collector-contrib:",
-    "postgres": "pgvector/pgvector:pg",
-    "opensearch": "opensearchproject/opensearch:",
-    "redis": "redis:",
-    "minio": "minio/minio:RELEASE.",
-    "keycloak": "quay.io/keycloak/keycloak:",
-    "vault": "hashicorp/vault:1.17",
+PINNED_IMAGES = {
+    "prometheus": "prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc",
+    "otel-collector": "otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108",
+    "redis": "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
+    "vault": "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54",
 }
 REQUIRED_KEYCLOAK_REALM_ROLES = {
     "verifier",
@@ -67,36 +66,82 @@ REQUIRED_KEYCLOAK_REALM_ROLES = {
     "rag_writer",
     "metrics_reader",
     "eval_publisher",
+    "tool_operator",
+    "sandbox_runner",
+    "policy_evaluator",
 }
 KEYCLOAK_REALM_NAME = "hallu-defense"
 KEYCLOAK_API_CLIENT_ID = "hallu-defense-api"
+KEYCLOAK_CONSOLE_CLIENT_ID = "hallu-defense-console"
+KEYCLOAK_CONSOLE_USER = "console-reviewer"
+REQUIRED_CONSOLE_ROLES = {
+    "verifier",
+    "approval_reviewer",
+    "policy_evaluator",
+    "sandbox_runner",
+    "tool_operator",
+}
+REQUIRED_CONSOLE_ENV = {
+    "HALLU_DEFENSE_ENV": "local",
+    "HALLU_DEFENSE_CONSOLE_AUTH_MODE": "unsigned-local",
+    "HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN": "http://localhost:3000",
+    "HALLU_DEFENSE_CONSOLE_API_ORIGIN": "http://localhost:8000",
+    "HALLU_DEFENSE_CONSOLE_ALLOW_INSECURE_LOCAL_HTTP": "true",
+    "HALLU_DEFENSE_CONSOLE_ALLOW_UNSIGNED_LOCAL": "true",
+    "HALLU_DEFENSE_CONSOLE_LOCAL_TENANT_ID": "tenant-a",
+    "HALLU_DEFENSE_CONSOLE_LOCAL_SUBJECT_ID": KEYCLOAK_CONSOLE_USER,
+    "HALLU_DEFENSE_CONSOLE_LOCAL_ROLES": ",".join(sorted(REQUIRED_CONSOLE_ROLES)),
+}
 OTEL_FILE_EXPORTER_PATH = "/otel-output/spans.jsonl"
 REQUIRED_API_ENV = {
     "HALLU_DEFENSE_ENV": "local",
     "HALLU_DEFENSE_AUTH_REQUIRED": "false",
+    "HALLU_DEFENSE_MAX_REQUEST_BODY_BYTES": "1048576",
+    "HALLU_DEFENSE_REQUEST_BODY_TIMEOUT_SECONDS": "15",
     "HALLU_DEFENSE_ALLOWED_WORKSPACE": "/workspace",
     "HALLU_DEFENSE_OTEL_ENABLED": "true",
     "HALLU_DEFENSE_OTEL_EXPORTER": "otlp",
     "HALLU_DEFENSE_OTEL_ENDPOINT": "http://otel-collector:4318/v1/traces",
-    "HALLU_DEFENSE_RAG_INDEX_BACKEND": "opensearch",
+    "HALLU_DEFENSE_RAG_INDEX_BACKEND": "hybrid",
     "HALLU_DEFENSE_OPENSEARCH_ENDPOINT": "http://opensearch:9200",
     "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME": "hallu_evidence",
     "HALLU_DEFENSE_POSTGRES_DSN": "postgresql://hallu:hallu@postgres:5432/hallu_defense",
     "HALLU_DEFENSE_INGESTION_MODE": "sync",
 }
-REQUIRED_API_DEPENDS_ON = {"otel-collector", "postgres", "redis", "opensearch"}
+REQUIRED_API_DEPENDS_ON = {
+    "otel-collector",
+    "postgres",
+    "redis",
+    "opensearch-bootstrap",
+    "postgres-migrations",
+}
 REQUIRED_WORKER_ENV = {
     "HALLU_DEFENSE_ENV": "local",
+    "HALLU_DEFENSE_RUNTIME_ROLE": "worker",
     "HALLU_DEFENSE_AUTH_REQUIRED": "false",
     "HALLU_DEFENSE_ALLOWED_WORKSPACE": "/workspace",
-    "HALLU_DEFENSE_RAG_INDEX_BACKEND": "opensearch",
+    "HALLU_DEFENSE_RAG_INDEX_BACKEND": "hybrid",
     "HALLU_DEFENSE_OPENSEARCH_ENDPOINT": "http://opensearch:9200",
     "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME": "hallu_evidence",
     "HALLU_DEFENSE_POSTGRES_DSN": "postgresql://hallu:hallu@postgres:5432/hallu_defense",
+    "HALLU_DEFENSE_AUDIT_LEDGER_BACKEND": "postgres",
+    "HALLU_DEFENSE_CORPUS_GRANTS_BACKEND": "postgres",
     "HALLU_DEFENSE_INGESTION_MODE": "async",
     "HALLU_DEFENSE_INGESTION_WORKER_ID": "compose-ingestion-worker",
 }
-REQUIRED_WORKER_DEPENDS_ON = {"postgres", "opensearch"}
+REQUIRED_WORKER_DEPENDS_ON = {
+    "postgres",
+    "opensearch-bootstrap",
+    "postgres-migrations",
+}
+REQUIRED_OPENSEARCH_BOOTSTRAP_ENV = {
+    "HALLU_DEFENSE_ENV": "local",
+    "HALLU_DEFENSE_RUNTIME_ROLE": "opensearch-bootstrap",
+    "HALLU_DEFENSE_AUTH_REQUIRED": "false",
+    "HALLU_DEFENSE_RAG_INDEX_BACKEND": "opensearch",
+    "HALLU_DEFENSE_OPENSEARCH_ENDPOINT": "http://opensearch:9200",
+    "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME": "hallu_evidence",
+}
 REQUIRED_GRAFANA_ENV = {
     "GF_USERS_ALLOW_SIGN_UP": "false",
     "GF_AUTH_ANONYMOUS_ENABLED": "false",
@@ -106,14 +151,18 @@ REQUIRED_COMPOSE_VOLUME_MOUNTS = {
     "api": ".:/workspace:ro",
     "ingestion-worker": ".:/workspace:ro",
     "prometheus": "./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
-    "grafana": "./infra/grafana/provisioning:/etc/grafana/provisioning:ro",
+    "grafana": (
+        "./infra/grafana/provisioning:/etc/grafana/provisioning:ro",
+        "./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro",
+        "grafana-data:/var/lib/grafana",
+    ),
     "otel-collector": (
         "./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro",
         "./var/otel:/otel-output",
     ),
     "postgres": "./infra/rag/pgvector:/docker-entrypoint-initdb.d:ro",
     "opensearch": "opensearch-data:/usr/share/opensearch/data",
-    "minio": "minio-data:/data",
+    "minio": "seaweedfs-data:/data",
     "keycloak": "./infra/security/keycloak:/opt/keycloak/data/import:ro",
 }
 
@@ -178,6 +227,8 @@ def _validate_compose(compose: Mapping[str, object], errors: list[str]) -> None:
     _validate_environment("grafana", services, REQUIRED_GRAFANA_ENV, errors)
     _validate_api_dependencies(services, errors)
     _validate_ingestion_worker(services, errors)
+    _validate_opensearch_bootstrap(services, errors)
+    _validate_postgres_migrations(services, errors)
     _validate_console_dependencies(services, errors)
     _validate_observability_dependencies(services, errors)
     _validate_postgres(services, errors)
@@ -201,6 +252,11 @@ def _validate_service_port(
     for required_port in required_ports:
         if required_port not in ports:
             errors.append(f"service {service_name} missing port mapping {required_port}")
+    for published_port in ports:
+        if not published_port.startswith("127.0.0.1:"):
+            errors.append(
+                f"service {service_name} port must bind only to 127.0.0.1: {published_port}"
+            )
 
 
 def _validate_service_image_or_build(
@@ -208,23 +264,64 @@ def _validate_service_image_or_build(
     service: Mapping[str, object],
     errors: list[str],
 ) -> None:
-    if service_name in {"api", "console", "ingestion-worker"}:
+    if service_name in {
+        "api",
+        "console",
+        "grafana",
+        "ingestion-worker",
+        "opensearch-bootstrap",
+        "opensearch",
+        "postgres-migrations",
+        "postgres",
+        "keycloak",
+        "minio",
+    }:
         build = _mapping(service.get("build"), f"{service_name}.build", errors)
         dockerfile = build.get("dockerfile")
         if not isinstance(dockerfile, str) or not (ROOT / dockerfile).exists():
             errors.append(f"service {service_name} build.dockerfile must exist")
         if build.get("context") != ".":
             errors.append(f"service {service_name} build.context must be repo root")
-        if service_name == "ingestion-worker" and dockerfile != "infra/docker/api.Dockerfile":
-            errors.append("service ingestion-worker must use the API Dockerfile")
+        if (
+            service_name in {
+                "ingestion-worker",
+                "opensearch-bootstrap",
+                "postgres-migrations",
+            }
+            and dockerfile != "infra/docker/api.Dockerfile"
+        ):
+            errors.append(f"service {service_name} must use the API Dockerfile")
+        if service_name == "postgres":
+            if dockerfile != "infra/docker/pgvector.Dockerfile":
+                errors.append("service postgres must use the pgvector Dockerfile")
+            if service.get("image") != "hallu-defense-pgvector:ci":
+                errors.append("service postgres must tag the first-party pgvector image")
+        if service_name == "keycloak":
+            if dockerfile != "infra/docker/keycloak.Dockerfile":
+                errors.append("service keycloak must use the hardened Keycloak Dockerfile")
+            if service.get("image") != "hallu-defense-keycloak:ci":
+                errors.append("service keycloak must tag the first-party Keycloak image")
+        if service_name == "grafana":
+            if dockerfile != "infra/docker/grafana.Dockerfile":
+                errors.append("service grafana must use the hardened Grafana Dockerfile")
+            if service.get("image") != "hallu-defense-grafana:ci":
+                errors.append("service grafana must tag the first-party Grafana image")
+        if service_name == "opensearch":
+            if dockerfile != "infra/docker/opensearch.Dockerfile":
+                errors.append("service opensearch must use the hardened OpenSearch Dockerfile")
+            if service.get("image") != "hallu-defense-opensearch:ci":
+                errors.append("service opensearch must tag the first-party OpenSearch image")
+        if service_name == "minio":
+            if dockerfile != "infra/docker/seaweedfs.Dockerfile":
+                errors.append("service minio must use the hardened SeaweedFS Dockerfile")
+            if service.get("image") != "hallu-defense-seaweedfs:ci":
+                errors.append("service minio must tag the first-party SeaweedFS image")
         return
 
     image = service.get("image")
-    expected_prefix = PINNED_IMAGE_PREFIXES[service_name]
-    if not isinstance(image, str) or not image.startswith(expected_prefix):
-        errors.append(f"service {service_name} image must start with {expected_prefix}")
-    if isinstance(image, str) and (image.endswith(":latest") or ":latest" in image):
-        errors.append(f"service {service_name} image must not use latest")
+    expected_image = PINNED_IMAGES[service_name]
+    if image != expected_image:
+        errors.append(f"service {service_name} image must equal {expected_image}")
 
 
 def _validate_service_volume(
@@ -258,7 +355,7 @@ def _validate_environment(
 
 def _validate_api_dependencies(services: Mapping[str, object], errors: list[str]) -> None:
     api = _mapping(services.get("api"), "service api", errors)
-    depends_on = set(_string_sequence(api.get("depends_on"), "api.depends_on", errors))
+    depends_on = set(_dependency_names(api.get("depends_on"), "api.depends_on", errors))
     missing = REQUIRED_API_DEPENDS_ON - depends_on
     if missing:
         errors.append("service api depends_on missing: " + ", ".join(sorted(missing)))
@@ -270,7 +367,7 @@ def _validate_ingestion_worker(services: Mapping[str, object], errors: list[str]
     if command != ("python", "-m", "hallu_defense.worker"):
         errors.append("service ingestion-worker command must be python -m hallu_defense.worker")
     depends_on = set(
-        _string_sequence(worker.get("depends_on"), "ingestion-worker.depends_on", errors)
+        _dependency_names(worker.get("depends_on"), "ingestion-worker.depends_on", errors)
     )
     missing = REQUIRED_WORKER_DEPENDS_ON - depends_on
     if missing:
@@ -280,14 +377,139 @@ def _validate_ingestion_worker(services: Mapping[str, object], errors: list[str]
     _validate_environment("ingestion-worker", services, REQUIRED_WORKER_ENV, errors)
 
 
+def _validate_opensearch_bootstrap(
+    services: Mapping[str, object],
+    errors: list[str],
+) -> None:
+    bootstrap = _mapping(
+        services.get("opensearch-bootstrap"),
+        "service opensearch-bootstrap",
+        errors,
+    )
+    command = _string_sequence(
+        bootstrap.get("command"),
+        "opensearch-bootstrap.command",
+        errors,
+    )
+    if command != ("python", "/app/scripts/dev/bootstrap_opensearch_template.py"):
+        errors.append("service opensearch-bootstrap must run the schema v2 bootstrap")
+    _validate_environment(
+        "opensearch-bootstrap",
+        services,
+        REQUIRED_OPENSEARCH_BOOTSTRAP_ENV,
+        errors,
+    )
+    dependencies = _mapping(
+        bootstrap.get("depends_on"),
+        "opensearch-bootstrap.depends_on",
+        errors,
+    )
+    opensearch_dependency = _mapping(
+        dependencies.get("opensearch"),
+        "opensearch-bootstrap.depends_on.opensearch",
+        errors,
+    )
+    if opensearch_dependency.get("condition") != "service_healthy":
+        errors.append("service opensearch-bootstrap must wait for healthy OpenSearch")
+    for workload_name in ("api", "ingestion-worker"):
+        workload = _mapping(services.get(workload_name), f"service {workload_name}", errors)
+        workload_dependencies = _mapping(
+            workload.get("depends_on"),
+            f"{workload_name}.depends_on",
+            errors,
+        )
+        bootstrap_dependency = _mapping(
+            workload_dependencies.get("opensearch-bootstrap"),
+            f"{workload_name}.depends_on.opensearch-bootstrap",
+            errors,
+        )
+        if bootstrap_dependency.get("condition") != "service_completed_successfully":
+            errors.append(
+                f"service {workload_name} must block on successful OpenSearch bootstrap"
+            )
+
+
+def _validate_postgres_migrations(
+    services: Mapping[str, object],
+    errors: list[str],
+) -> None:
+    migrations = _mapping(
+        services.get("postgres-migrations"),
+        "service postgres-migrations",
+        errors,
+    )
+    command = _string_sequence(
+        migrations.get("command"),
+        "postgres-migrations.command",
+        errors,
+    )
+    if command != ("python", "/app/scripts/dev/apply_postgres_migrations.py"):
+        errors.append("service postgres-migrations must run the packaged migration CLI")
+    env = _mapping(
+        migrations.get("environment"),
+        "postgres-migrations.environment",
+        errors,
+    )
+    if env != {
+        "HALLU_DEFENSE_POSTGRES_DSN": (
+            "postgresql://hallu:hallu@postgres:5432/hallu_defense"
+        )
+    }:
+        errors.append("service postgres-migrations must receive only the local migration DSN")
+    dependencies = _mapping(
+        migrations.get("depends_on"),
+        "postgres-migrations.depends_on",
+        errors,
+    )
+    expected_conditions = {
+        "postgres": "service_healthy",
+        "opensearch-bootstrap": "service_completed_successfully",
+    }
+    for dependency, condition in expected_conditions.items():
+        config = _mapping(
+            dependencies.get(dependency),
+            f"postgres-migrations.depends_on.{dependency}",
+            errors,
+        )
+        if config.get("condition") != condition:
+            errors.append(
+                f"service postgres-migrations must wait for {dependency} {condition}"
+            )
+    if migrations.get("restart") != "no":
+        errors.append("service postgres-migrations must be a restart:no one-shot")
+    for workload_name in ("api", "ingestion-worker"):
+        workload = _mapping(services.get(workload_name), f"service {workload_name}", errors)
+        workload_dependencies = _mapping(
+            workload.get("depends_on"),
+            f"{workload_name}.depends_on",
+            errors,
+        )
+        migration_dependency = _mapping(
+            workload_dependencies.get("postgres-migrations"),
+            f"{workload_name}.depends_on.postgres-migrations",
+            errors,
+        )
+        if migration_dependency.get("condition") != "service_completed_successfully":
+            errors.append(
+                f"service {workload_name} must block on successful PostgreSQL migrations"
+            )
+
+
 def _validate_console_dependencies(services: Mapping[str, object], errors: list[str]) -> None:
     console = _mapping(services.get("console"), "service console", errors)
-    depends_on = set(_string_sequence(console.get("depends_on"), "console.depends_on", errors))
+    depends_on = set(_dependency_names(console.get("depends_on"), "console.depends_on", errors))
     if "api" not in depends_on:
         errors.append("service console must depend on api")
     env = _mapping(console.get("environment"), "console.environment", errors)
-    if env.get("NEXT_PUBLIC_API_BASE_URL") != "http://localhost:8000":
-        errors.append("service console must target local API base URL")
+    if "NEXT_PUBLIC_API_BASE_URL" in env:
+        errors.append("service console must not bake NEXT_PUBLIC runtime configuration")
+    for key, expected in REQUIRED_CONSOLE_ENV.items():
+        actual = env.get(key)
+        if key == "HALLU_DEFENSE_CONSOLE_LOCAL_ROLES" and isinstance(actual, str):
+            if set(actual.split(",")) != REQUIRED_CONSOLE_ROLES:
+                errors.append("service console must grant the complete local Console role fixture")
+        elif actual != expected:
+            errors.append(f"service console environment {key} must equal {expected}")
 
 
 def _validate_observability_dependencies(
@@ -296,15 +518,90 @@ def _validate_observability_dependencies(
 ) -> None:
     prometheus = _mapping(services.get("prometheus"), "service prometheus", errors)
     prometheus_depends_on = set(
-        _string_sequence(prometheus.get("depends_on"), "prometheus.depends_on", errors)
+        _dependency_names(prometheus.get("depends_on"), "prometheus.depends_on", errors)
     )
     if "api" not in prometheus_depends_on:
         errors.append("service prometheus must depend on api")
 
     grafana = _mapping(services.get("grafana"), "service grafana", errors)
-    grafana_depends_on = set(_string_sequence(grafana.get("depends_on"), "grafana.depends_on", errors))
+    grafana_depends_on = set(
+        _dependency_names(grafana.get("depends_on"), "grafana.depends_on", errors)
+    )
     if "prometheus" not in grafana_depends_on:
         errors.append("service grafana must depend on prometheus")
+    _validate_hardened_local_service(
+        "grafana",
+        grafana,
+        required_tmpfs=(
+            "/tmp:rw,noexec,nosuid,nodev,size=32m",
+            "/var/log/grafana:rw,noexec,nosuid,nodev,size=32m",
+        ),
+        expected_user="472:472",
+        allowed_volumes=(
+            "./infra/grafana/provisioning:/etc/grafana/provisioning:ro",
+            "./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro",
+            "grafana-data:/var/lib/grafana",
+        ),
+        errors=errors,
+    )
+
+
+def _validate_hardened_local_service(
+    service_name: str,
+    service: Mapping[str, object],
+    *,
+    required_tmpfs: tuple[str, ...],
+    expected_user: str,
+    allowed_volumes: tuple[str, ...],
+    errors: list[str],
+) -> None:
+    if service.get("read_only") is not True:
+        errors.append(f"service {service_name} must use a read-only root filesystem")
+    if _string_sequence(service.get("cap_drop"), f"{service_name}.cap_drop", errors) != (
+        "ALL",
+    ):
+        errors.append(f"service {service_name} must drop all Linux capabilities")
+    security_options = _string_sequence(
+        service.get("security_opt"),
+        f"{service_name}.security_opt",
+        errors,
+    )
+    if security_options != ("no-new-privileges:true",):
+        errors.append(
+            f"service {service_name} must set only no-new-privileges security_opt"
+        )
+    user_override = service.get("user")
+    if user_override is not None and str(user_override) != expected_user:
+        errors.append(
+            f"service {service_name} user override must be absent or {expected_user}"
+        )
+    if service.get("entrypoint") is not None:
+        errors.append(f"service {service_name} must not override the image entrypoint")
+    if service.get("privileged") is True:
+        errors.append(f"service {service_name} must not be privileged")
+    for key in (
+        "cap_add",
+        "devices",
+        "device_cgroup_rules",
+        "volumes_from",
+        "group_add",
+        "sysctls",
+    ):
+        if service.get(key) not in (None, (), [], {}):
+            errors.append(f"service {service_name} must not set {key}")
+    for key in ("pid", "ipc", "network_mode", "uts", "cgroup"):
+        if service.get(key) not in (None, ""):
+            errors.append(f"service {service_name} must not override {key}")
+    volumes = _string_sequence(service.get("volumes"), f"{service_name}.volumes", errors)
+    if len(volumes) != len(allowed_volumes) or set(volumes) != set(allowed_volumes):
+        errors.append(f"service {service_name} volumes must equal the hardened allowlist")
+    tmpfs = _string_sequence(service.get("tmpfs"), f"{service_name}.tmpfs", errors)
+    for mount in required_tmpfs:
+        if mount not in tmpfs:
+            mount_path = mount.split(":", 1)[0]
+            errors.append(
+                f"service {service_name} must mount exact hardened tmpfs {mount_path}"
+            )
 
 
 def _validate_postgres(services: Mapping[str, object], errors: list[str]) -> None:
@@ -313,6 +610,9 @@ def _validate_postgres(services: Mapping[str, object], errors: list[str]) -> Non
     for key in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"):
         if not isinstance(env.get(key), str) or not str(env[key]).strip():
             errors.append(f"service postgres environment {key} must be non-empty")
+    healthcheck = _mapping(postgres.get("healthcheck"), "postgres.healthcheck", errors)
+    if "pg_isready -U hallu -d hallu_defense" not in str(healthcheck.get("test")):
+        errors.append("service postgres healthcheck must use pg_isready for hallu_defense")
 
 
 def _validate_opensearch(services: Mapping[str, object], errors: list[str]) -> None:
@@ -320,25 +620,79 @@ def _validate_opensearch(services: Mapping[str, object], errors: list[str]) -> N
     env = _mapping(opensearch.get("environment"), "opensearch.environment", errors)
     if env.get("discovery.type") != "single-node":
         errors.append("service opensearch must use single-node discovery locally")
-    if env.get("plugins.security.disabled") != "true":
-        errors.append("service opensearch must disable bundled security only in local compose")
-    admin_password = env.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD")
-    if not isinstance(admin_password, str) or len(admin_password) < 12:
-        errors.append("service opensearch must set a local-only initial admin password")
+    if env.get("DISABLE_SECURITY_PLUGIN") != "true":
+        errors.append("service opensearch must declare its core-only security posture")
+    if env.get("DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI") != "true":
+        errors.append("service opensearch must disable the removed performance analyzer")
+    if env.get("transport.host") != "127.0.0.1":
+        errors.append(
+            "service opensearch must bind its unauthenticated single-node transport "
+            "listener to loopback"
+        )
+    for legacy_key in ("plugins.security.disabled", "OPENSEARCH_INITIAL_ADMIN_PASSWORD"):
+        if legacy_key in env:
+            errors.append(
+                f"service opensearch must not configure removed plugin setting {legacy_key}"
+            )
     java_opts = env.get("OPENSEARCH_JAVA_OPTS")
     if not isinstance(java_opts, str) or "-Xms" not in java_opts or "-Xmx" not in java_opts:
         errors.append("service opensearch must set bounded Java heap options")
+    required_java_opts = (
+        "-Xms512m -Xmx512m -Dorg.bouncycastle.native.cpu_variant=java"
+    )
+    if java_opts != required_java_opts:
+        errors.append(
+            "service opensearch must use the exact bounded heap and force the "
+            "Bouncy Castle Java implementation so the hardened noexec /tmp remains usable"
+        )
+    healthcheck = _mapping(opensearch.get("healthcheck"), "opensearch.healthcheck", errors)
+    health_command = healthcheck.get("test")
+    if "_cluster/health" not in str(health_command):
+        errors.append("service opensearch healthcheck must query cluster health")
+    _validate_hardened_local_service(
+        "opensearch",
+        opensearch,
+        required_tmpfs=(
+            "/tmp:rw,noexec,nosuid,nodev,size=64m",
+            "/usr/share/opensearch/config:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=0700",
+            "/usr/share/opensearch/logs:rw,noexec,nosuid,nodev,size=64m",
+        ),
+        expected_user="1000:1000",
+        allowed_volumes=("opensearch-data:/usr/share/opensearch/data",),
+        errors=errors,
+    )
 
 
 def _validate_minio(services: Mapping[str, object], errors: list[str]) -> None:
     minio = _mapping(services.get("minio"), "service minio", errors)
-    command = minio.get("command")
-    if not isinstance(command, str) or "--console-address \":9001\"" not in command:
-        errors.append("service minio must expose the console on port 9001")
+    command = _string_sequence(minio.get("command"), "minio.command", errors)
+    expected_command = (
+        "mini",
+        "-dir=/data",
+        "-s3.port=9000",
+        "-bucket=hallu-backups,hallu-primary,hallu-backup-replica",
+    )
+    if command != expected_command:
+        errors.append("service minio must run SeaweedFS mini with the approved S3 contract")
     env = _mapping(minio.get("environment"), "minio.environment", errors)
-    for key in ("MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD"):
-        if not isinstance(env.get(key), str) or not str(env[key]).strip():
-            errors.append(f"service minio environment {key} must be non-empty")
+    expected_env = {
+        "AWS_ACCESS_KEY_ID": "${HALLU_DEFENSE_MINIO_ACCESS_KEY:-minioadmin}",
+        "AWS_SECRET_ACCESS_KEY": "${HALLU_DEFENSE_MINIO_SECRET_KEY:-minioadmin}",
+    }
+    if env != expected_env:
+        errors.append("service minio must map the stable credential contract to SeaweedFS")
+    if "MINIO_ROOT_USER" in env or "MINIO_ROOT_PASSWORD" in env:
+        errors.append("service minio must not pass ignored legacy server credentials")
+    _validate_hardened_local_service(
+        "minio",
+        minio,
+        required_tmpfs=(
+            "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
+        ),
+        expected_user="10001:10001",
+        allowed_volumes=("seaweedfs-data:/data",),
+        errors=errors,
+    )
 
 
 def _validate_keycloak(compose: Mapping[str, object], errors: list[str]) -> None:
@@ -349,8 +703,46 @@ def _validate_keycloak(compose: Mapping[str, object], errors: list[str]) -> None
         tokens: tuple[str, ...] = tuple(command.split())
     else:
         tokens = _string_sequence(command, "keycloak.command", errors)
-    if "--import-realm" not in tokens:
-        errors.append("service keycloak command must include --import-realm")
+    for token in (
+        "start",
+        "--optimized",
+        "--import-realm",
+        "--http-enabled=true",
+        "--hostname-strict=false",
+    ):
+        if token not in tokens:
+            errors.append(f"service keycloak command must include {token}")
+    if "start-dev" in tokens:
+        errors.append("service keycloak must not use the H2-backed development mode")
+    env = _mapping(keycloak.get("environment"), "keycloak.environment", errors)
+    required_env = {
+        "KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
+        "KC_BOOTSTRAP_ADMIN_PASSWORD": "admin",
+        "KC_DB": "postgres",
+        "KC_DB_URL": "jdbc:postgresql://postgres:5432/hallu_defense",
+        "KC_DB_USERNAME": "hallu",
+        "KC_DB_PASSWORD": "hallu",
+    }
+    for key, expected in required_env.items():
+        if env.get(key) != expected:
+            errors.append(f"service keycloak environment {key} must equal {expected}")
+    dependencies = _mapping(keycloak.get("depends_on"), "keycloak.depends_on", errors)
+    postgres = _mapping(dependencies.get("postgres"), "keycloak.depends_on.postgres", errors)
+    if postgres.get("condition") != "service_healthy":
+        errors.append("service keycloak must wait for healthy PostgreSQL")
+    _validate_hardened_local_service(
+        "keycloak",
+        keycloak,
+        required_tmpfs=(
+            "/tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700",
+            "/opt/keycloak/data:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700",
+        ),
+        expected_user="10001:10001",
+        allowed_volumes=(
+            "./infra/security/keycloak:/opt/keycloak/data/import:ro",
+        ),
+        errors=errors,
+    )
     _validate_keycloak_realm(errors)
 
 
@@ -428,6 +820,123 @@ def _validate_keycloak_realm_client(realm: Mapping[str, object], errors: list[st
         errors.append(f"Keycloak client {KEYCLOAK_API_CLIENT_ID} must enable service accounts")
     if api_client.get("publicClient") is not False:
         errors.append(f"Keycloak client {KEYCLOAK_API_CLIENT_ID} must be a confidential client")
+
+    console_client = next(
+        (
+            client
+            for client in client_list
+            if isinstance(client, Mapping)
+            and client.get("clientId") == KEYCLOAK_CONSOLE_CLIENT_ID
+        ),
+        None,
+    )
+    if not isinstance(console_client, Mapping):
+        errors.append(f"Keycloak realm export missing client {KEYCLOAK_CONSOLE_CLIENT_ID}")
+        return
+    expected_flags = {
+        "publicClient": True,
+        "standardFlowEnabled": True,
+        "implicitFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": False,
+    }
+    for key, expected in expected_flags.items():
+        if console_client.get(key) is not expected:
+            errors.append(
+                f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} {key} must be {expected}"
+            )
+    if "secret" in console_client:
+        errors.append(f"Keycloak public client {KEYCLOAK_CONSOLE_CLIENT_ID} must not have a secret")
+    attributes = console_client.get("attributes")
+    if not isinstance(attributes, Mapping) or attributes.get("pkce.code.challenge.method") != "S256":
+        errors.append(f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must require PKCE S256")
+    expected_redirects = {
+        f"http://localhost:{port}/auth/callback"
+        for port in (3000, 3100)
+    } | {
+        f"http://127.0.0.1:{port}/auth/callback"
+        for port in (3000, 3100)
+    }
+    redirects = console_client.get("redirectUris")
+    redirect_values = (
+        {redirect for redirect in redirects if isinstance(redirect, str)}
+        if isinstance(redirects, Sequence) and not isinstance(redirects, str)
+        else set()
+    )
+    if (
+        not isinstance(redirects, Sequence)
+        or isinstance(redirects, str)
+        or len(redirect_values) != len(redirects)
+        or redirect_values != expected_redirects
+    ):
+        errors.append(
+            f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must use only exact local callback URIs"
+        )
+    mappers = console_client.get("protocolMappers")
+    mapper_list = (
+        mappers
+        if isinstance(mappers, Sequence) and not isinstance(mappers, str)
+        else ()
+    )
+    mapper_names = {
+        name
+        for mapper in mapper_list
+        if isinstance(mapper, Mapping)
+        and isinstance((name := mapper.get("name")), str)
+    }
+    if not {"audience-hallu-defense-api", "tenant-id", "realm-roles"}.issubset(
+        mapper_names
+    ):
+        errors.append(
+            f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must emit API audience, tenant, and roles"
+        )
+
+    users = realm.get("users")
+    user_list = users if isinstance(users, Sequence) and not isinstance(users, str) else ()
+    console_user = next(
+        (
+            user
+            for user in user_list
+            if isinstance(user, Mapping) and user.get("username") == KEYCLOAK_CONSOLE_USER
+        ),
+        None,
+    )
+    if not isinstance(console_user, Mapping) or console_user.get("enabled") is not True:
+        errors.append(f"Keycloak realm must define enabled test user {KEYCLOAK_CONSOLE_USER}")
+        return
+    user_roles = console_user.get("realmRoles")
+    user_role_values = (
+        {role for role in user_roles if isinstance(role, str)}
+        if isinstance(user_roles, Sequence) and not isinstance(user_roles, str)
+        else set()
+    )
+    if (
+        not isinstance(user_roles, Sequence)
+        or isinstance(user_roles, str)
+        or len(user_role_values) != len(user_roles)
+        or not REQUIRED_CONSOLE_ROLES.issubset(user_role_values)
+    ):
+        errors.append(f"Keycloak test user {KEYCLOAK_CONSOLE_USER} is missing Console roles")
+    user_attributes = console_user.get("attributes")
+    if not isinstance(user_attributes, Mapping) or user_attributes.get("tenant_id") != ["tenant-a"]:
+        errors.append(f"Keycloak test user {KEYCLOAK_CONSOLE_USER} must be bound to tenant-a")
+    credentials = console_user.get("credentials")
+    credential_list = (
+        credentials
+        if isinstance(credentials, Sequence) and not isinstance(credentials, str)
+        else ()
+    )
+    if not any(
+        isinstance(credential, Mapping)
+        and credential.get("type") == "password"
+        and isinstance(credential.get("value"), str)
+        and bool(credential.get("value"))
+        and credential.get("temporary") is False
+        for credential in credential_list
+    ):
+        errors.append(
+            f"Keycloak test user {KEYCLOAK_CONSOLE_USER} must have a non-temporary local password"
+        )
 
 
 def _validate_prometheus(prometheus: Mapping[str, object], errors: list[str]) -> None:
@@ -555,6 +1064,15 @@ def _string_sequence(value: object, path: str, errors: list[str]) -> tuple[str, 
         else:
             errors.append(f"{path} must contain only strings")
     return tuple(strings)
+
+
+def _dependency_names(value: object, path: str, errors: list[str]) -> tuple[str, ...]:
+    if isinstance(value, Mapping):
+        names = tuple(name for name in value if isinstance(name, str))
+        if len(names) != len(value):
+            errors.append(f"{path} keys must be strings")
+        return names
+    return _string_sequence(value, path, errors)
 
 
 def main() -> None:

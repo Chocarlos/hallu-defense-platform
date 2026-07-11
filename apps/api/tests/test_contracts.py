@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from hallu_defense.api import routes
 from hallu_defense.config import Settings
 from hallu_defense.main import app
 from hallu_defense.services.sandbox import SandboxRunner
+from hallu_defense.services.sandbox_exec import ExecutionResult
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = ROOT / "packages" / "contracts" / "schemas"
@@ -53,6 +55,9 @@ REQUIRED_SCHEMA_NAMES = {
     "verdict",
     "verification-replay-request",
     "verification-replay-response",
+    "verification-run-list-request",
+    "verification-run-list-response",
+    "verification-run-summary",
     "verification-run",
     "verification-run-request",
     "tool-call-envelope",
@@ -78,6 +83,22 @@ REQUIRED_SCHEMA_NAMES = {
     "audit-export-response",
     "document-input",
 }
+
+
+class _SuccessfulTestBackend:
+    def execute(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        source_cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+    ) -> ExecutionResult:
+        del argv, env, timeout, output_caps
+        assert cwd.resolve() != source_cwd.resolve()
+        return ExecutionResult(returncode=0, stdout="test backend\n", stderr="")
 
 CLAIM_PAYLOAD = {
     "claim_id": "clm_contract",
@@ -198,6 +219,7 @@ REQUIRED_ENDPOINT_PAYLOADS = {
         "payload": {"contract": True},
     },
     "/evals/reports/list": {"suite": "scenarios", "limit": 5},
+    "/verification/runs/list": {"limit": 5},
     "/verification/replay": {"trace_id": "tr_api_discipline_replay_missing"},
 }
 
@@ -263,6 +285,7 @@ def test_openapi_contains_required_endpoints() -> None:
         "/audit/export",
         "/evals/reports/publish",
         "/evals/reports/list",
+        "/verification/runs/list",
         "/approvals/list",
         "/approvals/decide",
         "/verification/replay",
@@ -299,6 +322,7 @@ def test_verification_run_contract_has_trace_claims_and_verdicts() -> None:
                 }
             ],
         },
+        headers={"x-tenant-id": "contract-test"},
     )
     payload = response.json()
     assert response.status_code == 200
@@ -349,7 +373,8 @@ def test_required_endpoints_emit_trace_header_and_audit_events(
                 allowed_workspace=sandbox_workspace,
                 max_command_seconds=5,
                 max_output_chars=1000,
-            )
+            ),
+            execution_backend=_SuccessfulTestBackend(),
         ),
     )
     client = TestClient(app)

@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hallu-defense.local/schemas/verification-run.schema.json",
   "title": "VerificationRun",
+  "x-contract-version": "1.0",
   "type": "object",
   "required": [
     "trace_id",
@@ -41,4 +42,3 @@
   },
   "additionalProperties": false
 }
-

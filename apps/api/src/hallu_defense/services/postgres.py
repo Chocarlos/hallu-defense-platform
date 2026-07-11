@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from importlib import import_module
 from types import TracebackType
 from typing import TYPE_CHECKING, Protocol, Self, cast
@@ -38,6 +39,9 @@ class SqlConnectionProvider(Protocol):
         statement: str,
         parameters: Sequence[object] = (),
     ) -> Sequence[Mapping[str, object]]:
+        ...
+
+    def transaction(self) -> AbstractContextManager[SqlConnectionProvider]:
         ...
 
 
@@ -80,6 +84,9 @@ class PostgresConnectionContext(Protocol):
 
 class PostgresConnectionPool(Protocol):
     def connection(self) -> PostgresConnectionContext:
+        ...
+
+    def close(self) -> None:
         ...
 
 
@@ -169,6 +176,22 @@ class PooledPostgresProvider:
         except Exception as exc:
             raise PostgresProviderError("PostgreSQL execute_returning failed.") from exc
 
+    @contextmanager
+    def transaction(self) -> Iterator[SqlConnectionProvider]:
+        pool = self._ensure_pool()
+        body_error: BaseException | None = None
+        try:
+            with pool.connection() as connection:
+                try:
+                    yield _TransactionSqlProvider(connection)
+                except BaseException as exc:
+                    body_error = exc
+                    raise
+        except Exception as exc:
+            if body_error is exc:
+                raise
+            raise PostgresProviderError("PostgreSQL transaction failed.") from exc
+
     def _ensure_pool(self) -> PostgresConnectionPool:
         pool = self._pool
         if pool is not None:
@@ -189,6 +212,18 @@ class PooledPostgresProvider:
                         "Failed to open the PostgreSQL connection pool."
                     ) from exc
             return self._pool
+
+    def close(self) -> None:
+        """Close the lazily-created pool so short-lived tools leave no sessions."""
+        with self._pool_lock:
+            pool = self._pool
+            self._pool = None
+        if pool is None:
+            return
+        try:
+            pool.close()
+        except Exception as exc:
+            raise PostgresProviderError("Failed to close the PostgreSQL connection pool.") from exc
 
 
 class RecordingSqlProvider:
@@ -228,6 +263,54 @@ class RecordingSqlProvider:
     ) -> Sequence[Mapping[str, object]]:
         self.calls.append(("execute_returning", statement, tuple(parameters)))
         return list(self._returning_rows)
+
+    @contextmanager
+    def transaction(self) -> Iterator[SqlConnectionProvider]:
+        yield self
+
+
+class _TransactionSqlProvider:
+    """SQL provider bound to one pool connection and its commit/rollback scope."""
+
+    def __init__(self, connection: PostgresConnection) -> None:
+        self._connection = connection
+
+    def execute(self, statement: str, parameters: Sequence[object] = ()) -> None:
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(statement, parameters)
+        except Exception as exc:
+            raise PostgresProviderError("PostgreSQL transaction execute failed.") from exc
+
+    def fetch_all(
+        self,
+        statement: str,
+        parameters: Sequence[object] = (),
+    ) -> Sequence[Mapping[str, object]]:
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(statement, parameters)
+                return list(cursor.fetchall())
+        except Exception as exc:
+            raise PostgresProviderError("PostgreSQL transaction fetch_all failed.") from exc
+
+    def execute_returning(
+        self,
+        statement: str,
+        parameters: Sequence[object] = (),
+    ) -> Sequence[Mapping[str, object]]:
+        try:
+            with self._connection.cursor() as cursor:
+                cursor.execute(statement, parameters)
+                return list(cursor.fetchall())
+        except Exception as exc:
+            raise PostgresProviderError(
+                "PostgreSQL transaction execute_returning failed."
+            ) from exc
+
+    @contextmanager
+    def transaction(self) -> Iterator[SqlConnectionProvider]:
+        yield self
 
 
 def build_postgres_provider(settings: Settings) -> PooledPostgresProvider:

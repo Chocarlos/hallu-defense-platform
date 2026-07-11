@@ -24,6 +24,14 @@
     "sanitized_output": {
       "type": ["object", "null"],
       "additionalProperties": true
+    },
+    "trace_id": { "type": ["string", "null"], "minLength": 1 },
+    "policy_version": { "type": ["string", "null"], "minLength": 1 },
+    "matched_rules": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 64,
+      "uniqueItems": true
     }
   },
   "additionalProperties": false

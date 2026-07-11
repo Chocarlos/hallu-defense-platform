@@ -1,28 +1,146 @@
 global:
   imagePullPolicy: IfNotPresent
+  # Bound writable scratch space so a compromised workload cannot exhaust the
+  # node's ephemeral storage through /tmp.
+  tmpSizeLimit: 64Mi
 
 nameOverride: ""
 fullnameOverride: ""
 
 oidc:
-  issuer: https://auth.example.invalid/realms/hallu-defense
-  audience: hallu-defense-api
+  issuer: ""
+  audience: ""
   jwksPath: /run/hallu-defense/keycloak-jwks.json
 
 cors:
-  allowOrigins:
-    - https://console.example.invalid
+  allowOrigins: []
+
+outboundHttps:
+  allowedOrigins: []
+
+ragIndex:
+  backend: hybrid
+  timeoutSeconds: 5
+
+opensearch:
+  endpoint: ""
+  indexName: hallu_evidence
+  # Logical Vault name containing the complete Authorization header. The kind
+  # fixture is intentionally unauthenticated and must leave this empty.
+  authorizationSecretName: ""
+  caPath: /run/hallu-defense/opensearch-ca.pem
+  # Optional for endpoints whose issuing CA is not in the image trust store.
+  caSecretName: ""
+  caSecretKey: ca.crt
+
+postgres:
+  caPath: /run/hallu-defense/postgres-ca.pem
+  # Production must supply the CA that signs the managed PostgreSQL endpoint.
+  caSecretName: ""
+  caSecretKey: ca.crt
+  # Enabled only by values-kind.yaml for the exact disposable in-cluster host.
+  kindInsecureTlsEnabled: false
 
 vault:
-  address: http://vault:8200
+  address: ""
   mount: secret
-  tokenEnv: HALLU_DEFENSE_RUNTIME_VAULT_TOKEN
+  caPath: /run/hallu-defense/vault-ca.pem
+  caSecretName: ""
+  caSecretKey: ca.crt
+
+provider:
+  backend: ""
+  model: ""
+  openaiCompatibleBaseUrl: ""
+  apiKeySecretName: ""
+
+otel:
+  enabled: true
+  exporter: otlp
+  endpoint: ""
+
+rateLimit:
+  backend: redis
+  redis:
+    urlSecretName: quotas/tool-validation/redis-url
+    timeoutSeconds: 1
+    caPath: /run/hallu-defense/redis-ca.pem
+    # Production supplies a managed Redis CA Secret with caSecretKey. Kind
+    # creates a short-lived TLS Secret when its Redis dependency is enabled.
+    caSecretName: ""
+    caSecretKey: ca.crt
+
+# Standard NetworkPolicy cannot express FQDN peers. Production operators must
+# provide stable destination CIDRs (preferably an egress gateway) and ports.
+# The Kubernetes API peer is API-only and environment/CNI-specific.
+networkPolicy:
+  kubernetesApi: []
+  ingress:
+    api:
+      callers: []
+      metricsScrapers: []
+    worker:
+      metricsScrapers: []
+    console:
+      callers: []
+  api:
+    external: []
+  console:
+    # Console performs server-side OIDC discovery, token exchange, and JWKS
+    # retrieval. Production supplies only exact IdP/egress-gateway host CIDRs.
+    external: []
+  worker:
+    external: []
+  migrations:
+    external: []
+
+# Kubernetes is the production sandbox boundary. Production and staging must
+# supply an immutable image reference and an existing RWX claim containing only
+# repositories approved for checks. The chart creates a claim and fixture only
+# in the isolated kind verification profile.
+sandbox:
+  backend: kubernetes
+  # Precreate a namespace dedicated to sandbox RBAC, PVCs, policies, and Jobs.
+  # It must differ from the Helm release/application namespace.
+  namespace: ""
+  # One Helm release/PVC is bound to one tenant. Deploy separate namespaces and
+  # claims for additional tenants.
+  tenantId: ""
+  image:
+    # Production/staging supply repository@sha256:<64 hex>. A tag is accepted
+    # only by values-kind.yaml for an image built and loaded into that cluster.
+    reference: ""
+    pullPolicy: IfNotPresent
+  commandTimeoutSeconds: 30
+  pollIntervalSeconds: 0.25
+  jobTtlSeconds: 60
+  apiRequestTimeoutSeconds: 5
+  # Bounded allowance for scheduling and the verified PVC-to-emptyDir copy;
+  # each command still has its own commandTimeoutSeconds budget.
+  setupGraceSeconds: 15
+  resources:
+    cpu: "1"
+    memoryMb: 512
+    pidsLimit: 256
+  workspace:
+    mountPath: /workspace
+    # Read-only view in the application namespace. In production this and
+    # existingClaim must be operator-provisioned views of the same RWX backend.
+    apiExistingClaim: ""
+    # Read-write claim in sandbox.namespace, consumed only by fixture/sandbox Jobs.
+    existingClaim: ""
+    createClaim: false
+    storage: 1Gi
+    accessModes:
+      - ReadWriteMany
+  fixture:
+    enabled: false
+    repositoryName: smoke-repo
 
 api:
   replicas: 1
   image:
-    repository: hallu-defense-api
-    tag: ci
+    reference: ""
   service:
     port: 8000
   podAnnotations:
@@ -40,9 +158,15 @@ api:
 console:
   replicas: 1
   image:
-    repository: hallu-defense-console
-    tag: ci
-  apiBaseUrl: https://api.example.invalid
+    reference: ""
+  # Runtime-only server configuration. The chart deliberately exposes no
+  # NEXT_PUBLIC, unsigned-local, insecure-HTTP, or local-identity switches.
+  publicOrigin: ""
+  apiOrigin: ""
+  oidc:
+    issuer: ""
+    clientId: ""
+    apiAudience: ""
   service:
     port: 3000
   resources:
@@ -57,12 +181,20 @@ worker:
   enabled: true
   replicas: 1
   image:
-    repository: hallu-defense-api
-    tag: ci
+    reference: ""
   command:
     - python
     - -m
     - hallu_defense.worker
+    - --metrics-host
+    - 0.0.0.0
+    - --metrics-port
+    - "9090"
+  metricsPort: 9090
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "9090"
   resources:
     requests:
       cpu: 100m
@@ -73,18 +205,31 @@ worker:
 
 migrations:
   enabled: true
+  expectedCount: 14
+  waitTimeoutSeconds: 600
   image:
-    repository: hallu-defense-api
-    tag: ci
+    reference: ""
   command:
     - python
     - scripts/dev/apply_postgres_migrations.py
 
 kindDependencies:
-  enabled: true
+  enabled: false
+  vault:
+    enabled: true
+    image: hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
   pgvector:
     enabled: true
-    image: pgvector/pgvector:pg16
+    # Kind loads this locally built derivative. Production leaves all bundled
+    # dependencies disabled and supplies managed PostgreSQL/pgvector.
+    image: hallu-defense-pgvector:ci
     storage: 1Gi
     resources:
       requests:
@@ -95,7 +240,9 @@ kindDependencies:
         memory: 512Mi
   opensearch:
     enabled: true
-    image: opensearchproject/opensearch:2.15.0
+    # Kind loads this locally built core-only derivative. Production leaves all
+    # bundled dependencies disabled and supplies managed OpenSearch.
+    image: hallu-defense-opensearch:ci
     storage: 2Gi
     resources:
       requests:
@@ -104,13 +251,42 @@ kindDependencies:
       limits:
         cpu: "1"
         memory: 2Gi
+  redis:
+    enabled: true
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    resources:
+      server:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
+      guard:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
 secrets:
-  keycloakJwks: ""
-  vaultToken: ""
-  postgresDsn: ""
-  postgresUser: ""
-  postgresPassword: ""
-  postgresDatabase: ""
-  metricsBearerToken: ""
-  opensearchInitialAdminPassword: ""
+  # Helm never accepts or renders secret values. Operators precreate these
+  # Secrets; only names and non-sensitive key selectors enter release history.
+  runtime:
+    name: ""
+    keycloakJwksKey: keycloak-jwks.json
+    vaultTokenKey: vault-token
+    postgresDsnKey: postgres-dsn
+  bootstrap:
+    name: ""
+    vaultTokenKey: vault-token
+  migrations:
+    name: ""
+    postgresDsnKey: migrations-postgres-dsn
+  kindPostgres:
+    name: ""
+  kindVault:
+    name: ""
+  kindRedisTls:
+    name: ""

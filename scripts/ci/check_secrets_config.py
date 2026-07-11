@@ -14,8 +14,11 @@ SECURITY_PATH = ROOT / "SECURITY.md"
 DOCKER_COMPOSE_PATH = ROOT / "docker-compose.yml"
 BOOTSTRAP_LOCAL_VAULT_PATH = ROOT / "scripts" / "dev" / "bootstrap_local_vault.py"
 LIVE_VAULT_SECRETS_SMOKE_PATH = ROOT / "scripts" / "dev" / "live_vault_secrets_smoke.py"
+LIVE_PROVIDER_VAULT_SMOKE_PATH = ROOT / "scripts" / "dev" / "live_provider_vault_smoke.py"
 MAKEFILE_PATH = ROOT / "Makefile"
 LIVE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "live.yml"
+PROVIDERS_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "providers.py"
+SECRETS_SERVICE_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "secrets.py"
 
 REQUIRED_ENV_EXAMPLE_KEYS = {
     "HALLU_DEFENSE_SECRETS_BACKEND",
@@ -30,11 +33,23 @@ REQUIRED_ENV_EXAMPLE_KEYS = {
     "HALLU_DEFENSE_LIVE_VAULT_ADDR",
     "HALLU_DEFENSE_LIVE_VAULT_MOUNT",
     "HALLU_DEFENSE_LIVE_VAULT_TOKEN_ENV",
+    "HALLU_DEFENSE_LIVE_PROVIDER_VAULT_SMOKE_ENABLED",
+    "HALLU_DEFENSE_LIVE_PROVIDER_VAULT_ADDR",
+    "HALLU_DEFENSE_LIVE_PROVIDER_VAULT_MOUNT",
+    "HALLU_DEFENSE_LIVE_PROVIDER_VAULT_TOKEN_ENV",
+    "HALLU_DEFENSE_LIVE_PROVIDER_VAULT_TIMEOUT_SECONDS",
+    "HALLU_DEFENSE_LIVE_PROVIDER_OPENAI_BASE_URL",
+    "HALLU_DEFENSE_LIVE_PROVIDER_OLLAMA_BASE_URL",
+    "HALLU_DEFENSE_LIVE_PROVIDER_MODEL",
+    "HALLU_DEFENSE_LIVE_PROVIDER_TIMEOUT_SECONDS",
+    "HALLU_DEFENSE_LIVE_PROVIDER_SECRET_NAME",
+    "HALLU_DEFENSE_LIVE_PROVIDER_ALLOW_NONLOCAL",
 }
 REQUIRED_LOCAL_VAULT_SECRET_NAMES = {
     "observability/metrics-scrape-token",
     "auth/trusted-header-signing-key",
     "backup/encryption-key",
+    "providers/openai/api-key",
 }
 
 
@@ -104,6 +119,9 @@ def validate_supporting_files(
     compose_text: str = "",
     bootstrap_text: str = "",
     live_smoke_text: str = "",
+    provider_smoke_text: str = "",
+    providers_text: str = "",
+    secrets_service_text: str = "",
     makefile_text: str = "",
     live_workflow_text: str = "",
 ) -> None:
@@ -126,6 +144,8 @@ def validate_supporting_files(
         live_smoke_text=live_smoke_text,
         errors=errors,
     )
+    _validate_provider_vault_smoke(provider_smoke_text, docs_text, errors)
+    _validate_bounded_http_responses(providers_text, secrets_service_text, errors)
     if (
         "vault-bootstrap:" not in makefile_text
         or "scripts/dev/bootstrap_local_vault.py" not in makefile_text
@@ -136,6 +156,17 @@ def validate_supporting_files(
         or "scripts/dev/live_vault_secrets_smoke.py" not in makefile_text
     ):
         errors.append("Makefile must expose vault-live-smoke")
+    if (
+        "provider-vault-live-smoke:" not in makefile_text
+        or "scripts/dev/live_provider_vault_smoke.py" not in makefile_text
+    ):
+        errors.append("Makefile must expose provider-vault-live-smoke")
+    phony_line = next(
+        (line for line in makefile_text.splitlines() if line.startswith(".PHONY:")),
+        "",
+    )
+    if "provider-vault-live-smoke" not in phony_line.split():
+        errors.append("Makefile .PHONY must include provider-vault-live-smoke")
     if "vault-live:" not in live_workflow_text or "live_vault_secrets_smoke.py" not in live_workflow_text:
         errors.append("live workflow must include the Vault live smoke job")
 
@@ -164,11 +195,14 @@ def _validate_local_vault_compose(compose_text: str, errors: list[str]) -> None:
         return
     services = _mapping(loaded.get("services"), "docker-compose.yml services", errors)
     vault = _mapping(services.get("vault"), "service vault", errors)
-    if vault.get("image") != "hashicorp/vault:1.17":
-        errors.append("service vault image must be hashicorp/vault:1.17")
+    if vault.get("image") != (
+        "hashicorp/vault:2.0.3@sha256:"
+        "a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54"
+    ):
+        errors.append("service vault image must use the approved immutable Vault 2.0.3 pin")
     ports = vault.get("ports")
-    if not isinstance(ports, list) or "8200:8200" not in ports:
-        errors.append("service vault must expose 8200:8200")
+    if not isinstance(ports, list) or "127.0.0.1:8200:8200" not in ports:
+        errors.append("service vault must expose 8200 only on loopback")
     command = vault.get("command")
     command_tokens: tuple[str, ...]
     if isinstance(command, str):
@@ -204,6 +238,65 @@ def _validate_local_vault_scripts(
         errors.append("live_vault_secrets_smoke.py must exercise services/secrets.py")
 
 
+def _validate_provider_vault_smoke(
+    provider_smoke_text: str,
+    docs_text: str,
+    errors: list[str],
+) -> None:
+    if not provider_smoke_text.strip():
+        errors.append("scripts/dev/live_provider_vault_smoke.py must exist")
+        return
+    for marker in (
+        "HALLU_DEFENSE_LIVE_PROVIDER_VAULT_SMOKE_ENABLED",
+        "providers/openai/api-key",
+        "create_secret_manager",
+        "OpenAICompatibleProvider",
+        "OllamaProvider",
+        "[redacted]",
+        "HALLU_DEFENSE_LIVE_PROVIDER_ALLOW_NONLOCAL",
+    ):
+        if marker not in provider_smoke_text:
+            errors.append(f"live_provider_vault_smoke.py missing `{marker}`")
+    for marker in (
+        "Vault -> OpenAI-compatible -> Ollama",
+        "provider-vault-live-smoke",
+        "1 MiB",
+        "redacted",
+    ):
+        if marker not in docs_text:
+            errors.append(f"docs/security/secrets.md missing `{marker}`")
+
+
+def _validate_bounded_http_responses(
+    providers_text: str,
+    secrets_service_text: str,
+    errors: list[str],
+) -> None:
+    for label, text, markers in (
+        (
+            "providers.py",
+            providers_text,
+            (
+                "MAX_PROVIDER_HTTP_RESPONSE_BYTES = 1024 * 1024",
+                "response.read(MAX_PROVIDER_HTTP_RESPONSE_BYTES + 1)",
+                "ProviderResponseTooLargeError",
+            ),
+        ),
+        (
+            "secrets.py",
+            secrets_service_text,
+            (
+                "MAX_VAULT_HTTP_RESPONSE_BYTES = 1024 * 1024",
+                "response.read(MAX_VAULT_HTTP_RESPONSE_BYTES + 1)",
+                "SecretResponseTooLargeError",
+            ),
+        ),
+    ):
+        for marker in markers:
+            if marker not in text:
+                errors.append(f"{label} missing bounded HTTP response marker `{marker}`")
+
+
 def main() -> None:
     policy = load_policy()
     validate_policy(policy)
@@ -214,6 +307,9 @@ def main() -> None:
         compose_text=DOCKER_COMPOSE_PATH.read_text(encoding="utf-8"),
         bootstrap_text=BOOTSTRAP_LOCAL_VAULT_PATH.read_text(encoding="utf-8"),
         live_smoke_text=LIVE_VAULT_SECRETS_SMOKE_PATH.read_text(encoding="utf-8"),
+        provider_smoke_text=LIVE_PROVIDER_VAULT_SMOKE_PATH.read_text(encoding="utf-8"),
+        providers_text=PROVIDERS_PATH.read_text(encoding="utf-8"),
+        secrets_service_text=SECRETS_SERVICE_PATH.read_text(encoding="utf-8"),
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
     )

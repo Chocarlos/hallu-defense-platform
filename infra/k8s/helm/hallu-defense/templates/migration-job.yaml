@@ -2,12 +2,14 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "hallu-defense.fullname" . }}-migrations
+  name: {{ include "hallu-defense.fullname" . }}-migrations-{{ .Release.Revision }}
   labels:
     {{- include "hallu-defense.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrations
 spec:
   backoffLimit: 2
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:
@@ -15,11 +17,14 @@ spec:
         app.kubernetes.io/component: migrations
     spec:
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- include "hallu-defense.postgresWaitInitContainer" . | nindent 8 }}
       containers:
         - name: migrations
-          image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
+          image: {{ include "hallu-defense.migrationsImage" . | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           # Defaults to scripts/dev/apply_postgres_migrations.py.
           command:
@@ -27,12 +32,27 @@ spec:
           securityContext:
             {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
           env:
-            - name: HALLU_DEFENSE_POSTGRES_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "hallu-defense.fullname" . }}-runtime
-                  key: postgres-dsn
+            - name: HALLU_DEFENSE_ENV
+              value: production
+            - name: HALLU_DEFENSE_POSTGRES_DSN_FILE
+              value: /run/secrets/hallu_defense_postgres_dsn
+            {{- if .Values.kindDependencies.enabled }}
+            - name: HALLU_DEFENSE_POSTGRES_KIND_INSECURE_TLS_ENABLED
+              value: "true"
+            {{- else }}
+            - name: HALLU_DEFENSE_POSTGRES_CA_CERT_PATH
+              value: {{ .Values.postgres.caPath | quote }}
+            {{- end }}
           volumeMounts:
+            - name: migration-secrets
+              mountPath: /run/secrets
+              readOnly: true
+            {{- if not .Values.kindDependencies.enabled }}
+            - name: postgres-ca
+              mountPath: {{ .Values.postgres.caPath | quote }}
+              subPath: {{ .Values.postgres.caSecretKey | quote }}
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
           resources:
@@ -43,6 +63,23 @@ spec:
               cpu: 500m
               memory: 512Mi
       volumes:
+        - name: migration-secrets
+          secret:
+            secretName: {{ include "hallu-defense.migrationsSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.migrations.postgresDsnKey | quote }}
+                path: hallu_defense_postgres_dsn
+        {{- if not .Values.kindDependencies.enabled }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ include "hallu-defense.postgresCaSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.postgres.caSecretKey | quote }}
+                path: {{ .Values.postgres.caSecretKey | quote }}
+        {{- end }}
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
 {{- end }}

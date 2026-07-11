@@ -29,6 +29,18 @@
       {
         "name": "eval_publisher",
         "description": "Publish evaluation scenario results."
+      },
+      {
+        "name": "tool_operator",
+        "description": "Validate and execute policy-approved tool calls."
+      },
+      {
+        "name": "sandbox_runner",
+        "description": "Run approved repository checks in the sandbox."
+      },
+      {
+        "name": "policy_evaluator",
+        "description": "Evaluate authorization policy decisions from the Console."
       }
     ]
   },
@@ -91,6 +103,135 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "hallu-defense-limited",
+      "name": "Hallu Defense Limited Smoke Client",
+      "description": "Development-only least-privilege client for negative RBAC smoke checks.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "limited-only",
+      "attributes": {
+        "access.token.lifespan": "300"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-hallu-defense-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "hallu-defense-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "tenant_id",
+            "claim.value": "tenant-a",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "hallu-defense-console",
+      "name": "Hallu Defense Console",
+      "description": "Local public OIDC client using authorization code and PKCE S256.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/auth/callback",
+        "http://127.0.0.1:3000/auth/callback",
+        "http://localhost:3100/auth/callback",
+        "http://127.0.0.1:3100/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3100",
+        "http://127.0.0.1:3100"
+      ],
+      "attributes": {
+        "access.token.lifespan": "300",
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-hallu-defense-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "hallu-defense-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant_id",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -104,7 +245,44 @@
         "approval_reviewer",
         "rag_writer",
         "metrics_reader",
-        "eval_publisher"
+        "eval_publisher",
+        "tool_operator",
+        "sandbox_runner"
+      ]
+    },
+    {
+      "username": "service-account-hallu-defense-limited",
+      "enabled": true,
+      "serviceAccountClientId": "hallu-defense-limited",
+      "realmRoles": [
+        "verifier"
+      ]
+    },
+    {
+      "username": "console-reviewer",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "console-reviewer@example.invalid",
+      "firstName": "Console",
+      "lastName": "Reviewer",
+      "attributes": {
+        "tenant_id": [
+          "tenant-a"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "console-reviewer-local-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "verifier",
+        "approval_reviewer",
+        "policy_evaluator",
+        "sandbox_runner",
+        "tool_operator"
       ]
     }
   ]

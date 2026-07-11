@@ -2,9 +2,9 @@
 name = "hallu-defense-api"
 version = "0.1.0"
 description = "Claim-centric and action-centric hallucination defense API"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
-  "cryptography>=43.0.0,<47.0.0",
+  "cryptography>=48.0.1,<49.0.0",
   "fastapi>=0.115.0,<1.0.0",
   "opentelemetry-api>=1.27.0,<2.0.0",
   "opentelemetry-exporter-otlp-proto-http>=1.27.0,<2.0.0",
@@ -12,6 +12,8 @@ dependencies = [
   "pydantic>=2.8.0,<3.0.0",
   "psycopg[binary]>=3.2.0,<4.0.0",
   "psycopg-pool>=3.2,<4",
+  "redis>=8.0.1,<9.0.0",
+  "requests>=2.32.0,<3.0.0",
   "uvicorn[standard]>=0.30.0,<1.0.0"
 ]
 
@@ -27,7 +29,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=70.0.0"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

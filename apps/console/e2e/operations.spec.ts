@@ -18,7 +18,7 @@ test.describe("operations console flow", () => {
       JSON.stringify(
         {
           secret_detected: true,
-          tenant_id: "console"
+          tenant_id: "tenant-a"
         },
         null,
         2
@@ -47,7 +47,7 @@ test.describe("operations console flow", () => {
 
     const result = sandboxPanel.locator(".sandbox-result");
     await expect(result).toContainText("SUPPORTED", { timeout: 30_000 });
-    await expect(result).toContainText("deny / 1 artifacts");
+    await expect(result).toContainText("deny / 0 artifacts");
 
     const commands = sandboxPanel.locator('section[aria-label="Sandbox commands"]');
     await expect(commands).toContainText("python --version");

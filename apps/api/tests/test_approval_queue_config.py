@@ -66,14 +66,71 @@ def test_approval_queue_config_requires_execution_grant_ttl_env_key() -> None:
         )
 
 
-def test_approval_queue_config_requires_production_memory_rejection() -> None:
+def test_approval_queue_config_requires_logical_commitment_secret_name() -> None:
     config = list(load_current_config())
-    config[2] = config[2].replace(
-        "Production and staging must configure a persistent approval queue backend",
+    config[0] = config[0].replace(
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME=",
         "",
     )
 
-    with pytest.raises(ApprovalQueueConfigError, match="persistent"):
+    with pytest.raises(ApprovalQueueConfigError, match="COMMITMENT_SECRET_NAME"):
+        validate_approval_queue_config(
+            env_example_text=config[0],
+            approval_doc_text=config[1],
+            approval_service_text=config[2],
+            api_dependencies_text=config[3],
+            makefile_text=config[4],
+            ci_workflow_text=config[5],
+            security_workflow_text=config[6],
+        )
+
+
+def test_approval_queue_config_requires_production_postgres_rejection() -> None:
+    config = list(load_current_config())
+    config[2] = config[2].replace(
+        "Production and staging require the PostgreSQL approval queue backend",
+        "",
+    )
+
+    with pytest.raises(ApprovalQueueConfigError, match="PostgreSQL"):
+        validate_approval_queue_config(
+            env_example_text=config[0],
+            approval_doc_text=config[1],
+            approval_service_text=config[2],
+            api_dependencies_text=config[3],
+            makefile_text=config[4],
+            ci_workflow_text=config[5],
+            security_workflow_text=config[6],
+        )
+
+
+def test_approval_queue_config_requires_atomic_decision_and_grant_transaction() -> None:
+    config = list(load_current_config())
+    config[2] = config[2].replace(
+        "with self._connection.transaction() as transaction",
+        "transaction = self._connection",
+    )
+
+    with pytest.raises(ApprovalQueueConfigError, match="transaction"):
+        validate_approval_queue_config(
+            env_example_text=config[0],
+            approval_doc_text=config[1],
+            approval_service_text=config[2],
+            api_dependencies_text=config[3],
+            makefile_text=config[4],
+            ci_workflow_text=config[5],
+            security_workflow_text=config[6],
+        )
+
+
+def test_approval_queue_config_requires_original_payload_commitment() -> None:
+    config = list(load_current_config())
+    config[2] = config[2].replace(
+        "TOOL_CALL_COMMITMENT_DOMAIN",
+        "REMOVED_COMMITMENT_DOMAIN",
+    )
+
+    with pytest.raises(ApprovalQueueConfigError, match="TOOL_CALL_COMMITMENT_DOMAIN"):
         validate_approval_queue_config(
             env_example_text=config[0],
             approval_doc_text=config[1],
@@ -88,7 +145,8 @@ def test_approval_queue_config_requires_production_memory_rejection() -> None:
 def test_approval_queue_config_requires_factory_wiring() -> None:
     config = list(load_current_config())
     config[3] = config[3].replace(
-        "create_approval_queue(settings, sql_provider=_sql_provider)", "ApprovalQueue()"
+        "secret_manager=secret_manager",
+        "secret_manager=None",
     )
 
     with pytest.raises(ApprovalQueueConfigError, match="API dependencies"):

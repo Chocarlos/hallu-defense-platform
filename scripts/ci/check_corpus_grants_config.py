@@ -62,7 +62,7 @@ def validate_corpus_grants_config(
             "HALLU_DEFENSE_CORPUS_GRANTS_TABLE_NAME=rag_corpus_grants",
             "Production and staging reject the `memory` backend",
             "PsycopgCorpusGrantSqlConnection",
-            "pool-backed adapter",
+            "pool-backed",
             "`expected_version`",
             "`409 Conflict`",
             "fails closed",
@@ -78,7 +78,7 @@ def validate_corpus_grants_config(
             'corpus_grants_backend: str = "memory"',
             'corpus_grants_path: Path = Path("var/rag/corpus-grants.jsonl")',
             'corpus_grants_table_name: str = "rag_corpus_grants"',
-            "postgres_dsn: str | None = None",
+            "postgres_dsn: str | None = field(default=None, repr=False)",
             "HALLU_DEFENSE_POSTGRES_DSN",
             "HALLU_DEFENSE_CORPUS_GRANTS_BACKEND",
             "HALLU_DEFENSE_CORPUS_GRANTS_PATH",
@@ -93,6 +93,7 @@ def validate_corpus_grants_config(
             "CorpusGrantStorageError",
             "CorpusGrantPaginationError",
             "CorpusGrantVersionConflictError",
+            "PostgresCorpusGrantRegistry",
             "PostgresCorpusGrantStorage",
             "PsycopgCorpusGrantSqlConnection",
             "CorpusGrantSqlConnection",
@@ -113,13 +114,21 @@ def validate_corpus_grants_config(
             "psycopg",
             "ORDER BY sequence_id ASC",
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            "ON CONFLICT (tenant_id, corpus_id, version) DO NOTHING",
+            "WHERE tenant_id = %s AND corpus_id = %s",
+            "LAG(payload) OVER (PARTITION BY corpus_id ORDER BY version ASC)",
             "expected_version",
+            "require_expected_version",
+            "expected_version is required for production-like mutations",
             "disabled_at is not None",
             'model_dump(mode="json")',
         },
         "corpus grants service",
         errors,
     )
+    if "SELECT payload FROM {self._table_name} ORDER BY sequence_id ASC" in corpus_grants_service_text:
+        errors.append("Postgres corpus grants must not preload a cross-tenant full table cache")
     _require(
         corpus_grants_migration_text,
         {
@@ -140,7 +149,8 @@ def validate_corpus_grants_config(
     _require(
         api_dependencies_text,
         {
-            "create_corpus_grant_registry(settings)",
+            "corpus_grants_backend.strip().lower() in _POSTGRES_BACKENDS",
+            "postgres_connection=_sql_provider",
             '"POST /rag/corpus-grants/upsert": frozenset({RAG_WRITER_ROLE})',
             '"POST /rag/corpus-grants/disable": frozenset({RAG_WRITER_ROLE})',
             '"POST /rag/corpus-grants/list": frozenset({RAG_WRITER_ROLE, VERIFIER_ROLE})',

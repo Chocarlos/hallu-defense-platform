@@ -86,6 +86,7 @@
         "rpo_minutes": 120,
         "rto_minutes": 480,
         "encrypted": true,
+        "source": "primary-data-bucket",
         "target": "cross-bucket-encrypted-replica",
         "restore_drill_interval_days": 60
       },

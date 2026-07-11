@@ -7,6 +7,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PGVECTOR_MIGRATION = ROOT / "infra" / "rag" / "pgvector" / "001_rag_evidence_chunks.sql"
+PGVECTOR_EXACT_MIGRATION = (
+    ROOT / "infra" / "rag" / "pgvector" / "009_drop_unsafe_ivfflat.sql"
+)
+PGVECTOR_FRESHNESS_MIGRATION = (
+    ROOT / "infra" / "rag" / "pgvector" / "010_add_retrieved_at.sql"
+)
 OPENSEARCH_TEMPLATE = ROOT / "infra" / "rag" / "opensearch" / "evidence-index-template.json"
 DOCKER_COMPOSE = ROOT / "docker-compose.yml"
 ENV_EXAMPLE = ROOT / ".env.example"
@@ -14,12 +20,19 @@ RAG_DOC = ROOT / "docs" / "rag" / "persistent-indexes.md"
 MAKEFILE = ROOT / "Makefile"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
+LIVE_WORKFLOW = ROOT / ".github" / "workflows" / "live.yml"
+API_DOCKERFILE = ROOT / "infra" / "docker" / "api.Dockerfile"
+OPENSEARCH_BOOTSTRAP = ROOT / "scripts" / "dev" / "bootstrap_opensearch_template.py"
+LIVE_HYBRID_RAG_SMOKE = ROOT / "scripts" / "dev" / "live_hybrid_rag_smoke.py"
 LIVE_OPENSEARCH_RAG_SMOKE_SCRIPT = "scripts/dev/live_opensearch_rag_smoke.py"
 LIVE_OPENSEARCH_RAG_SMOKE_TARGET = "rag-opensearch-live-smoke"
 LIVE_OPENSEARCH_RAG_SMOKE_ENV = "HALLU_DEFENSE_LIVE_OPENSEARCH_RAG_SMOKE_ENABLED=true"
 LIVE_PGVECTOR_RAG_SMOKE_SCRIPT = "scripts/dev/live_pgvector_rag_smoke.py"
 LIVE_PGVECTOR_RAG_SMOKE_TARGET = "rag-pgvector-live-smoke"
 LIVE_PGVECTOR_RAG_SMOKE_ENV = "HALLU_DEFENSE_LIVE_PGVECTOR_RAG_SMOKE_ENABLED=true"
+LIVE_HYBRID_RAG_SMOKE_SCRIPT = "scripts/dev/live_hybrid_rag_smoke.py"
+LIVE_HYBRID_RAG_SMOKE_TARGET = "rag-hybrid-live-smoke"
+LIVE_HYBRID_RAG_SMOKE_ENV = "HALLU_DEFENSE_LIVE_HYBRID_RAG_SMOKE_ENABLED=true"
 
 REQUIRED_SQL_SNIPPETS = {
     "CREATE EXTENSION IF NOT EXISTS vector",
@@ -28,16 +41,22 @@ REQUIRED_SQL_SNIPPETS = {
     "embedding VECTOR(16) NOT NULL",
     "USING gin (metadata)",
     "USING ivfflat (embedding vector_cosine_ops)",
+    "DROP INDEX IF EXISTS idx_rag_evidence_chunks_embedding",
+    "ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMPTZ",
+    "ALTER COLUMN retrieved_at SET NOT NULL",
     "idx_rag_evidence_chunks_tenant_source",
 }
 REQUIRED_TEMPLATE_PROPERTIES = {
     "tenant_id",
     "evidence_id",
     "source_ref",
+    "corpus_id",
+    "document_revision",
     "content",
     "authority",
     "freshness",
     "metadata",
+    "metadata_filter_tokens",
     "document_index",
     "chunk_index",
 }
@@ -79,7 +98,13 @@ def load_current_config() -> tuple[str, dict[str, object], str, str, str, str, s
     if not isinstance(template, dict):
         raise RagPersistenceConfigError("OpenSearch template must be a JSON object")
     return (
-        PGVECTOR_MIGRATION.read_text(encoding="utf-8"),
+        (
+            PGVECTOR_MIGRATION.read_text(encoding="utf-8")
+            + "\n"
+            + PGVECTOR_EXACT_MIGRATION.read_text(encoding="utf-8")
+            + "\n"
+            + PGVECTOR_FRESHNESS_MIGRATION.read_text(encoding="utf-8")
+        ),
         template,
         DOCKER_COMPOSE.read_text(encoding="utf-8"),
         ENV_EXAMPLE.read_text(encoding="utf-8"),
@@ -107,15 +132,21 @@ def _validate_opensearch_template(template: Mapping[str, object], errors: list[s
         errors.append("OpenSearch template must target hallu_evidence* index patterns")
 
     metadata = _mapping(template.get("_meta"), "_meta", errors)
-    if metadata.get("schema_version") != "rag-opensearch-template.v1":
-        errors.append("OpenSearch template _meta.schema_version must be rag-opensearch-template.v1")
+    if metadata.get("schema_version") != "rag-opensearch-template.v3":
+        errors.append("OpenSearch template _meta.schema_version must be rag-opensearch-template.v3")
     if metadata.get("tenant_scoped") is not True:
         errors.append("OpenSearch template _meta.tenant_scoped must be true")
     if metadata.get("required_query_filter") != "tenant_id":
         errors.append("OpenSearch template must declare tenant_id as the required query filter")
 
     template_body = _mapping(template.get("template"), "template", errors)
+    settings = _mapping(template_body.get("settings"), "template.settings", errors)
+    if settings.get("number_of_replicas") != 1:
+        errors.append("OpenSearch schema v3 must configure number_of_replicas=1")
     mappings = _mapping(template_body.get("mappings"), "template.mappings", errors)
+    mappings_metadata = _mapping(mappings.get("_meta"), "template.mappings._meta", errors)
+    if mappings_metadata.get("schema_version") != "rag-opensearch-template.v3":
+        errors.append("OpenSearch index mappings must declare schema v3")
     if mappings.get("dynamic") is not False:
         errors.append("OpenSearch mappings.dynamic must be false")
     properties = _mapping(mappings.get("properties"), "template.mappings.properties", errors)
@@ -130,25 +161,44 @@ def _validate_opensearch_template(template: Mapping[str, object], errors: list[s
     content = _mapping(properties.get("content"), "content mapping", errors)
     if content.get("type") != "text":
         errors.append("OpenSearch content must be mapped as text")
+    for field_name in (
+        "evidence_id",
+        "source_ref",
+        "corpus_id",
+        "document_revision",
+        "metadata_filter_tokens",
+    ):
+        field_mapping = _mapping(properties.get(field_name), f"{field_name} mapping", errors)
+        if field_mapping.get("type") != "keyword":
+            errors.append(f"OpenSearch {field_name} must be mapped as keyword")
+    metadata_mapping = _mapping(properties.get("metadata"), "metadata mapping", errors)
+    if metadata_mapping.get("type") != "object" or metadata_mapping.get("enabled") is not False:
+        errors.append("OpenSearch metadata must be an object with enabled=false")
+    if metadata_mapping.get("dynamic") is True or "properties" in metadata_mapping:
+        errors.append("OpenSearch opaque metadata must not create dynamic subfield mappings")
 
 
 def _validate_compose(compose_text: str, errors: list[str]) -> None:
     required_snippets = {
         "opensearch:",
-        "image: opensearchproject/opensearch:2.15.0",
-        "plugins.security.disabled: \"true\"",
+        "image: hallu-defense-opensearch:ci",
+        "dockerfile: infra/docker/opensearch.Dockerfile",
+        "DISABLE_SECURITY_PLUGIN: \"true\"",
+        "DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: \"true\"",
         "opensearch-data:/usr/share/opensearch/data",
         "./infra/rag/pgvector:/docker-entrypoint-initdb.d:ro",
-        "HALLU_DEFENSE_RAG_INDEX_BACKEND: opensearch",
+        "HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid",
         "HALLU_DEFENSE_OPENSEARCH_ENDPOINT: http://opensearch:9200",
         "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME: hallu_evidence",
-        "- opensearch",
+        "opensearch-bootstrap:",
+        "scripts/dev/bootstrap_opensearch_template.py",
+        "condition: service_completed_successfully",
         "opensearch-data:",
     }
     for snippet in required_snippets:
         if snippet not in compose_text:
             errors.append(f"docker-compose.yml missing `{snippet}`")
-    if "opensearchproject/opensearch:latest" in compose_text:
+    if "hallu-defense-opensearch:latest" in compose_text:
         errors.append("OpenSearch image must be pinned and must not use latest")
 
 
@@ -164,14 +214,25 @@ def _validate_supporting_files(
     for key in (
         "HALLU_DEFENSE_OPENSEARCH_ENDPOINT=",
         "HALLU_DEFENSE_OPENSEARCH_INDEX_NAME=",
+        "HALLU_DEFENSE_OPENSEARCH_AUTHORIZATION_SECRET_NAME",
+        "HALLU_DEFENSE_OPENSEARCH_CA_CERT_PATH",
         "HALLU_DEFENSE_POSTGRES_DSN=postgresql://hallu:hallu@postgres:5432/hallu_defense",
         "HALLU_DEFENSE_PGVECTOR_TABLE_NAME=",
         "HALLU_DEFENSE_RAG_EMBEDDING_DIMENSION=16",
     ):
         if key not in env_example_text:
             errors.append(f".env.example missing {key}")
-    if "001_rag_evidence_chunks.sql" not in docs_text or "evidence-index-template.json" not in docs_text:
-        errors.append("RAG docs must mention pgvector migration and OpenSearch template")
+    if any(
+        marker not in docs_text
+        for marker in (
+            "001_rag_evidence_chunks.sql",
+            "009_drop_unsafe_ivfflat.sql",
+            "010_add_retrieved_at.sql",
+            "evidence-index-template.json",
+            "metadata_filter_tokens",
+        )
+    ):
+        errors.append("RAG docs must describe exact pgvector search and OpenSearch schema v3")
     script = "scripts/ci/check_rag_persistence_config.py"
     bootstrap = "scripts/dev/bootstrap_opensearch_template.py --dry-run"
     if "rag-persistence-config:" not in makefile_text or script not in makefile_text:
@@ -200,6 +261,14 @@ def _validate_supporting_files(
         security_workflow_text=security_workflow_text,
         errors=errors,
     )
+    _validate_live_hybrid_smoke_wiring(
+        docs_text=docs_text,
+        makefile_text=makefile_text,
+        ci_workflow_text=ci_workflow_text,
+        security_workflow_text=security_workflow_text,
+        errors=errors,
+    )
+    _validate_runtime_provisioning(errors)
 
 
 def _validate_live_opensearch_smoke_wiring(
@@ -293,6 +362,87 @@ def _validate_live_pgvector_smoke_wiring(
     ):
         if live_target in workflow_text or live_script in workflow_text:
             errors.append(f"{workflow_name} must not run the live pgvector RAG smoke by default")
+
+
+def _validate_live_hybrid_smoke_wiring(
+    *,
+    docs_text: str,
+    makefile_text: str,
+    ci_workflow_text: str,
+    security_workflow_text: str,
+    errors: list[str],
+) -> None:
+    required_doc_markers = {
+        LIVE_HYBRID_RAG_SMOKE_TARGET,
+        LIVE_HYBRID_RAG_SMOKE_SCRIPT,
+        LIVE_HYBRID_RAG_SMOKE_ENV,
+        "HALLU_DEFENSE_LIVE_HYBRID_RAG_ADMIN_DSN",
+        "scratch database",
+        "schema v3",
+        "reindex",
+    }
+    missing = sorted(marker for marker in required_doc_markers if marker not in docs_text)
+    if missing:
+        errors.append("RAG docs missing hybrid live smoke markers: " + ", ".join(missing))
+
+    if not _makefile_phony_includes(makefile_text, LIVE_HYBRID_RAG_SMOKE_TARGET):
+        errors.append("Makefile .PHONY must include the live hybrid RAG smoke target")
+    target_body = _makefile_target_body(makefile_text, LIVE_HYBRID_RAG_SMOKE_TARGET)
+    if LIVE_HYBRID_RAG_SMOKE_SCRIPT not in target_body:
+        errors.append("live hybrid RAG smoke target must run live_hybrid_rag_smoke.py")
+    for workflow_name, workflow_text in (
+        ("CI workflow", ci_workflow_text),
+        ("security workflow", security_workflow_text),
+    ):
+        if (
+            LIVE_HYBRID_RAG_SMOKE_TARGET in workflow_text
+            or LIVE_HYBRID_RAG_SMOKE_SCRIPT in workflow_text
+        ):
+            errors.append(f"{workflow_name} must not run the live hybrid RAG smoke by default")
+
+    smoke_text = LIVE_HYBRID_RAG_SMOKE.read_text(encoding="utf-8")
+    for marker in (
+        "CREATE DATABASE",
+        "DROP DATABASE IF EXISTS",
+        "WITH (FORCE)",
+        "EXPECTED_MIGRATION_COUNT = 13",
+        "persistent_hybrid_rrf_v1",
+        "template_cleaned",
+        "finally:",
+    ):
+        if marker not in smoke_text:
+            errors.append(f"hybrid live smoke missing `{marker}`")
+    live_workflow_text = LIVE_WORKFLOW.read_text(encoding="utf-8")
+    for marker in (
+        "hybrid-rag-live:",
+        LIVE_HYBRID_RAG_SMOKE_SCRIPT,
+        "HALLU_DEFENSE_LIVE_HYBRID_RAG_ADMIN_DSN",
+        "docker compose up -d postgres opensearch",
+        "COMPOSE_PROJECT_NAME: hallu-hybrid-rag-",
+        "docker compose down -v",
+    ):
+        if marker not in live_workflow_text:
+            errors.append(f"live workflow missing hybrid smoke marker `{marker}`")
+
+
+def _validate_runtime_provisioning(errors: list[str]) -> None:
+    dockerfile_text = API_DOCKERFILE.read_text(encoding="utf-8")
+    bootstrap_text = OPENSEARCH_BOOTSTRAP.read_text(encoding="utf-8")
+    for marker in (
+        "COPY scripts/dev/bootstrap_opensearch_template.py",
+        "COPY infra/rag/opensearch",
+    ):
+        if marker not in dockerfile_text:
+            errors.append(f"API image missing OpenSearch provisioning asset `{marker}`")
+    for marker in (
+        "create_secret_manager(settings)",
+        "create_opensearch_rag_backend",
+        "provision_index_schema",
+        "schema_ready",
+        "index_state",
+    ):
+        if marker not in bootstrap_text:
+            errors.append(f"OpenSearch provisioning bootstrap missing `{marker}`")
 
 
 def _makefile_phony_includes(makefile_text: str, target: str) -> bool:

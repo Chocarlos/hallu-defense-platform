@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
   Check,
   CheckCircle2,
   ClipboardCheck,
@@ -19,10 +18,6 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRecord,
-  EvalScenarioHistoryEntry,
-  EvalScenarioHistoryReport,
-  EvalScenarioReport,
-  EvalSmokeReport,
   PolicyEvaluationRequest,
   PolicyEvaluationResponse,
   RepoChecksRunRequest,
@@ -32,39 +27,53 @@ import type {
   VerificationRun
 } from "@hallu-defense/contracts";
 import { HalluDefenseClient } from "@hallu-defense/sdk";
+import { LiveDashboards } from "./live-dashboards";
+import {
+  parseOidcBrowserSession,
+  unsignedBrowserSession,
+  type BrowserAuthenticatedSession
+} from "../lib/browser-session";
+import {
+  CONSOLE_AUTH_MODE_OIDC,
+  CONSOLE_AUTH_MODE_UNSIGNED_LOCAL,
+  type BrowserRuntimeConfig
+} from "../lib/runtime-config";
 
 interface RunConsoleProps {
-  readonly apiBaseUrl: string;
-  readonly initialRun: VerificationRun;
-  readonly initialEvalSmokeReport: EvalSmokeReport | null;
-  readonly initialEvalScenarioReport: EvalScenarioReport | null;
-  readonly initialEvalScenarioHistoryReport: EvalScenarioHistoryReport | null;
+  readonly runtimeConfig: BrowserRuntimeConfig;
+  readonly initialRun: VerificationRun | null;
 }
 
 const sampleDocument =
   "Part-time employees accrue PTO pro rata based on scheduled hours.\n\n" +
   "Full-time employees receive 15 days of paid vacation per year.";
-const defaultPolicyAttributes = '{\n  "tenant_id": "console",\n  "tool_name": "read_file"\n}';
+const defaultPolicyAttributes = '{\n  "tool_name": "read_file"\n}';
 const defaultSandboxCommands = "python --version";
 
 export function RunConsole({
-  apiBaseUrl,
-  initialRun,
-  initialEvalSmokeReport,
-  initialEvalScenarioReport,
-  initialEvalScenarioHistoryReport
+  runtimeConfig,
+  initialRun
 }: RunConsoleProps) {
+  const [authSession, setAuthSession] = useState<BrowserAuthenticatedSession | null>(() =>
+    runtimeConfig.authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL
+      ? unsignedBrowserSession(runtimeConfig.localIdentity)
+      : null
+  );
+  const [authLoading, setAuthLoading] = useState(
+    runtimeConfig.authMode === CONSOLE_AUTH_MODE_OIDC
+  );
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [messageText, setMessageText] = useState(
     "Los empleados part-time reciben 15 dias de vacaciones pagadas al ano."
   );
   const [documentText, setDocumentText] = useState(sampleDocument);
-  const [run, setRun] = useState<VerificationRun>(initialRun);
+  const [run, setRun] = useState<VerificationRun | null>(initialRun);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [approvals, setApprovals] = useState<readonly ApprovalRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [approvalLoading, setApprovalLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
-  const [policySubject, setPolicySubject] = useState("console-user");
   const [policyAction, setPolicyAction] = useState("read");
   const [policyResource, setPolicyResource] = useState("repo:local");
   const [policyRisk, setPolicyRisk] = useState<RiskLevel>("medium");
@@ -83,21 +92,98 @@ export function RunConsole({
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayError, setReplayError] = useState<string | null>(null);
 
-  const client = useMemo(
-    () =>
-      new HalluDefenseClient({
-        baseUrl: apiBaseUrl,
-        tenantId: "console",
-        subjectId: "console-reviewer",
-        roles: ["approval_reviewer", "verifier"],
+  useEffect(() => {
+    if (runtimeConfig.authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    async function loadAuthenticatedSession() {
+      try {
+        const response = await fetch("/auth/session", {
+          method: "GET",
+          headers: { accept: "application/json" },
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal
+        });
+        if (cancelled) {
+          return;
+        }
+        if (response.status === 401) {
+          setAuthSession(null);
+          setAuthMessage(null);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error("Authentication session is unavailable.");
+        }
+        const session = parseOidcBrowserSession(await response.json());
+        if (!cancelled) {
+          setAuthSession(session);
+          setAuthMessage(null);
+        }
+      } catch (error) {
+        if (!cancelled && !(error instanceof Error && error.name === "AbortError")) {
+          setAuthSession(null);
+          setAuthMessage("No se pudo validar la sesion de autenticacion.");
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      }
+    }
+    void loadAuthenticatedSession();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [runtimeConfig]);
+
+  useEffect(() => {
+    if (authSession?.expiresAtSeconds === null || authSession?.expiresAtSeconds === undefined) {
+      return;
+    }
+    const remainingMs = authSession.expiresAtSeconds * 1000 - Date.now();
+    const timeout = window.setTimeout(
+      () => setAuthSession(null),
+      Math.max(0, Math.min(remainingMs, 2_147_483_647))
+    );
+    return () => window.clearTimeout(timeout);
+  }, [authSession]);
+
+  const client = useMemo(() => {
+    if (authSession === null) {
+      return null;
+    }
+    if (runtimeConfig.authMode === CONSOLE_AUTH_MODE_OIDC) {
+      if (authSession.accessToken === null) {
+        return null;
+      }
+      return new HalluDefenseClient({
+        baseUrl: runtimeConfig.apiOrigin,
+        token: authSession.accessToken,
         timeoutMs: 8000
-      }),
-    [apiBaseUrl]
-  );
+      });
+    }
+    return new HalluDefenseClient({
+      baseUrl: runtimeConfig.apiOrigin,
+      tenantId: authSession.tenantId,
+      subjectId: authSession.subjectId,
+      roles: authSession.roles,
+      timeoutMs: 8000
+    });
+  }, [authSession, runtimeConfig]);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      if (client === null) {
+        setApprovals([]);
+        return;
+      }
       try {
         const result = await client.listApprovals({ status: "pending" });
         if (!cancelled) {
@@ -115,13 +201,28 @@ export function RunConsole({
     };
   }, [client]);
 
+  function requireClient(): HalluDefenseClient {
+    if (client === null) {
+      throw new Error("La autenticacion es obligatoria.");
+    }
+    return client;
+  }
+
+  function requireAuthSession(): BrowserAuthenticatedSession {
+    if (authSession === null) {
+      throw new Error("La autenticacion es obligatoria.");
+    }
+    return authSession;
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
     setErrorMessage(null);
     try {
-      const result = await client.runVerification({
-        tenant_id: "console",
+      const session = requireAuthSession();
+      const result = await requireClient().runVerification({
+        tenant_id: session.tenantId,
         message_text: messageText,
         task_type: "document_qa",
         documents: [
@@ -133,6 +234,7 @@ export function RunConsole({
         ]
       });
       setRun(result);
+      setHistoryRevision((current) => current + 1);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo ejecutar el run");
     } finally {
@@ -151,7 +253,7 @@ export function RunConsole({
     setApprovalLoading(true);
     setApprovalMessage(null);
     try {
-      const result = await client.listApprovals({ status: "pending" });
+      const result = await requireClient().listApprovals({ status: "pending" });
       setApprovals(result.approvals);
     } catch (error) {
       setApprovalMessage(error instanceof Error ? error.message : "No se pudo cargar la cola");
@@ -164,13 +266,14 @@ export function RunConsole({
     setApprovalLoading(true);
     setApprovalMessage(null);
     try {
-      const validation = await client.validateToolInput({
+      const session = requireAuthSession();
+      const validation = await requireClient().validateToolInput({
         tool_name: "delete_repository",
         input: { repo: "core", api_key: "demo" },
         schema: { type: "object", required: ["repo"] },
         risk_level: "high",
         approval_required: false,
-        caller_context: { subject: "console-user" }
+        caller_context: { subject: session.subjectId }
       });
       const message =
         validation.approval_id !== undefined && validation.approval_id !== null
@@ -188,7 +291,7 @@ export function RunConsole({
     setApprovalLoading(true);
     setApprovalMessage(null);
     try {
-      await client.decideApproval({
+      await requireClient().decideApproval({
         approval_id: approvalId,
         decision,
         reason: decision === "approve" ? "Approved in console." : "Rejected in console."
@@ -204,7 +307,6 @@ export function RunConsole({
   async function handlePolicySubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const action = policyAction.trim();
-    const subject = policySubject.trim();
     const resource = policyResource.trim();
 
     if (action.length === 0) {
@@ -215,15 +317,19 @@ export function RunConsole({
     setPolicyLoading(true);
     setPolicyError(null);
     try {
-      const attributes = parseAttributes(policyAttributes);
+      const session = requireAuthSession();
+      const attributes = {
+        ...(parseAttributes(policyAttributes) ?? {}),
+        tenant_id: session.tenantId
+      };
       const request = {
         action,
         risk_level: policyRisk,
-        ...(subject.length > 0 ? { subject } : {}),
+        subject: session.subjectId,
         ...(resource.length > 0 ? { resource } : {}),
-        ...(attributes !== undefined ? { attributes } : {})
+        attributes
       } satisfies PolicyEvaluationRequest;
-      const result = await client.evaluatePolicy(request);
+      const result = await requireClient().evaluatePolicy(request);
       setPolicyResult(result);
     } catch (error) {
       setPolicyError(error instanceof Error ? error.message : "No se pudo evaluar policy");
@@ -242,8 +348,9 @@ export function RunConsole({
     setReplayLoading(true);
     setReplayError(null);
     try {
-      const result = await client.replayVerification({ trace_id: traceId });
+      const result = await requireClient().replayVerification({ trace_id: traceId });
       setReplayResult(result);
+      setHistoryRevision((current) => current + 1);
     } catch (error) {
       setReplayResult(null);
       setReplayError(error instanceof Error ? error.message : "No se pudo ejecutar replay");
@@ -268,7 +375,11 @@ export function RunConsole({
         commands,
         network_policy: networkPolicy
       } satisfies RepoChecksRunRequest;
-      const result = await client.runRepoChecks(request);
+      // The API permits up to ten sequential 30-second commands in one
+      // isolated batch. Keep the normal 8-second client timeout for every
+      // other endpoint, but allow this explicitly long-running operation to
+      // complete and surface its own bounded sandbox timeout evidence.
+      const result = await requireClient().runRepoChecks(request, { timeoutMs: 330_000 });
       setSandboxRun(result);
     } catch (error) {
       setSandboxError(error instanceof Error ? error.message : "No se pudo ejecutar sandbox");
@@ -277,10 +388,18 @@ export function RunConsole({
     }
   }
 
-  const blockedCount = run.verdicts.filter((verdict) => verdict.action === "block").length;
-  const repairedCount = run.verdicts.filter((verdict) => verdict.action === "rewrite").length;
-  const supportedCount = run.verdicts.filter((verdict) => verdict.status === "SUPPORTED").length;
+  const verdicts = run?.verdicts ?? [];
+  const blockedCount = verdicts.filter((verdict) => verdict.action === "block").length;
+  const repairedCount = verdicts.filter((verdict) => verdict.action === "rewrite").length;
+  const supportedCount = verdicts.filter((verdict) => verdict.status === "SUPPORTED").length;
   const sandboxSummary = useMemo(() => summarizeSandboxRun(sandboxRun), [sandboxRun]);
+
+  if (authLoading) {
+    return <AuthenticationGate loading message={null} />;
+  }
+  if (authSession === null || client === null) {
+    return <AuthenticationGate loading={false} message={authMessage} />;
+  }
 
   return (
     <main className="shell">
@@ -289,35 +408,56 @@ export function RunConsole({
           <p className="eyebrow">Hallu Defense</p>
           <h1>Consola DevEx</h1>
         </div>
-        <div className="status-pill" aria-label={`Decision final ${run.final_decision}`}>
-          <ShieldCheck aria-hidden="true" size={18} />
-          <span>{run.final_decision}</span>
+        <div className="toolbar">
+          <div>
+            <strong>{authSession.tenantId}</strong>
+            <small title={authSession.roles.join(", ")}> / {authSession.subjectId}</small>
+          </div>
+          {run === null ? (
+            <div className="status-pill" aria-label="Sin run de verificacion">
+              <ShieldCheck aria-hidden="true" size={18} />
+              <span>sin run</span>
+            </div>
+          ) : (
+            <div className="status-pill" aria-label={`Decision final ${run.final_decision}`}>
+              <ShieldCheck aria-hidden="true" size={18} />
+              <span>{run.final_decision}</span>
+            </div>
+          )}
+          {runtimeConfig.authMode === CONSOLE_AUTH_MODE_OIDC ? (
+            <form action="/auth/logout" method="post">
+              <button className="secondary-button" type="submit">
+                Cerrar sesion
+              </button>
+            </form>
+          ) : null}
         </div>
       </header>
 
       <section className="metrics" aria-label="Metricas del run">
-        <Metric icon={<Activity aria-hidden="true" />} label="Trace" value={run.trace_id} />
+        <Metric icon={<Activity aria-hidden="true" />} label="Trace" value={run?.trace_id ?? "Sin run"} />
         <Metric icon={<CheckCircle2 aria-hidden="true" />} label="Soportados" value={supportedCount} />
         <Metric icon={<FileSearch aria-hidden="true" />} label="Reparados" value={repairedCount} />
         <Metric icon={<AlertTriangle aria-hidden="true" />} label="Bloqueados" value={blockedCount} />
       </section>
 
-      <section className="eval-dashboard-grid" aria-label="Eval dashboards">
-        <EvalSmokeDashboard report={initialEvalSmokeReport} />
-        <EvalScenarioDashboard
-          report={initialEvalScenarioReport}
-          history={initialEvalScenarioHistoryReport}
-        />
-      </section>
+      <LiveDashboards
+        client={client}
+        roles={authSession.roles}
+        historyRevision={historyRevision}
+        onUseReplayTrace={setReplayTraceId}
+      />
 
       <section className="workspace">
         <form className="panel verify-panel" onSubmit={handleSubmit}>
           <div className="panel-header">
             <h2>Verificacion</h2>
             <div className="toolbar">
-              <button className="icon-button" type="button" onClick={resetDemo} title="Restaurar demo">
-                <RotateCcw aria-hidden="true" size={18} />
-              </button>
+              {initialRun !== null ? (
+                <button className="icon-button" type="button" onClick={resetDemo} title="Restaurar demo">
+                  <RotateCcw aria-hidden="true" size={18} />
+                </button>
+              ) : null}
               <button className="primary-button" type="submit" disabled={loading}>
                 <Play aria-hidden="true" size={18} />
                 <span>{loading ? "Ejecutando" : "Ejecutar"}</span>
@@ -355,9 +495,16 @@ export function RunConsole({
         <section className="panel result-panel" aria-label="Resultado final">
           <div className="panel-header">
             <h2>Respuesta final</h2>
-            <span className="policy">Policy {run.policy_version}</span>
+            {run !== null ? <span className="policy">Policy {run.policy_version}</span> : null}
           </div>
-          <pre>{safeText(run.final_text)}</pre>
+          {run === null ? (
+            <article className="evidence-card empty-card" aria-live="polite">
+              <span className="row-title">Sin run de verificacion</span>
+              <small>Ejecuta una verificacion para generar evidencia.</small>
+            </article>
+          ) : (
+            <pre>{safeText(run.final_text)}</pre>
+          )}
         </section>
       </section>
 
@@ -376,9 +523,8 @@ export function RunConsole({
               <label className="field">
                 <span>Sujeto</span>
                 <input
-                  value={policySubject}
-                  onChange={(event) => setPolicySubject(event.target.value)}
-                  autoComplete="off"
+                  value={authSession.subjectId}
+                  readOnly
                 />
               </label>
               <label className="field">
@@ -525,7 +671,12 @@ export function RunConsole({
             <button
               className="secondary-button"
               type="button"
-              onClick={() => setReplayTraceId(run.trace_id)}
+              onClick={() => {
+                if (run !== null) {
+                  setReplayTraceId(run.trace_id);
+                }
+              }}
+              disabled={run === null}
             >
               <RotateCcw aria-hidden="true" size={16} />
               <span>Usar trace actual</span>
@@ -543,7 +694,7 @@ export function RunConsole({
       <section className="grid-three">
         <LedgerPanel title="Claims" icon={<ClipboardCheck aria-hidden="true" />}>
           <ul className="ledger-list">
-            {run.claims.map((claim) => (
+            {(run?.claims ?? []).map((claim) => (
               <li key={claim.claim_id}>
                 <span className="row-title">{claim.claim_id}</span>
                 <span>{safeText(claim.text)}</span>
@@ -557,7 +708,7 @@ export function RunConsole({
 
         <LedgerPanel title="Veredictos" icon={<ShieldCheck aria-hidden="true" />}>
           <ul className="ledger-list">
-            {run.verdicts.map((verdict) => (
+            {verdicts.map((verdict) => (
               <li key={verdict.claim_id}>
                 <span className={`badge badge-${verdict.action}`}>{verdict.action}</span>
                 <span>{verdict.status}</span>
@@ -569,7 +720,7 @@ export function RunConsole({
 
         <LedgerPanel title="Evidencia" icon={<GitBranch aria-hidden="true" />}>
           <ul className="ledger-list">
-            {run.evidence.map((evidence) => (
+            {(run?.evidence ?? []).map((evidence) => (
               <li key={evidence.evidence_id}>
                 <span className="row-title">{safeText(evidence.source_ref)}</span>
                 <span>{safeSnippet(evidence.content, 280)}</span>
@@ -620,7 +771,7 @@ export function RunConsole({
           {approvals.length === 0 ? (
             <li>
               <span className="row-title">Sin pendientes</span>
-              <small>tenant console</small>
+              <small>tenant {authSession.tenantId}</small>
             </li>
           ) : (
             approvals.map((approval) => (
@@ -662,211 +813,34 @@ export function RunConsole({
   );
 }
 
-function EvalSmokeDashboard({ report }: Readonly<{ report: EvalSmokeReport | null }>) {
-  if (report === null) {
-    return (
-      <section className="panel eval-panel" aria-label="Eval smoke dashboard">
-        <div className="panel-header">
-          <h2>
-            <BarChart3 aria-hidden="true" />
-            <span>Eval smoke</span>
-          </h2>
-          <span className="policy">evals/reports/smoke-metrics.json</span>
+function AuthenticationGate({
+  loading,
+  message
+}: Readonly<{ loading: boolean; message: string | null }>) {
+  return (
+    <main className="shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Hallu Defense</p>
+          <h1>Consola DevEx</h1>
         </div>
-        <article className="evidence-card empty-card">
-          <span className="row-title">Sin reporte</span>
-          <small>Ejecuta eval smoke para generar metricas</small>
-        </article>
-      </section>
-    );
-  }
-
-  const { metrics } = report;
-  const passedScenarios = report.scenarios.filter(
-    (scenario) => scenario.final_decision === scenario.expected_final_decision
-  ).length;
-
-  return (
-    <section className="panel eval-panel" aria-label="Eval smoke dashboard">
-      <div className="panel-header">
-        <h2>
-          <BarChart3 aria-hidden="true" />
-          <span>Eval smoke</span>
-        </h2>
-        <span className="policy">evals/reports/smoke-metrics.json</span>
-      </div>
-
-      <div className="summary-grid eval-summary">
-        <SummaryCell label="scenarios" value={metrics.scenario_count} />
-        <SummaryCell label="passed" value={passedScenarios} />
-        <SummaryCell label="p95 ms" value={Math.round(metrics.p95_latency_ms)} />
-        <SummaryCell label="cost usd" value={metrics.cost_per_run_usd} />
-      </div>
-
-      <div className="eval-metric-grid">
-        <EvalMetric label="decision accuracy" value={formatPercent(metrics.final_decision_accuracy)} />
-        <EvalMetric label="unsupported recall" value={formatPercent(metrics.unsupported_claim_recall)} />
-        <EvalMetric label="groundedness" value={formatPercent(metrics.groundedness)} />
-        <EvalMetric label="faithfulness" value={formatPercent(metrics.faithfulness)} />
-        <EvalMetric label="false positive blocking" value={formatPercent(metrics.false_positive_blocking)} />
-        <EvalMetric label="critical pass-through" value={formatPercent(metrics.critical_pass_through)} />
-      </div>
-
-      <ul className="ledger-list eval-scenario-list">
-        {report.scenarios.map((scenario) => (
-          <li key={scenario.id}>
-            <span className="row-title">{safeText(scenario.id)}</span>
-            <span
-              className={
-                scenario.final_decision === scenario.expected_final_decision
-                  ? "badge badge-allow"
-                  : "badge badge-block"
-              }
-            >
-              {scenario.final_decision}
-            </span>
-            <small>
-              expected {scenario.expected_final_decision} / {formatMs(scenario.latency_ms)} /{" "}
-              {scenario.actual_claims.length} claims
-            </small>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function EvalScenarioDashboard({
-  report,
-  history
-}: Readonly<{
-  report: EvalScenarioReport | null;
-  history: EvalScenarioHistoryReport | null;
-}>) {
-  if (report === null) {
-    return (
-      <section className="panel eval-panel" aria-label="Expanded eval dashboard">
+      </header>
+      <section className="panel" aria-live="polite">
         <div className="panel-header">
-          <h2>
-            <BarChart3 aria-hidden="true" />
-            <span>Eval scenarios</span>
-          </h2>
-          <span className="policy">evals/reports/scenario-metrics.json</span>
+          <h2>{loading ? "Validando sesion" : "Autenticacion requerida"}</h2>
         </div>
-        <article className="evidence-card empty-card">
-          <span className="row-title">Sin reporte</span>
-          <small>Ejecuta evals-scenarios para generar metricas</small>
-        </article>
+        <p>
+          {loading
+            ? "Comprobando una sesion OIDC vigente."
+            : message ?? "Inicia sesion para acceder a las operaciones del Console."}
+        </p>
+        {!loading ? (
+          <a className="primary-button" href="/auth/login">
+            Iniciar sesion
+          </a>
+        ) : null}
       </section>
-    );
-  }
-
-  const { metrics } = report;
-  const failedScenarios = report.scenarios.length - metrics.passed_count;
-  const categoryRows = Object.entries(metrics.category_pass_rate).sort(([left], [right]) =>
-    left.localeCompare(right)
-  );
-  const latestHistory = latestScenarioHistory(history);
-  const previousHistory = previousScenarioHistory(history);
-
-  return (
-    <section className="panel eval-panel" aria-label="Expanded eval dashboard">
-      <div className="panel-header">
-        <h2>
-          <BarChart3 aria-hidden="true" />
-          <span>Eval scenarios</span>
-        </h2>
-        <span className="policy">evals/reports/scenario-metrics.json</span>
-      </div>
-
-      <div className="summary-grid eval-summary">
-        <SummaryCell label="scenarios" value={metrics.scenario_count} />
-        <SummaryCell label="passed" value={metrics.passed_count} />
-        <SummaryCell label="failed" value={failedScenarios} />
-        <SummaryCell label="p95 ms" value={Math.round(metrics.p95_latency_ms)} />
-      </div>
-
-      <div className="eval-metric-grid">
-        <EvalMetric label="pass rate" value={formatPercent(metrics.pass_rate)} />
-        <EvalMetric label="decision accuracy" value={formatPercent(metrics.verification_decision_accuracy)} />
-        <EvalMetric label="high-risk blocks" value={formatPercent(metrics.blocked_high_risk_rate)} />
-        <EvalMetric label="repo false claims" value={formatPercent(metrics.repo_false_claim_block_rate)} />
-        <EvalMetric
-          label="repo semantic claims"
-          value={formatPercent(metrics.repo_semantic_claim_decision_accuracy)}
-        />
-        <EvalMetric label="sandbox blocks" value={formatPercent(metrics.sandbox_block_rate)} />
-      </div>
-
-      <div className="eval-category-grid" aria-label="Eval category pass rates">
-        {categoryRows.map(([category, value]) => (
-          <EvalMetric key={category} label={safeText(category)} value={formatPercent(value)} />
-        ))}
-      </div>
-
-      {latestHistory !== null ? (
-        <section className="eval-history" aria-label="Eval scenario history">
-          <div className="eval-history-summary">
-            <EvalMetric
-              label="latest pass"
-              value={`${formatPercent(latestHistory.metrics.pass_rate)} ${formatDelta(
-                latestHistory.metrics.pass_rate,
-                previousHistory?.metrics.pass_rate,
-                "percent"
-              )}`}
-            />
-            <EvalMetric
-              label="latest p95"
-              value={`${formatMs(latestHistory.metrics.p95_latency_ms)} ${formatDelta(
-                latestHistory.metrics.p95_latency_ms,
-                previousHistory?.metrics.p95_latency_ms,
-                "ms"
-              )}`}
-            />
-          </div>
-          <ul className="ledger-list eval-history-list">
-            {recentScenarioHistory(history).map((entry) => (
-              <li key={entry.run_id}>
-                <span className="row-title">{safeText(entry.run_id)}</span>
-                <span className="badge badge-allow">{formatPercent(entry.metrics.pass_rate)}</span>
-                <small>
-                  {formatRunDate(entry.created_at)} / {entry.metrics.passed_count}/
-                  {entry.metrics.scenario_count} passed / {formatMs(entry.metrics.p95_latency_ms)}
-                </small>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      <ul className="ledger-list eval-scenario-list">
-        {report.scenarios.map((scenario) => (
-          <li key={scenario.id}>
-            <span className="row-title">{safeText(scenario.id)}</span>
-            <span className={scenario.passed ? "badge badge-allow" : "badge badge-block"}>
-              {scenario.passed ? "passed" : "failed"}
-            </span>
-            <small>
-              {safeText(scenario.category)} / expected{" "}
-              {formatScenarioValue(scenario.expected, "final_decision")} / observed{" "}
-              {formatScenarioValue(scenario.observed, "final_decision")} / {formatMs(scenario.latency_ms)}
-            </small>
-            {scenario.failures.length > 0 ? (
-              <small>{safeSnippet(scenario.failures.join("; "), 240)}</small>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function EvalMetric({ label, value }: Readonly<{ label: string; value: string }>) {
-  return (
-    <article className="eval-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </article>
+    </main>
   );
 }
 
@@ -912,7 +886,7 @@ function PolicyExplanation({
     return (
       <article className="evidence-card empty-card" aria-live="polite">
         <span className="row-title">{loading ? "Evaluando policy" : "Sin evaluacion"}</span>
-        <small>tenant console</small>
+        <small>sesion autenticada</small>
       </article>
     );
   }
@@ -943,7 +917,7 @@ function ReplayResult({
     return (
       <article className="evidence-card empty-card" aria-live="polite">
         <span className="row-title">{loading ? "Reproduciendo run" : "Sin replay"}</span>
-        <small>tenant console</small>
+        <small>sesion autenticada</small>
       </article>
     );
   }
@@ -1052,7 +1026,7 @@ function InspectionSummary({ summary }: Readonly<{ summary: SandboxInspectionSum
         <span className="detail-label">Inspection</span>
         <article className="evidence-card empty-card">
           <span className="row-title">Sin reporte</span>
-          <small>reports/sandbox-inspection.json</small>
+          <small>sandbox://inspection</small>
         </article>
       </section>
     );
@@ -1118,62 +1092,6 @@ function SummaryCell({ label, value }: Readonly<{ label: string; value: number }
       <strong>{value}</strong>
     </article>
   );
-}
-
-function formatPercent(value: number): string {
-  return `${Math.round(value * 1000) / 10}%`;
-}
-
-function formatMs(value: number): string {
-  return `${Math.round(value * 10) / 10} ms`;
-}
-
-function formatScenarioValue(record: Readonly<Record<string, unknown>>, key: string): string {
-  const value = record[key];
-  if (value === undefined) {
-    return "n/a";
-  }
-  return safeText(formatScalar(value));
-}
-
-function latestScenarioHistory(
-  history: EvalScenarioHistoryReport | null
-): EvalScenarioHistoryEntry | null {
-  const runs = recentScenarioHistory(history);
-  return runs[0] ?? null;
-}
-
-function previousScenarioHistory(
-  history: EvalScenarioHistoryReport | null
-): EvalScenarioHistoryEntry | null {
-  const runs = recentScenarioHistory(history);
-  return runs[1] ?? null;
-}
-
-function recentScenarioHistory(
-  history: EvalScenarioHistoryReport | null
-): readonly EvalScenarioHistoryEntry[] {
-  if (history === null) {
-    return [];
-  }
-  return [...history.runs]
-    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
-    .slice(0, 5);
-}
-
-function formatDelta(current: number, previous: number | undefined, mode: "percent" | "ms"): string {
-  if (previous === undefined) {
-    return "";
-  }
-  const delta = current - previous;
-  if (delta === 0) {
-    return "(0)";
-  }
-  const prefix = delta > 0 ? "+" : "";
-  if (mode === "percent") {
-    return `(${prefix}${formatPercent(delta)})`;
-  }
-  return `(${prefix}${formatMs(delta)})`;
 }
 
 function formatRunDate(value: string): string {

@@ -1,108 +1,3773 @@
-"""Env-gated kind + Helm smoke scaffold for the hallu-defense chart."""
+"""Fail-closed kind + Helm deployment smoke for the hallu-defense chart."""
 
 from __future__ import annotations
 
+import base64
+import copy
+import hashlib
+import ipaddress
 import json
 import os
+import re
+import secrets as secret_generator
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+import tempfile
+import time
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Protocol, cast
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART_DIR = ROOT / "infra" / "k8s" / "helm" / "hallu-defense"
+KIND_VALUES_PATH = CHART_DIR / "values-kind.yaml"
+MIGRATIONS_DIR = ROOT / "infra" / "rag" / "pgvector"
 
 ENABLED_ENV = "HALLU_DEFENSE_LIVE_KIND_HELM_SMOKE_ENABLED"
 CLUSTER_ENV = "HALLU_DEFENSE_LIVE_KIND_HELM_CLUSTER"
 NAMESPACE_ENV = "HALLU_DEFENSE_LIVE_KIND_HELM_NAMESPACE"
 DEFAULT_CLUSTER = "hallu-defense-smoke"
 DEFAULT_NAMESPACE = "hallu-defense"
+DEFAULT_SANDBOX_NAMESPACE = "hallu-defense-sandbox"
+RELEASE_NAME = "hallu-defense"
+EXPECTED_MIGRATION_VERSIONS = tuple(
+    path.name for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
+)
+EXPECTED_MIGRATION_COUNT = len(EXPECTED_MIGRATION_VERSIONS)
+EXPECTED_OPENSEARCH_SCHEMA_VERSION = "rag-opensearch-template.v3"
+EXPECTED_OPENSEARCH_TEMPLATE_REPLICAS = 1
+REQUIRED_TOOLS = ("docker", "kind", "kubectl", "helm")
+API_IMAGE = "hallu-defense-api:ci"
+CONSOLE_IMAGE = "hallu-defense-console:ci"
+SANDBOX_IMAGE = "hallu-defense-sandbox:ci"
+PGVECTOR_IMAGE = "hallu-defense-pgvector:ci"
+OPENSEARCH_IMAGE = "hallu-defense-opensearch:ci"
+KIND_POD_SUBNET = "192.168.0.0/16"
+KIND_NETWORK_POLICY_PROVIDER = "kindnet"
+KIND_PLATFORM = "linux/amd64"
+KIND_NODE_IMAGE_ENV = "HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE"
+KIND_NODE_IMAGE = (
+    "kindest/node:v1.36.1@sha256:"
+    "3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
+)
+OIDC_ISSUER = "https://auth.kind.invalid/realms/hallu-defense"
+OIDC_AUDIENCE = "hallu-defense-api"
+SANDBOX_JOB_LABEL = "hallu-defense.openai.com/sandbox=true"
+SANDBOX_TIMEOUT_RETURN_CODE = 124
+ADMISSION_POLICY_ACTIVATION_ATTEMPTS = 40
+ADMISSION_POLICY_ACTIVATION_INTERVAL_SECONDS = 0.25
+EXPECTED_WORKLOAD_COMPONENTS = (
+    "api",
+    "console",
+    "worker",
+    "vault",
+    "redis",
+    "pgvector",
+    "opensearch",
+)
+DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+OPENSEARCH_SCHEMA_HEALTH_SCRIPT = r"""
+import json
+import os
+from urllib.request import urlopen
+
+endpoint = os.environ["HALLU_DEFENSE_OPENSEARCH_ENDPOINT"].rstrip("/")
+
+def load_json(path):
+    with urlopen(endpoint + path, timeout=5) as response:
+        return json.load(response)
+
+template_response = load_json("/_index_template/hallu_evidence_template")
+templates = template_response.get("index_templates")
+matches = [
+    item
+    for item in templates if isinstance(item, dict)
+    and item.get("name") == "hallu_evidence_template"
+] if isinstance(templates, list) else []
+if len(matches) != 1:
+    raise RuntimeError("OpenSearch template readback did not contain one exact match")
+installed = matches[0].get("index_template")
+template = installed.get("template") if isinstance(installed, dict) else None
+settings = template.get("settings") if isinstance(template, dict) else None
+index_settings = settings.get("index") if isinstance(settings, dict) else None
+replica_value = (
+    index_settings.get("number_of_replicas")
+    if isinstance(index_settings, dict)
+    else None
+)
+if isinstance(replica_value, bool) or not isinstance(replica_value, (int, str)):
+    raise RuntimeError("OpenSearch template replica count was invalid")
+try:
+    replica_count = int(replica_value)
+except ValueError as exc:
+    raise RuntimeError("OpenSearch template replica count was invalid") from exc
+
+health = load_json("/_cluster/health")
+kind_opensearch_schema_health = {
+    "template_replicas": replica_count,
+    "cluster_status": health.get("status"),
+    "cluster_timed_out": health.get("timed_out"),
+    "data_nodes": health.get("number_of_data_nodes"),
+}
+print(json.dumps(kind_opensearch_schema_health, sort_keys=True))
+"""
+PROJECTED_RUNTIME_SECRET_READ_SCRIPT = r"""
+import json
+import os
+
+from hallu_defense.runtime_secrets import read_runtime_secret_file
+
+raw_variables = (
+    "HALLU_DEFENSE_VAULT_TOKEN",
+    "HALLU_DEFENSE_VAULT_TOKEN_ENV",
+    "HALLU_DEFENSE_POSTGRES_DSN",
+)
+if any(os.environ.get(name) is not None for name in raw_variables):
+    raise RuntimeError("raw runtime secret environment variable is present")
+
+vault_token = read_runtime_secret_file(
+    "/run/secrets/hallu_defense_vault_token",
+    variable_name="HALLU_DEFENSE_VAULT_TOKEN_FILE",
+)
+postgres_dsn = read_runtime_secret_file(
+    "/run/secrets/hallu_defense_postgres_dsn",
+    variable_name="HALLU_DEFENSE_POSTGRES_DSN_FILE",
+)
+if not vault_token or not postgres_dsn.startswith("postgresql://"):
+    raise RuntimeError("projected runtime secret content is invalid")
+
+projected_runtime_secret_probe = {
+    "postgres_dsn_file_read": True,
+    "raw_secret_env_absent": True,
+    "vault_token_file_read": True,
+}
+print(json.dumps(projected_runtime_secret_probe, sort_keys=True))
+"""
+CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT = r"""
+const expected = Object.freeze({
+  HALLU_DEFENSE_ENV: "production",
+  HALLU_DEFENSE_CONSOLE_AUTH_MODE: "oidc",
+  HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: "https://console.kind.invalid",
+  HALLU_DEFENSE_CONSOLE_API_ORIGIN: "https://api.kind.invalid",
+  HALLU_DEFENSE_CONSOLE_OIDC_ISSUER: "https://auth.kind.invalid/realms/hallu-defense",
+  HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID: "hallu-defense-console",
+  HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE: "hallu-defense-api",
+  HALLU_DEFENSE_CONSOLE_OIDC_TENANT_CLAIM: "tenant_id",
+  HALLU_DEFENSE_CONSOLE_OIDC_ROLES_CLAIM: "roles",
+  HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES:
+    "verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator",
+});
+
+const halluNames = Object.keys(process.env)
+  .filter((name) => name.startsWith("HALLU_DEFENSE_"))
+  .sort();
+const expectedNames = Object.keys(expected).sort();
+if (
+  JSON.stringify(halluNames) !== JSON.stringify(expectedNames) ||
+  Object.entries(expected).some(([name, value]) => process.env[name] !== value)
+) {
+  throw new Error("Console runtime environment is not the exact OIDC contract");
+}
+const forbiddenNames = Object.keys(process.env).filter(
+  (name) =>
+    name.startsWith("NEXT_PUBLIC_") ||
+    name.startsWith("HALLU_DEFENSE_CONSOLE_ALLOW_") ||
+    name.startsWith("HALLU_DEFENSE_CONSOLE_LOCAL_")
+);
+if (forbiddenNames.length !== 0) {
+  throw new Error("Console runtime contains forbidden client/local configuration");
+}
+
+(async () => {
+  const response = await fetch("http://127.0.0.1:3000/", {
+    redirect: "manual",
+    signal: AbortSignal.timeout(5000),
+  });
+  await response.body?.cancel();
+  if (response.status !== 200) {
+    throw new Error("Console runtime configuration did not serve a healthy page");
+  }
+  const console_oidc_runtime_probe = {
+    api_audience: expected.HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE,
+    api_origin: expected.HALLU_DEFENSE_CONSOLE_API_ORIGIN,
+    auth_mode: expected.HALLU_DEFENSE_CONSOLE_AUTH_MODE,
+    environment: expected.HALLU_DEFENSE_ENV,
+    forbidden_env_absent: true,
+    http_status: response.status,
+    issuer: expected.HALLU_DEFENSE_CONSOLE_OIDC_ISSUER,
+    public_origin: expected.HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN,
+    required_roles: expected.HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES,
+    roles_claim: expected.HALLU_DEFENSE_CONSOLE_OIDC_ROLES_CLAIM,
+    tenant_claim: expected.HALLU_DEFENSE_CONSOLE_OIDC_TENANT_CLAIM,
+  };
+  console.log(JSON.stringify(console_oidc_runtime_probe));
+})().catch(() => {
+  process.exitCode = 1;
+});
+"""
+VAULT_MANAGER_ROTATION_PROBE_SCRIPT = r"""
+import hashlib
+import json
+import os
+
+from hallu_defense.config import RUNTIME_ROLE_API, load_settings
+from hallu_defense.services.secrets import VaultSecretManager, create_secret_manager
+
+settings = load_settings(expected_runtime_role=RUNTIME_ROLE_API)
+manager = create_secret_manager(settings)
+if not isinstance(manager, VaultSecretManager):
+    raise RuntimeError("VaultSecretManager was not selected")
+captured = {}
+
+def fake_vault_get(url, headers, timeout):
+    del url, timeout
+    captured.update(headers)
+    return {"data": {"data": {"value": "probe-only"}}}
+
+manager._http_get_json = fake_vault_get
+manager.get_secret("smoke/runtime-token-probe")
+credential = captured.get("X-Vault-Token")
+if not isinstance(credential, str) or not credential:
+    raise RuntimeError("VaultSecretManager did not read a projected token")
+configured_path = os.environ["HALLU_DEFENSE_VAULT_TOKEN_FILE"]
+vault_manager_projected_rotation_probe = {
+    "lexical_path_preserved": str(settings.vault_token_file) == configured_path,
+    "manager_type": type(manager).__name__,
+    "token_sha256": hashlib.sha256(credential.encode("utf-8")).hexdigest(),
+}
+print(json.dumps(vault_manager_projected_rotation_probe, sort_keys=True))
+"""
+HYBRID_LIFECYCLE_TOMBSTONE_PROBE_SCRIPT = r"""
+import json
+from datetime import datetime, timezone
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+from hallu_defense.config import RUNTIME_ROLE_API, load_settings
+from hallu_defense.domain.models import Authority, Freshness, StalenessClass
+from hallu_defense.services.audit import AuditLedger, PostgresAuditLedgerStorage
+from hallu_defense.services.data_lifecycle import DataLifecyclePolicy, DataLifecycleService
+from hallu_defense.services.postgres import build_postgres_provider
+from hallu_defense.services.rag_index import (
+    HybridRagIndexBackend,
+    RagChunk,
+    RagIndexTenantDeletedError,
+    create_rag_index_backend,
+)
+
+tenant_id = "kind-lifecycle-deleted"
+evidence_id = "ev_kind_lifecycle_deleted"
+actor_id = "kind-lifecycle-smoke"
+trace_id = "trace-kind-lifecycle-smoke"
+settings = load_settings(expected_runtime_role=RUNTIME_ROLE_API)
+connection = build_postgres_provider(settings)
+
+def scalar_count(statement, parameters):
+    rows = connection.fetch_all(statement, parameters)
+    if len(rows) != 1:
+        raise RuntimeError("lifecycle count query did not return exactly one row")
+    value = rows[0].get("count")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError("lifecycle count query returned an invalid value")
+    return value
+
+def opensearch_count():
+    endpoint = settings.opensearch_endpoint.rstrip("/")
+    index_name = quote(settings.opensearch_index_name, safe="")
+    payload = json.dumps(
+        {
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"tenant_id": tenant_id}},
+                        {"term": {"evidence_id": evidence_id}},
+                    ]
+                }
+            }
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = Request(
+        f"{endpoint}/{index_name}/_count",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=settings.rag_index_timeout_seconds) as response:
+        result = json.load(response)
+    count = result.get("count") if isinstance(result, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise RuntimeError("OpenSearch lifecycle count returned an invalid value")
+    return count
+
+try:
+    backend = create_rag_index_backend(settings)
+    if not isinstance(backend, HybridRagIndexBackend):
+        raise RuntimeError("Kind lifecycle probe requires the real hybrid backend")
+    chunk = RagChunk(
+        tenant_id=tenant_id,
+        evidence_id=evidence_id,
+        source_ref="kind://lifecycle/deleted-tenant",
+        content="kind lifecycle deletion parity probe",
+        authority=Authority.INTERNAL,
+        freshness=Freshness(
+            retrieved_at=datetime.now(timezone.utc),
+            staleness_class=StalenessClass.FRESH,
+        ),
+        metadata={
+            "corpus_id": "kind-lifecycle-corpus",
+            "document_revision": "rev-1",
+        },
+    )
+    write = backend.index_chunks([chunk])
+    if write.indexed_count != 1 or write.evidence_ids != [evidence_id]:
+        raise RuntimeError("hybrid lifecycle fixture write was not acknowledged")
+    initial_pgvector = scalar_count(
+        "SELECT count(*) AS count FROM rag_evidence_chunks "
+        "WHERE tenant_id = %s AND evidence_id = %s",
+        (tenant_id, evidence_id),
+    )
+    initial_opensearch = opensearch_count()
+    if (initial_pgvector, initial_opensearch) != (1, 1):
+        raise RuntimeError("hybrid lifecycle fixture was not present in both stores")
+
+    def transactional_audit(transaction):
+        return AuditLedger(
+            storage=PostgresAuditLedgerStorage(connection=transaction)
+        )
+
+    lifecycle = DataLifecycleService(
+        connection=connection,
+        audit=AuditLedger(),
+        transactional_audit_factory=transactional_audit,
+        policy=DataLifecyclePolicy(
+            class_minimum_days={},
+            postgres_retention_days={},
+        ),
+        rag_index_backend="hybrid",
+        rag_deletion_backend=backend,
+    )
+    report = lifecycle.delete_tenant_data(
+        tenant_id,
+        actor_id=actor_id,
+        trace_id=trace_id,
+    )
+    if report.dry_run or report.tenant_id != tenant_id:
+        raise RuntimeError("hybrid lifecycle deletion did not execute")
+    evidence_results = [item for item in report.tables if item.table == "rag_evidence_chunks"]
+    if len(evidence_results) != 1 or evidence_results[0].affected_count != 1:
+        raise RuntimeError("hybrid lifecycle deletion did not remove one PostgreSQL row")
+
+    journal = connection.fetch_all(
+        "SELECT status, external_deleted_count FROM rag_lifecycle_operations "
+        "WHERE operation_id = %s",
+        (report.run_id,),
+    )
+    if journal != [{"status": "completed", "external_deleted_count": 1}]:
+        raise RuntimeError("hybrid lifecycle journal did not complete with exact parity")
+    tombstone = connection.fetch_all(
+        "SELECT operation_id, actor_id, trace_id FROM rag_tenant_deletion_tombstones "
+        "WHERE tenant_id = %s",
+        (tenant_id,),
+    )
+    if tombstone != [
+        {
+            "operation_id": report.run_id,
+            "actor_id": actor_id,
+            "trace_id": trace_id,
+        }
+    ]:
+        raise RuntimeError("hybrid lifecycle tenant tombstone was not durable and exact")
+    audit_rows = connection.fetch_all(
+        "SELECT outcome, metadata FROM audit_events WHERE event_id = %s",
+        (report.audit_event_id,),
+    )
+    if len(audit_rows) != 1 or audit_rows[0].get("outcome") != "success":
+        raise RuntimeError("hybrid lifecycle success audit was not committed")
+    audit_metadata = audit_rows[0].get("metadata")
+    if not isinstance(audit_metadata, dict) or (
+        audit_metadata.get("rag_lifecycle_operation_id") != report.run_id
+        or audit_metadata.get("rag_external_deleted_count") != 1
+        or audit_metadata.get("rag_external_parity_verified") is not True
+    ):
+        raise RuntimeError("hybrid lifecycle audit parity metadata was invalid")
+
+    pgvector_after_delete = scalar_count(
+        "SELECT count(*) AS count FROM rag_evidence_chunks "
+        "WHERE tenant_id = %s AND evidence_id = %s",
+        (tenant_id, evidence_id),
+    )
+    opensearch_after_delete = opensearch_count()
+    if (pgvector_after_delete, opensearch_after_delete) != (0, 0):
+        raise RuntimeError("hybrid lifecycle deletion left persistent evidence")
+
+    reingest_rejected = False
+    try:
+        backend.index_chunks([chunk])
+    except RagIndexTenantDeletedError:
+        reingest_rejected = True
+    if not reingest_rejected:
+        raise RuntimeError("deleted tenant reingestion was not rejected by its durable fence")
+
+    pgvector_after_reingest = scalar_count(
+        "SELECT count(*) AS count FROM rag_evidence_chunks "
+        "WHERE tenant_id = %s AND evidence_id = %s",
+        (tenant_id, evidence_id),
+    )
+    opensearch_after_reingest = opensearch_count()
+    if (pgvector_after_reingest, opensearch_after_reingest) != (0, 0):
+        raise RuntimeError("rejected tenant reingestion mutated a persistent store")
+
+    hybrid_lifecycle_tombstone_probe = {
+        "audit_parity": True,
+        "backend": "hybrid",
+        "external_deleted_count": 1,
+        "journal_completed": True,
+        "opensearch_after_delete": opensearch_after_delete,
+        "opensearch_after_reingest": opensearch_after_reingest,
+        "pgvector_after_delete": pgvector_after_delete,
+        "pgvector_after_reingest": pgvector_after_reingest,
+        "reingest_rejected": reingest_rejected,
+        "tombstone_persisted": True,
+    }
+    print(json.dumps(hybrid_lifecycle_tombstone_probe, sort_keys=True))
+finally:
+    connection.close()
+"""
 
 
 class LiveKindHelmSmokeError(RuntimeError):
     pass
 
 
-def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
+class CommandExecutor(Protocol):
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+ToolLocator = Callable[[str], str | None]
+
+
+def run_from_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    tool_locator: ToolLocator | None = None,
+    executor: CommandExecutor | None = None,
+) -> dict[str, object]:
     effective_env = env if env is not None else os.environ
     if not _enabled(effective_env.get(ENABLED_ENV, "")):
         return {
             "status": "skipped",
             "reason": f"set {ENABLED_ENV}=true to run the kind/Helm live smoke",
-            "required_tools": ["kind", "kubectl", "helm"],
+            "required_tools": list(REQUIRED_TOOLS),
         }
-    missing_tools = [tool for tool in ("kind", "kubectl", "helm") if shutil.which(tool) is None]
+
+    _validated_kind_node_image(effective_env)
+    locator = tool_locator or (
+        lambda tool: shutil.which(tool, path=effective_env.get("PATH"))
+    )
+    missing_tools = [tool for tool in REQUIRED_TOOLS if locator(tool) is None]
     if missing_tools:
-        return {
-            "status": "skipped",
-            "reason": "required live tools are unavailable: " + ", ".join(missing_tools),
-            "required_tools": ["kind", "kubectl", "helm"],
-        }
-    cluster = _optional(effective_env, CLUSTER_ENV) or DEFAULT_CLUSTER
-    namespace = _optional(effective_env, NAMESPACE_ENV) or DEFAULT_NAMESPACE
-    return run_smoke(cluster=cluster, namespace=namespace)
+        raise LiveKindHelmSmokeError(
+            "required live tools are unavailable: " + ", ".join(missing_tools)
+        )
+
+    cluster = _validated_dns_label(
+        _optional(effective_env, CLUSTER_ENV) or DEFAULT_CLUSTER, CLUSTER_ENV
+    )
+    namespace = _validated_dns_label(
+        _optional(effective_env, NAMESPACE_ENV) or DEFAULT_NAMESPACE,
+        NAMESPACE_ENV,
+    )
+    return run_smoke(
+        cluster=cluster,
+        namespace=namespace,
+        executor=executor,
+    )
 
 
-def run_smoke(*, cluster: str, namespace: str) -> dict[str, object]:
+def run_smoke(
+    *,
+    cluster: str,
+    namespace: str,
+    executor: CommandExecutor | None = None,
+) -> dict[str, object]:
+    execute = executor or _run
+    context = f"kind-{cluster}"
+    sandbox_namespace = DEFAULT_SANDBOX_NAMESPACE
+    if namespace == sandbox_namespace:
+        raise LiveKindHelmSmokeError(
+            "application and sandbox namespaces must be distinct"
+        )
     created = False
+    creation_attempted = False
+    result: dict[str, object] | None = None
+    cleanup_evidence: dict[str, object] | None = None
+    cleanup_failure: str | None = None
+    bootstrap_directory = tempfile.TemporaryDirectory(prefix="hallu-kind-bootstrap-")
     try:
-        _run(["kind", "create", "cluster", "--name", cluster])
+        bootstrap_root = Path(bootstrap_directory.name)
+        kind_config_path = bootstrap_root / "kind-config.yaml"
+        _write_kind_config(kind_config_path)
+
+        docker_info = execute(
+            ["docker", "info", "--format", "{{.Architecture}}"],
+            timeout_seconds=30,
+        )
+        docker_architecture = docker_info.stdout.strip().lower()
+        if docker_architecture not in {"amd64", "x86_64"}:
+            raise LiveKindHelmSmokeError(
+                "kind smoke requires an amd64 Docker server for its digest-pinned toolchain"
+            )
+        existing_clusters = _kind_cluster_names(execute)
+        if cluster in existing_clusters:
+            raise LiveKindHelmSmokeError(
+                f"refusing to reuse or delete existing kind cluster {cluster!r}"
+            )
+        creation_attempted = True
+        execute(
+            [
+                "kind",
+                "create",
+                "cluster",
+                "--name",
+                cluster,
+                "--config",
+                str(kind_config_path),
+                "--image",
+                KIND_NODE_IMAGE,
+            ],
+            timeout_seconds=300,
+        )
         created = True
-        _run(["kubectl", "create", "namespace", namespace, "--context", f"kind-{cluster}"])
-        _run(
+        execute(
+            ["kubectl", "--context", context, "create", "namespace", namespace],
+            timeout_seconds=60,
+        )
+        execute(
+            [
+                "kubectl",
+                "--context",
+                context,
+                "create",
+                "namespace",
+                sandbox_namespace,
+            ],
+            timeout_seconds=60,
+        )
+        workspace_host_path = _kind_workspace_host_path(
+            namespace=namespace,
+            sandbox_namespace=sandbox_namespace,
+        )
+        execute(
+            [
+                "docker",
+                "exec",
+                f"{cluster}-control-plane",
+                "install",
+                "-d",
+                "-m",
+                "0770",
+                "-o",
+                "10001",
+                "-g",
+                "10001",
+                workspace_host_path,
+            ],
+            timeout_seconds=30,
+        )
+        _preflight_admission_policy(
+            execute,
+            context=context,
+            namespace=namespace,
+        )
+        for dockerfile, image in (
+            ("infra/docker/api.Dockerfile", API_IMAGE),
+            ("infra/docker/console.Dockerfile", CONSOLE_IMAGE),
+            ("infra/docker/sandbox.Dockerfile", SANDBOX_IMAGE),
+            ("infra/docker/pgvector.Dockerfile", PGVECTOR_IMAGE),
+            ("infra/docker/opensearch.Dockerfile", OPENSEARCH_IMAGE),
+        ):
+            execute(
+                ["docker", "build", "--file", dockerfile, "--tag", image, "."],
+                timeout_seconds=900,
+            )
+        execute(
+            [
+                "kubectl",
+                "--context",
+                context,
+                "wait",
+                "nodes",
+                "--all",
+                "--for=condition=Ready",
+                "--timeout=300s",
+            ],
+            timeout_seconds=330,
+        )
+        execute(
+            [
+                "kind",
+                "load",
+                "docker-image",
+                "--name",
+                cluster,
+                API_IMAGE,
+                CONSOLE_IMAGE,
+                SANDBOX_IMAGE,
+                PGVECTOR_IMAGE,
+                OPENSEARCH_IMAGE,
+            ],
+            timeout_seconds=300,
+        )
+        oidc_material = _new_kind_oidc_material()
+        secret_manifests = _kind_secret_manifests(
+            namespace=namespace,
+            oidc_jwks=oidc_material["jwks"],
+        )
+        for manifest in secret_manifests:
+            execute(
+                [
+                    "kubectl",
+                    "--context",
+                    context,
+                    "--namespace",
+                    namespace,
+                    "apply",
+                    "--server-side",
+                    "--field-manager=hallu-defense-live-smoke",
+                    "--filename",
+                    "-",
+                ],
+                input_text=json.dumps(manifest, separators=(",", ":")),
+                timeout_seconds=30,
+            )
+        precreated_secret_names = [
+            str(manifest["metadata"]["name"]) for manifest in secret_manifests
+        ]
+
+        common_helm_args = [
+            "--namespace",
+            namespace,
+            "--values",
+            str(KIND_VALUES_PATH),
+        ]
+        execute(
+            ["helm", "lint", str(CHART_DIR), *common_helm_args],
+            timeout_seconds=120,
+        )
+        execute(
             [
                 "helm",
                 "template",
-                "hallu-defense",
+                RELEASE_NAME,
                 str(CHART_DIR),
-                "--namespace",
-                namespace,
-                "--set",
-                "worker.enabled=true",
-                "--set-string",
-                "secrets.keycloakJwks=jwks-placeholder",
-                "--set-string",
-                "secrets.vaultToken=prod-vault-token",
-                "--set-string",
-                "secrets.postgresDsn=postgresql://prod_user:prod_pass@pgvector:5432/prod_db",
-                "--set-string",
-                "secrets.postgresUser=prod_user",
-                "--set-string",
-                "secrets.postgresPassword=prod_pass",
-                "--set-string",
-                "secrets.postgresDatabase=prod_db",
-                "--set-string",
-                "secrets.metricsBearerToken=prod-metrics-token",
-                "--set-string",
-                "secrets.opensearchInitialAdminPassword=prod-opensearch-pass",
-            ]
+                *common_helm_args,
+            ],
+            timeout_seconds=120,
         )
-        return {
+        execute(
+            [
+                "helm",
+                "upgrade",
+                "--install",
+                RELEASE_NAME,
+                str(CHART_DIR),
+                *common_helm_args,
+                "--kube-context",
+                context,
+                "--rollback-on-failure",
+                "--wait",
+                "--wait-for-jobs",
+                "--timeout",
+                "15m",
+            ],
+            timeout_seconds=960,
+        )
+        helm_secret_boundary = _verify_helm_release_secret_boundary(
+            execute,
+            context=context,
+            namespace=namespace,
+        )
+
+        kubectl = ["kubectl", "--context", context, "--namespace", namespace]
+        sandbox_kubectl = [
+            "kubectl",
+            "--context",
+            context,
+            "--namespace",
+            sandbox_namespace,
+        ]
+        completed_jobs: dict[str, bool] = {}
+        for component in ("migrations", "vault-bootstrap"):
+            execute(
+                [
+                    *kubectl,
+                    "wait",
+                    "--for=condition=complete",
+                    "--timeout=300s",
+                    "job",
+                    f"--selector=app.kubernetes.io/component={component}",
+                ],
+                timeout_seconds=330,
+            )
+            completed_jobs[component] = True
+        execute(
+            [
+                *sandbox_kubectl,
+                "wait",
+                "--for=condition=complete",
+                "--timeout=300s",
+                "job",
+                "--selector=app.kubernetes.io/component=sandbox-fixture",
+            ],
+            timeout_seconds=330,
+        )
+        completed_jobs["sandbox-fixture"] = True
+        for resource in (
+            f"deployment/{RELEASE_NAME}-api",
+            f"deployment/{RELEASE_NAME}-console",
+            f"deployment/{RELEASE_NAME}-worker",
+            f"deployment/{RELEASE_NAME}-vault",
+            f"deployment/{RELEASE_NAME}-redis",
+            f"statefulset/{RELEASE_NAME}-pgvector",
+            f"statefulset/{RELEASE_NAME}-opensearch",
+        ):
+            execute(
+                [*kubectl, "rollout", "status", resource, "--timeout=300s"],
+                timeout_seconds=330,
+            )
+        workloads = _workload_evidence(execute, kubectl=kubectl)
+        projected_secret_reads = _verify_projected_runtime_secret_reads(
+            execute,
+            kubectl=kubectl,
+        )
+        runtime_secret_rotation = _verify_runtime_secret_rotation(
+            execute,
+            kubectl=kubectl,
+            secret_manifests=secret_manifests,
+        )
+        workloads = _workload_evidence(execute, kubectl=kubectl)
+        runtime_secret_rotation["api_restarts"] = 0
+
+        migration_result = execute(
+            [
+                *kubectl,
+                "exec",
+                f"statefulset/{RELEASE_NAME}-pgvector",
+                "--",
+                "psql",
+                "--username",
+                "prod_user",
+                "--dbname",
+                "prod_db",
+                "--tuples-only",
+                "--no-align",
+                "--command",
+                "SELECT version FROM schema_migrations ORDER BY version;",
+            ],
+            timeout_seconds=60,
+        )
+        migration_versions = tuple(
+            line.strip()
+            for line in migration_result.stdout.splitlines()
+            if line.strip()
+        )
+        if migration_versions != EXPECTED_MIGRATION_VERSIONS:
+            raise LiveKindHelmSmokeError(
+                f"expected {EXPECTED_MIGRATION_COUNT} applied migrations "
+                f"{list(EXPECTED_MIGRATION_VERSIONS)!r}, found {list(migration_versions)!r}"
+            )
+
+        health_result = execute(
+            [
+                *kubectl,
+                "exec",
+                f"deployment/{RELEASE_NAME}-api",
+                "--",
+                "python",
+                "-c",
+                (
+                    "import urllib.request;"
+                    "print(urllib.request.urlopen("
+                    "'http://127.0.0.1:8000/health',timeout=5).read().decode())"
+                ),
+            ],
+            timeout_seconds=30,
+        )
+        health = _health_payload(health_result.stdout)
+        ready_result = execute(
+            [
+                *kubectl,
+                "exec",
+                f"deployment/{RELEASE_NAME}-api",
+                "--",
+                "python",
+                "-c",
+                (
+                    "import urllib.request;"
+                    "print(urllib.request.urlopen("
+                    "'http://127.0.0.1:8000/ready',timeout=5).read().decode())"
+                ),
+            ],
+            timeout_seconds=30,
+        )
+        readiness = _ready_payload(ready_result.stdout)
+        console_oidc = _verify_console_oidc_runtime(execute, kubectl=kubectl)
+        redis = _verify_kind_redis(execute, kubectl=kubectl)
+        opensearch_schema = _verify_opensearch_schema(execute, kubectl=kubectl)
+        worker_readiness = _verify_worker_hybrid_readiness(execute, kubectl=kubectl)
+        worker_metrics = _verify_worker_metrics(execute, kubectl=kubectl)
+        hybrid_lifecycle_tombstone = _verify_hybrid_lifecycle_tombstone(
+            execute,
+            kubectl=kubectl,
+        )
+        application_egress = _verify_application_egress(execute, kubectl=kubectl)
+        sandbox = _verify_kubernetes_sandbox(
+            execute,
+            application_kubectl=kubectl,
+            sandbox_kubectl=sandbox_kubectl,
+            application_namespace=namespace,
+            sandbox_namespace=sandbox_namespace,
+            bearer_token=str(oidc_material["token"]),
+        )
+
+        result = {
             "status": "passed",
             "cluster": cluster,
             "namespace": namespace,
-            "checks": ["kind cluster create", "namespace create", "helm template"],
+            "sandbox_namespace": sandbox_namespace,
+            "images": [
+                API_IMAGE,
+                CONSOLE_IMAGE,
+                SANDBOX_IMAGE,
+                PGVECTOR_IMAGE,
+                OPENSEARCH_IMAGE,
+            ],
+            "network_policy_engine": {
+                "provider": KIND_NETWORK_POLICY_PROVIDER,
+                "node_image": KIND_NODE_IMAGE,
+                "platform": KIND_PLATFORM,
+                "native": True,
+                "default_cni_enabled": True,
+                "runtime_denials_verified": True,
+            },
+            "migration_count": len(migration_versions),
+            "migration_versions": list(migration_versions),
+            "bootstrap_jobs": completed_jobs,
+            "precreated_secrets": precreated_secret_names,
+            "helm_secret_boundary": helm_secret_boundary,
+            "health": health,
+            "readiness": readiness,
+            "console_oidc": console_oidc,
+            "redis": redis,
+            "opensearch_schema": opensearch_schema,
+            "worker_metrics": worker_metrics,
+            "workloads": workloads,
+            "projected_secret_reads": projected_secret_reads,
+            "runtime_secret_rotation": runtime_secret_rotation,
+            "worker_readiness": worker_readiness,
+            "hybrid_lifecycle_tombstone": hybrid_lifecycle_tombstone,
+            "application_egress": application_egress,
+            "sandbox": sandbox,
+            "checks": [
+                "docker image build",
+                "kindnet native NetworkPolicy runtime enforcement",
+                "kind image load",
+                "helm lint",
+                "helm template",
+                "helm upgrade --install",
+                "migration Job complete",
+                "Vault provider secret bootstrap Job complete",
+                "workload rollouts",
+                "schema migration count",
+                "api /health",
+                "api /ready",
+                "Console exact production OIDC runtime environment and healthy page",
+                "Redis invalid AUTH, plaintext, and ACL rejection",
+                "Redis TLS + CA + Vault URL health",
+                "OpenSearch template v3 provisioning and readback",
+                "OpenSearch transport 9300 loopback binding and remote denial",
+                "worker PostgreSQL + hybrid OpenSearch readiness",
+                "hybrid lifecycle deletion parity, durable tombstone, and no-reingestion fence",
+                "complete workload NetworkPolicy coverage and default-deny egress",
+                "workload Ready state and zero restarts",
+                "API/worker projected token and DSN reads plus migration DSN consumption",
+                "projected Vault token rotation observed through load_settings and VaultSecretManager",
+                "authenticated Kubernetes sandbox stdout/stderr/exit/artifact",
+                "sandbox workspace path escape rejection",
+                "sandbox timeout cleanup",
+                "kindnet-enforced sandbox egress denial",
+                "zero residual sandbox Jobs",
+            ],
         }
-    finally:
+    except Exception:
         if created:
-            _run(["kind", "delete", "cluster", "--name", cluster], check=False)
-
-
-def _run(command: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        list(command),
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if check and result.returncode != 0:
+            _emit_diagnostics(
+                execute,
+                context=context,
+                namespace=namespace,
+                sandbox_namespace=sandbox_namespace,
+            )
+        raise
+    finally:
+        primary_error_active = sys.exc_info()[0] is not None
+        if creation_attempted:
+            try:
+                delete_result = execute(
+                    ["kind", "delete", "cluster", "--name", cluster],
+                    check=False,
+                    timeout_seconds=180,
+                )
+                if delete_result.returncode != 0:
+                    cleanup_failure = (
+                        delete_result.stderr.strip()
+                        or delete_result.stdout.strip()
+                        or f"exit {delete_result.returncode}"
+                    )
+                else:
+                    remaining_clusters = _kind_cluster_names(execute)
+                    if cluster in remaining_clusters:
+                        cleanup_failure = (
+                            f"kind cluster {cluster!r} still exists after delete"
+                        )
+                    else:
+                        cleanup_evidence = {
+                            "cluster_deleted": True,
+                            "verified_absent": True,
+                        }
+            except Exception as exc:
+                cleanup_failure = f"{type(exc).__name__}: {exc}"
+            if cleanup_failure and primary_error_active:
+                print(f"kind cleanup failed: {cleanup_failure[:1000]}", file=sys.stderr)
+        bootstrap_directory.cleanup()
+        if cleanup_failure and not primary_error_active:
+            raise LiveKindHelmSmokeError(
+                f"kind cleanup failed after successful smoke: {cleanup_failure[:1000]}"
+            )
+    if result is None or cleanup_evidence is None:
         raise LiveKindHelmSmokeError(
-            f"{' '.join(command)} failed: "
-            + (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+            "kind smoke completed without structured result evidence"
         )
+    result["cleanup"] = cleanup_evidence
     return result
+
+
+def _write_kind_config(destination: Path) -> None:
+    destination.write_text(
+        "\n".join(
+            (
+                "kind: Cluster",
+                "apiVersion: kind.x-k8s.io/v1alpha4",
+                "networking:",
+                f"  podSubnet: {KIND_POD_SUBNET}",
+                "nodes:",
+                "  - role: control-plane",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
+def _kind_workspace_host_path(*, namespace: str, sandbox_namespace: str) -> str:
+    identity = f"{namespace}/{sandbox_namespace}/{RELEASE_NAME}"
+    workspace_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"/var/local/hallu-defense-sandbox/{workspace_hash}"
+
+
+def _kind_cluster_names(execute: CommandExecutor) -> set[str]:
+    result = execute(
+        ["kind", "get", "clusters"],
+        check=False,
+        timeout_seconds=30,
+    )
+    if result.returncode != 0:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit {result.returncode}"
+        )
+        raise LiveKindHelmSmokeError(f"kind cluster inventory failed: {detail[:1000]}")
+    return {
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.strip().lower().startswith("no kind clusters")
+    }
+
+
+def _verify_helm_release_secret_boundary(
+    execute: CommandExecutor,
+    *,
+    context: str,
+    namespace: str,
+) -> dict[str, object]:
+    manifest_result = execute(
+        [
+            "helm",
+            "get",
+            "manifest",
+            RELEASE_NAME,
+            "--namespace",
+            namespace,
+            "--kube-context",
+            context,
+        ],
+        timeout_seconds=60,
+    )
+    if re.search(r"(?m)^kind:\s*Secret\s*$", manifest_result.stdout):
+        raise LiveKindHelmSmokeError(
+            "Helm release manifest unexpectedly retained a Secret object"
+        )
+    values_result = execute(
+        [
+            "helm",
+            "get",
+            "values",
+            RELEASE_NAME,
+            "--all",
+            "--output",
+            "json",
+            "--namespace",
+            namespace,
+            "--kube-context",
+            context,
+        ],
+        timeout_seconds=60,
+    )
+    try:
+        values = json.loads(values_result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError("Helm release values did not return JSON") from exc
+    if not isinstance(values, Mapping):
+        raise LiveKindHelmSmokeError("Helm release values must be an object")
+    secret_refs = values.get("secrets")
+    if not isinstance(secret_refs, Mapping):
+        raise LiveKindHelmSmokeError(
+            "Helm release values are missing Secret references"
+        )
+    forbidden_keys = {
+        "keycloakJwks",
+        "vaultToken",
+        "postgresDsn",
+        "migrationsPostgresDsn",
+        "postgresUser",
+        "postgresPassword",
+        "postgresDatabase",
+        "rootToken",
+        "kindVaultCaCertificate",
+        "kindVaultTlsCertificate",
+        "kindVaultTlsPrivateKey",
+        "kindRedisCaCertificate",
+        "kindRedisTlsCertificate",
+        "kindRedisTlsPrivateKey",
+    }
+    leaked_fields: list[str] = []
+
+    def inspect_release_value(value: object, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}"
+                if key_text in forbidden_keys:
+                    leaked_fields.append(child_path)
+                inspect_release_value(nested, child_path)
+            return
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for index, nested in enumerate(value):
+                inspect_release_value(nested, f"{path}[{index}]")
+            return
+        if isinstance(value, str) and (
+            value.startswith(("postgresql://", "postgres://"))
+            or ("-----BEGIN " + "PRIVATE KEY-----") in value
+            or ("-----BEGIN RSA " + "PRIVATE KEY-----") in value
+        ):
+            leaked_fields.append(path)
+
+    inspect_release_value(secret_refs, "secrets")
+    if leaked_fields:
+        raise LiveKindHelmSmokeError(
+            "Helm release values unexpectedly retained a sensitive Secret field"
+        )
+    expected_names = {
+        "runtime": f"{RELEASE_NAME}-runtime",
+        "bootstrap": f"{RELEASE_NAME}-bootstrap",
+        "migrations": f"{RELEASE_NAME}-migrations",
+        "kindPostgres": f"{RELEASE_NAME}-postgres",
+        "kindVault": f"{RELEASE_NAME}-kind-vault",
+        "kindRedisTls": f"{RELEASE_NAME}-kind-redis-tls",
+    }
+    actual_names: dict[str, str] = {}
+    for section, expected_name in expected_names.items():
+        reference = secret_refs.get(section)
+        name = reference.get("name") if isinstance(reference, Mapping) else None
+        if name != expected_name:
+            raise LiveKindHelmSmokeError(
+                f"Helm release Secret reference {section} was not exact"
+            )
+        actual_names[section] = expected_name
+    if len(set(actual_names.values())) != len(actual_names):
+        raise LiveKindHelmSmokeError("Helm release Secret references were not distinct")
+    return {
+        "manifest_secret_objects": 0,
+        "sensitive_value_fields": 0,
+        "precreated_secret_references": actual_names,
+    }
+
+
+def _workload_evidence(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    pods_result = execute(
+        [
+            *kubectl,
+            "get",
+            "pods",
+            "--selector",
+            f"app.kubernetes.io/instance={RELEASE_NAME}",
+            "--output=json",
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(pods_result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "workload pod inventory did not return JSON"
+        ) from exc
+    items = payload.get("items") if isinstance(payload, Mapping) else None
+    if not isinstance(items, list):
+        raise LiveKindHelmSmokeError("workload pod inventory is missing items")
+    evidence: dict[str, object] = {}
+    for component in EXPECTED_WORKLOAD_COMPONENTS:
+        matches: list[Mapping[str, object]] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            metadata = item.get("metadata")
+            labels = metadata.get("labels") if isinstance(metadata, Mapping) else None
+            if (
+                isinstance(labels, Mapping)
+                and labels.get("app.kubernetes.io/component") == component
+            ):
+                matches.append(item)
+        if len(matches) != 1:
+            raise LiveKindHelmSmokeError(
+                f"expected exactly one running {component} Pod, found {len(matches)}"
+            )
+        pod = matches[0]
+        metadata = pod.get("metadata")
+        status = pod.get("status")
+        if not isinstance(metadata, Mapping) or not isinstance(status, Mapping):
+            raise LiveKindHelmSmokeError(f"{component} Pod is missing metadata/status")
+        if status.get("phase") != "Running":
+            raise LiveKindHelmSmokeError(f"{component} Pod is not Running")
+        container_statuses = status.get("containerStatuses")
+        if not isinstance(container_statuses, list) or not container_statuses:
+            raise LiveKindHelmSmokeError(
+                f"{component} Pod has no container status evidence"
+            )
+        if not all(
+            isinstance(container, Mapping) and container.get("ready") is True
+            for container in container_statuses
+        ):
+            raise LiveKindHelmSmokeError(
+                f"{component} Pod containers are not all Ready"
+            )
+        all_statuses = [*container_statuses]
+        init_statuses = status.get("initContainerStatuses", [])
+        if isinstance(init_statuses, list):
+            all_statuses.extend(init_statuses)
+        restarts = sum(
+            int(container.get("restartCount", 0))
+            for container in all_statuses
+            if isinstance(container, Mapping)
+        )
+        if restarts != 0:
+            raise LiveKindHelmSmokeError(
+                f"{component} Pod has {restarts} container restarts"
+            )
+        evidence[component] = {
+            "pod": str(metadata.get("name", "")),
+            "phase": "Running",
+            "containers": len(container_statuses),
+            "ready_containers": len(container_statuses),
+            "restarts": restarts,
+        }
+    return evidence
+
+
+def _verify_projected_runtime_secret_reads(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    expected_runtime = {
+        "postgres_dsn_file_read": True,
+        "raw_secret_env_absent": True,
+        "vault_token_file_read": True,
+    }
+    evidence: dict[str, object] = {}
+    for component in ("api", "worker"):
+        result = execute(
+            [
+                *kubectl,
+                "exec",
+                f"deployment/{RELEASE_NAME}-{component}",
+                "--",
+                "python",
+                "-c",
+                PROJECTED_RUNTIME_SECRET_READ_SCRIPT,
+            ],
+            timeout_seconds=30,
+        )
+        try:
+            payload = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as exc:
+            raise LiveKindHelmSmokeError(
+                f"{component} projected runtime secret probe did not return JSON"
+            ) from exc
+        if payload != expected_runtime:
+            raise LiveKindHelmSmokeError(
+                f"{component} projected runtime secret reads were not proven"
+            )
+        evidence[component] = expected_runtime.copy()
+
+    migration_pods_result = execute(
+        [
+            *kubectl,
+            "get",
+            "pods",
+            "--selector=app.kubernetes.io/component=migrations",
+            "--output=json",
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        migration_pods_payload = json.loads(migration_pods_result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "migration Pod restart evidence did not return JSON"
+        ) from exc
+    migration_pods = (
+        migration_pods_payload.get("items")
+        if isinstance(migration_pods_payload, Mapping)
+        else None
+    )
+    if not isinstance(migration_pods, list) or len(migration_pods) != 1:
+        raise LiveKindHelmSmokeError(
+            "expected exactly one completed migration Pod for restart evidence"
+        )
+    migration_pod = migration_pods[0]
+    migration_status = (
+        migration_pod.get("status") if isinstance(migration_pod, Mapping) else None
+    )
+    if (
+        not isinstance(migration_status, Mapping)
+        or migration_status.get("phase") != "Succeeded"
+    ):
+        raise LiveKindHelmSmokeError("migration Pod did not reach Succeeded")
+    migration_container_statuses: list[Mapping[str, object]] = []
+    for status_field in ("initContainerStatuses", "containerStatuses"):
+        statuses = migration_status.get(status_field, [])
+        if not isinstance(statuses, list):
+            raise LiveKindHelmSmokeError(
+                "migration Pod container status evidence was invalid"
+            )
+        migration_container_statuses.extend(
+            status for status in statuses if isinstance(status, Mapping)
+        )
+    if not migration_container_statuses or not any(
+        status.get("name") == "migrations" for status in migration_container_statuses
+    ):
+        raise LiveKindHelmSmokeError(
+            "migration Pod main container status was unavailable"
+        )
+    migration_restarts = sum(
+        int(status.get("restartCount", 0)) for status in migration_container_statuses
+    )
+    if migration_restarts != 0:
+        raise LiveKindHelmSmokeError(
+            f"migration Pod has {migration_restarts} container restarts"
+        )
+
+    migration_logs = execute(
+        [
+            *kubectl,
+            "logs",
+            "--selector=app.kubernetes.io/component=migrations",
+            "--container=migrations",
+            "--prefix=false",
+            "--tail=20",
+        ],
+        timeout_seconds=30,
+    )
+    migration_payloads: list[Mapping[str, object]] = []
+    for line in migration_logs.stdout.splitlines():
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, Mapping) and candidate.get("status") in {
+            "ok",
+            "error",
+        }:
+            migration_payloads.append(candidate)
+    if len(migration_payloads) != 1 or migration_payloads[0].get("status") != "ok":
+        raise LiveKindHelmSmokeError(
+            "migration Job did not prove successful projected PostgreSQL DSN consumption"
+        )
+    applied = migration_payloads[0].get("applied")
+    if not isinstance(applied, list) or tuple(applied) != EXPECTED_MIGRATION_VERSIONS:
+        raise LiveKindHelmSmokeError(
+            "migration Job projected DSN proof did not apply the exact migration inventory"
+        )
+    evidence["migrations"] = {
+        "applied_migrations": len(applied),
+        "postgres_dsn_file_read": True,
+        "raw_secret_env_absent": True,
+        "restarts": 0,
+    }
+    return evidence
+
+
+def _verify_runtime_secret_rotation(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    secret_manifests: Sequence[Mapping[str, object]],
+    attempts: int = 90,
+    interval_seconds: float = 1.0,
+) -> dict[str, object]:
+    runtime_matches: list[Mapping[str, object]] = []
+    for manifest in secret_manifests:
+        metadata = manifest.get("metadata")
+        if (
+            isinstance(metadata, Mapping)
+            and metadata.get("name") == f"{RELEASE_NAME}-runtime"
+        ):
+            runtime_matches.append(manifest)
+    if len(runtime_matches) != 1:
+        raise LiveKindHelmSmokeError(
+            "runtime Secret rotation requires exactly one precreated runtime manifest"
+        )
+    original_manifest = copy.deepcopy(runtime_matches[0])
+    string_data = original_manifest.get("stringData")
+    if not isinstance(string_data, Mapping):
+        raise LiveKindHelmSmokeError(
+            "runtime Secret rotation manifest is missing stringData"
+        )
+    original_credential = string_data.get("vault-token")
+    if not isinstance(original_credential, str) or not original_credential:
+        raise LiveKindHelmSmokeError("runtime Secret rotation token is unavailable")
+    original_fingerprint = hashlib.sha256(
+        original_credential.encode("utf-8")
+    ).hexdigest()
+    _wait_for_vault_manager_fingerprint(
+        execute,
+        kubectl=kubectl,
+        expected_fingerprint=original_fingerprint,
+        attempts=1,
+        interval_seconds=0,
+    )
+
+    rotated_credential = secret_generator.token_urlsafe(32)
+    while rotated_credential == original_credential:
+        rotated_credential = secret_generator.token_urlsafe(32)
+    rotated_fingerprint = hashlib.sha256(rotated_credential.encode("utf-8")).hexdigest()
+    rotated_manifest = copy.deepcopy(original_manifest)
+    rotated_data = rotated_manifest.get("stringData")
+    if not isinstance(rotated_data, dict):
+        raise LiveKindHelmSmokeError("runtime Secret rotation data is not mutable")
+    rotated_data["vault-token"] = rotated_credential
+
+    primary_error: Exception | None = None
+    observed_rotated = False
+    restored = False
+    try:
+        _apply_secret_manifest(execute, kubectl=kubectl, manifest=rotated_manifest)
+        _wait_for_vault_manager_fingerprint(
+            execute,
+            kubectl=kubectl,
+            expected_fingerprint=rotated_fingerprint,
+            attempts=attempts,
+            interval_seconds=interval_seconds,
+        )
+        observed_rotated = True
+    except Exception as exc:
+        primary_error = exc
+
+    try:
+        _apply_secret_manifest(execute, kubectl=kubectl, manifest=original_manifest)
+        _wait_for_vault_manager_fingerprint(
+            execute,
+            kubectl=kubectl,
+            expected_fingerprint=original_fingerprint,
+            attempts=attempts,
+            interval_seconds=interval_seconds,
+        )
+        restored = True
+    except Exception as restore_exc:
+        if primary_error is not None:
+            raise LiveKindHelmSmokeError(
+                "runtime Secret rotation failed and the original token could not be restored"
+            ) from primary_error
+        raise restore_exc
+    if primary_error is not None:
+        raise primary_error
+    return {
+        "fingerprint_changed": observed_rotated,
+        "lexical_path_preserved": True,
+        "manager_type": "VaultSecretManager",
+        "original_restored": restored,
+    }
+
+
+def _apply_secret_manifest(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    manifest: Mapping[str, object],
+) -> None:
+    execute(
+        [
+            *kubectl,
+            "apply",
+            "--server-side",
+            "--field-manager=hallu-defense-live-smoke",
+            "--filename",
+            "-",
+        ],
+        input_text=json.dumps(manifest, separators=(",", ":")),
+        timeout_seconds=30,
+    )
+
+
+def _wait_for_vault_manager_fingerprint(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    expected_fingerprint: str,
+    attempts: int,
+    interval_seconds: float,
+) -> None:
+    if attempts < 1 or interval_seconds < 0:
+        raise LiveKindHelmSmokeError(
+            "runtime Secret rotation polling bounds are invalid"
+        )
+    for attempt in range(attempts):
+        result = execute(
+            [
+                *kubectl,
+                "exec",
+                f"deployment/{RELEASE_NAME}-api",
+                "--",
+                "python",
+                "-c",
+                VAULT_MANAGER_ROTATION_PROBE_SCRIPT,
+            ],
+            check=False,
+            timeout_seconds=30,
+        )
+        if result.returncode == 0:
+            try:
+                payload = json.loads(result.stdout.strip())
+            except json.JSONDecodeError:
+                payload = None
+            if payload == {
+                "lexical_path_preserved": True,
+                "manager_type": "VaultSecretManager",
+                "token_sha256": expected_fingerprint,
+            }:
+                return
+        if attempt + 1 < attempts:
+            time.sleep(interval_seconds)
+    raise LiveKindHelmSmokeError(
+        "API VaultSecretManager did not observe the expected projected-token revision"
+    )
+
+
+def _verify_console_oidc_runtime(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-console",
+            "--",
+            "node",
+            "-e",
+            CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT,
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "Console OIDC runtime probe did not return JSON"
+        ) from exc
+    expected: dict[str, object] = {
+        "api_audience": "hallu-defense-api",
+        "api_origin": "https://api.kind.invalid",
+        "auth_mode": "oidc",
+        "environment": "production",
+        "forbidden_env_absent": True,
+        "http_status": 200,
+        "issuer": "https://auth.kind.invalid/realms/hallu-defense",
+        "public_origin": "https://console.kind.invalid",
+        "required_roles": (
+            "verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator"
+        ),
+        "roles_claim": "roles",
+        "tenant_claim": "tenant_id",
+    }
+    if payload != expected:
+        raise LiveKindHelmSmokeError(
+            "Console runtime did not prove the exact production OIDC contract"
+        )
+    return expected
+
+
+def _verify_worker_hybrid_readiness(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, bool]:
+    execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-worker",
+            "--",
+            "python",
+            "-m",
+            "hallu_defense.worker",
+            "--check-ready",
+        ],
+        timeout_seconds=30,
+    )
+    unavailable_script = """
+from hallu_defense.services.rag_index import OpenSearchRagIndexBackend
+
+backend = OpenSearchRagIndexBackend(
+    endpoint="http://127.0.0.1:1",
+    index_name="hallu_evidence",
+    timeout_seconds=0.5,
+)
+backend.health_check()
+"""
+    unavailable = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-worker",
+            "--",
+            "python",
+            "-c",
+            unavailable_script,
+        ],
+        check=False,
+        timeout_seconds=15,
+    )
+    if unavailable.returncode == 0:
+        raise LiveKindHelmSmokeError(
+            "worker OpenSearch health checker accepted an unreachable loopback endpoint"
+        )
+    return {
+        "real_dependencies_ready": True,
+        "unreachable_opensearch_rejected": True,
+    }
+
+
+def _verify_worker_metrics(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    script = r"""
+import json
+import urllib.error
+import urllib.request
+
+from hallu_defense.config import RUNTIME_ROLE_WORKER, load_settings
+from hallu_defense.services.secrets import create_secret_manager
+
+worker_metrics_authenticated_probe = True
+endpoint = "http://127.0.0.1:9090/metrics"
+try:
+    urllib.request.urlopen(endpoint, timeout=5)
+except urllib.error.HTTPError as exc:
+    unauthorized_status = exc.code
+else:
+    raise SystemExit("worker metrics accepted a request without Bearer auth")
+
+settings = load_settings(expected_runtime_role=RUNTIME_ROLE_WORKER)
+secret_name = settings.metrics_bearer_token_secret_name
+if not secret_name:
+    raise SystemExit("worker metrics token secret name is missing")
+token = create_secret_manager(settings).get_secret(secret_name).reveal()
+request = urllib.request.Request(
+    endpoint,
+    headers={"Authorization": f"Bearer {token}"},
+)
+with urllib.request.urlopen(request, timeout=5) as response:
+    payload = response.read(1024 * 1024 + 1)
+    status = response.status
+    cache_control = response.headers.get("Cache-Control")
+if len(payload) > 1024 * 1024 or b"hallu_ingestion_jobs_total" not in payload:
+    raise SystemExit("worker metrics response is missing bounded ingestion metrics")
+print(json.dumps({
+    "authenticated_status": status,
+    "cache_control": cache_control,
+    "ingestion_metric_present": True,
+    "unauthenticated_status": unauthorized_status,
+}, sort_keys=True))
+"""
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-worker",
+            "--",
+            "python",
+            "-c",
+            script,
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "worker metrics probe did not return JSON"
+        ) from exc
+    expected: dict[str, object] = {
+        "authenticated_status": 200,
+        "cache_control": "no-store",
+        "ingestion_metric_present": True,
+        "unauthenticated_status": 401,
+    }
+    if payload != expected:
+        raise LiveKindHelmSmokeError(
+            "worker metrics did not prove Bearer auth, no-store, and ingestion output"
+        )
+    return expected
+
+
+def _verify_hybrid_lifecycle_tombstone(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-api",
+            "--",
+            "python",
+            "-c",
+            HYBRID_LIFECYCLE_TOMBSTONE_PROBE_SCRIPT,
+        ],
+        timeout_seconds=90,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "hybrid lifecycle tombstone probe did not return JSON"
+        ) from exc
+    expected: dict[str, object] = {
+        "audit_parity": True,
+        "backend": "hybrid",
+        "external_deleted_count": 1,
+        "journal_completed": True,
+        "opensearch_after_delete": 0,
+        "opensearch_after_reingest": 0,
+        "pgvector_after_delete": 0,
+        "pgvector_after_reingest": 0,
+        "reingest_rejected": True,
+        "tombstone_persisted": True,
+    }
+    if payload != expected:
+        raise LiveKindHelmSmokeError(
+            "hybrid lifecycle did not prove deletion parity, durable tombstone, "
+            "and no-reingestion"
+        )
+    return expected
+
+
+def _verify_opensearch_schema(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    result = execute(
+        [
+            *kubectl,
+            "logs",
+            f"deployment/{RELEASE_NAME}-api",
+            "--container",
+            "bootstrap-opensearch-schema",
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch schema bootstrap did not return JSON"
+        ) from exc
+    expected_bootstrap = {
+        "template_name": "hallu_evidence_template",
+        "index_name": "hallu_evidence",
+        "installed": True,
+        "acknowledged": True,
+        "schema_version": EXPECTED_OPENSEARCH_SCHEMA_VERSION,
+        "schema_ready": True,
+        "dry_run": False,
+    }
+    if not isinstance(payload, Mapping) or any(
+        payload.get(key) != value for key, value in expected_bootstrap.items()
+    ):
+        raise LiveKindHelmSmokeError(
+            "OpenSearch schema v3 provisioning/readback failed"
+        )
+    index_state = payload.get("index_state")
+    if index_state not in {"absent", "compatible"}:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch schema v3 index compatibility check failed"
+        )
+
+    health_result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-api",
+            "--",
+            "python",
+            "-c",
+            OPENSEARCH_SCHEMA_HEALTH_SCRIPT,
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        health_payload = json.loads(health_result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch schema/health readback did not return JSON"
+        ) from exc
+    if not isinstance(health_payload, Mapping):
+        raise LiveKindHelmSmokeError("OpenSearch schema/health readback was invalid")
+    if health_payload.get("template_replicas") != EXPECTED_OPENSEARCH_TEMPLATE_REPLICAS:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch schema v3 template replica readback failed"
+        )
+    cluster_status = health_payload.get("cluster_status")
+    cluster_timed_out = health_payload.get("cluster_timed_out")
+    data_nodes = health_payload.get("data_nodes")
+    if (
+        cluster_status not in {"green", "yellow"}
+        or cluster_timed_out is not False
+        or not isinstance(data_nodes, int)
+        or isinstance(data_nodes, bool)
+        or data_nodes < 1
+    ):
+        raise LiveKindHelmSmokeError(
+            "OpenSearch Kind cluster health requires green/yellow, no timeout, and >=1 data node"
+        )
+    transport_listeners = _verify_opensearch_transport_loopback(
+        execute,
+        kubectl=kubectl,
+    )
+    return {
+        **expected_bootstrap,
+        "index_state": index_state,
+        "template_replicas": EXPECTED_OPENSEARCH_TEMPLATE_REPLICAS,
+        "cluster_status": cluster_status,
+        "cluster_timed_out": False,
+        "data_nodes": data_nodes,
+        "transport_9300_listeners": transport_listeners,
+    }
+
+
+def _verify_opensearch_transport_loopback(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> list[str]:
+    script = r"""
+import json
+import socket
+
+opensearch_transport_loopback = True
+listeners = []
+for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+    with open(path, encoding="ascii") as stream:
+        rows = stream.read().splitlines()[1:]
+    for row in rows:
+        fields = row.split()
+        local_address, state = fields[1], fields[3]
+        address_hex, port_hex = local_address.rsplit(":", maxsplit=1)
+        if state != "0A" or int(port_hex, 16) != 9300:
+            continue
+        if path.endswith("tcp"):
+            listeners.append(socket.inet_ntoa(bytes.fromhex(address_hex)[::-1]))
+        else:
+            listeners.append("tcp6:" + address_hex)
+print(json.dumps({"listeners": sorted(listeners)}, sort_keys=True))
+"""
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"statefulset/{RELEASE_NAME}-opensearch",
+            "--",
+            "python3",
+            "-c",
+            script,
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch transport listener readback did not return JSON"
+        ) from exc
+    if payload != {"listeners": ["127.0.0.1"]}:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch transport port 9300 must listen only on IPv4 loopback"
+        )
+    return ["127.0.0.1"]
+
+
+def _verify_application_egress(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    policy_result = execute(
+        [*kubectl, "get", "networkpolicy", "--output=json"],
+        timeout_seconds=30,
+    )
+    try:
+        policy_payload = json.loads(policy_result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "NetworkPolicy inventory did not return JSON"
+        ) from exc
+    raw_items = (
+        policy_payload.get("items") if isinstance(policy_payload, Mapping) else None
+    )
+    if not isinstance(raw_items, list):
+        raise LiveKindHelmSmokeError("NetworkPolicy inventory did not contain items")
+    policies_by_name = {
+        str(metadata["name"]): item
+        for item in raw_items
+        if isinstance(item, Mapping)
+        and isinstance((metadata := item.get("metadata")), Mapping)
+        and isinstance(metadata.get("name"), str)
+    }
+    default_deny = policies_by_name.get(f"{RELEASE_NAME}-default-deny-ingress")
+    if not isinstance(default_deny, Mapping) or default_deny.get("spec") != {
+        "podSelector": {},
+        "policyTypes": ["Ingress"],
+        "ingress": [],
+    }:
+        raise LiveKindHelmSmokeError(
+            "application namespace default-deny ingress policy is missing or inexact"
+        )
+    policy_names = {
+        "api": f"{RELEASE_NAME}-api-egress",
+        "worker": f"{RELEASE_NAME}-worker-egress",
+        "console": f"{RELEASE_NAME}-console-egress",
+        "migrations": f"{RELEASE_NAME}-migrations-egress",
+        "vault-bootstrap": f"{RELEASE_NAME}-vault-bootstrap-egress",
+        "pgvector": f"{RELEASE_NAME}-pgvector-egress",
+        "opensearch": f"{RELEASE_NAME}-opensearch-egress",
+        "vault": f"{RELEASE_NAME}-vault-egress",
+        "redis": f"{RELEASE_NAME}-redis",
+    }
+    expected_ingress = {
+        "pgvector": (("api", "worker", "migrations"), 5432),
+        "opensearch": (("api", "worker"), 9200),
+        "vault": (("api", "worker", "vault-bootstrap", "redis"), 8200),
+        "redis": (("api",), 6379),
+    }
+    try:
+        application_namespace = kubectl[kubectl.index("--namespace") + 1]
+    except (ValueError, IndexError) as exc:
+        raise LiveKindHelmSmokeError(
+            "kubectl command is missing its namespace"
+        ) from exc
+    expected_external_ingress = {
+        "api": (
+            (
+                ("hallu-defense.openai.com/network-client", "api"),
+                ("hallu-defense.openai.com/network-client", "metrics"),
+            ),
+            8000,
+        ),
+        "console": (
+            (("hallu-defense.openai.com/network-client", "console"),),
+            3000,
+        ),
+        "worker": (
+            (("hallu-defense.openai.com/network-client", "metrics"),),
+            9090,
+        ),
+    }
+    policy_evidence: dict[str, object] = {
+        "default-deny-ingress": {
+            "name": f"{RELEASE_NAME}-default-deny-ingress",
+            "ingress_rule_count": 0,
+        }
+    }
+    for component, policy_name in policy_names.items():
+        policy = policies_by_name.get(policy_name)
+        if not isinstance(policy, Mapping):
+            raise LiveKindHelmSmokeError(
+                f"missing egress NetworkPolicy {policy_name} for {component}"
+            )
+        spec = policy.get("spec")
+        if not isinstance(spec, Mapping):
+            raise LiveKindHelmSmokeError(f"NetworkPolicy {policy_name} has no spec")
+        expected_selector = {
+            "matchLabels": {
+                "app.kubernetes.io/name": RELEASE_NAME,
+                "app.kubernetes.io/instance": RELEASE_NAME,
+                "app.kubernetes.io/component": component,
+            }
+        }
+        if spec.get("podSelector") != expected_selector:
+            raise LiveKindHelmSmokeError(
+                f"NetworkPolicy {policy_name} does not select only {component}"
+            )
+        policy_types = spec.get("policyTypes")
+        if not isinstance(policy_types, list) or "Egress" not in policy_types:
+            raise LiveKindHelmSmokeError(
+                f"NetworkPolicy {policy_name} does not isolate egress"
+            )
+        ingress_sources: tuple[str, ...] = ()
+        if component in expected_external_ingress:
+            external_sources, ingress_port = expected_external_ingress[component]
+            expected_ingress_rules = [
+                {
+                    "from": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": application_namespace
+                                }
+                            },
+                            "podSelector": {"matchLabels": {label_key: label_value}},
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": ingress_port}],
+                }
+                for label_key, label_value in external_sources
+            ]
+            ingress_sources = tuple(
+                f"{label_key}={label_value}"
+                for label_key, label_value in external_sources
+            )
+            if (
+                "Ingress" not in policy_types
+                or spec.get("ingress") != expected_ingress_rules
+            ):
+                raise LiveKindHelmSmokeError(
+                    f"NetworkPolicy {policy_name} external ingress allowlist is not exact"
+                )
+        elif component in expected_ingress:
+            ingress_sources, ingress_port = expected_ingress[component]
+            expected_ingress_rules = [
+                {
+                    "from": [
+                        {
+                            "podSelector": {
+                                "matchLabels": {
+                                    "app.kubernetes.io/name": RELEASE_NAME,
+                                    "app.kubernetes.io/instance": RELEASE_NAME,
+                                    "app.kubernetes.io/component": source,
+                                }
+                            }
+                        }
+                        for source in ingress_sources
+                    ],
+                    "ports": [{"protocol": "TCP", "port": ingress_port}],
+                }
+            ]
+            if (
+                "Ingress" not in policy_types
+                or spec.get("ingress") != expected_ingress_rules
+            ):
+                raise LiveKindHelmSmokeError(
+                    f"NetworkPolicy {policy_name} ingress allowlist is not exact"
+                )
+        elif "Ingress" in policy_types or "ingress" in spec:
+            raise LiveKindHelmSmokeError(
+                f"egress-only NetworkPolicy {policy_name} must not alter ingress"
+            )
+        egress_rules = spec.get("egress")
+        if not isinstance(egress_rules, list):
+            raise LiveKindHelmSmokeError(
+                f"NetworkPolicy {policy_name} has invalid egress rules"
+            )
+        expected_console_egress = [
+            {
+                "to": [
+                    {
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": "kube-system"
+                            }
+                        },
+                        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                    }
+                ],
+                "ports": [
+                    {"protocol": "UDP", "port": 53},
+                    {"protocol": "TCP", "port": 53},
+                ],
+            }
+        ]
+        if component == "console" and egress_rules != expected_console_egress:
+            raise LiveKindHelmSmokeError(
+                f"NetworkPolicy {policy_name} must allow only cluster DNS in Kind"
+            )
+        if component in {"pgvector", "opensearch", "vault"} and egress_rules:
+            raise LiveKindHelmSmokeError(
+                f"NetworkPolicy {policy_name} must deny all egress"
+            )
+        policy_evidence[component] = {
+            "name": policy_name,
+            "egress_rule_count": len(egress_rules),
+            "ingress_sources": list(ingress_sources),
+        }
+
+    python_script = """
+import json
+import os
+import socket
+
+network_policy_socket_probe = True
+
+def connected(host, port):
+    try:
+        connection = socket.create_connection((host, port), timeout=2)
+    except OSError:
+        return False
+    connection.close()
+    return True
+
+print(json.dumps({
+    "internet_1_1_1_1": connected("1.1.1.1", 443),
+    "kubernetes_api": connected(
+        os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc"),
+        int(os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")),
+    ),
+}, sort_keys=True))
+"""
+    probes: dict[str, object] = {}
+    expected = {
+        "api": {"internet_1_1_1_1": False, "kubernetes_api": True},
+        "worker": {"internet_1_1_1_1": False, "kubernetes_api": False},
+    }
+    for component in ("api", "worker"):
+        result = execute(
+            [
+                *kubectl,
+                "exec",
+                f"deployment/{RELEASE_NAME}-{component}",
+                "--",
+                "python",
+                "-c",
+                python_script,
+            ],
+            timeout_seconds=15,
+        )
+        try:
+            payload = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as exc:
+            raise LiveKindHelmSmokeError(
+                f"{component} application egress probe did not return JSON"
+            ) from exc
+        if payload != expected[component]:
+            raise LiveKindHelmSmokeError(
+                f"{component} application egress policy returned unexpected evidence"
+            )
+        probes[component] = payload
+
+    console_script = """
+const net = require("node:net");
+const console_network_policy_socket_probe = true;
+
+function connected(host, port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(2000, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
+(async () => {
+  console.log(JSON.stringify({
+    internet_1_1_1_1: await connected("1.1.1.1", 443),
+  }));
+})().catch(() => {
+  process.exitCode = 1;
+});
+"""
+    console_result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-console",
+            "--",
+            "node",
+            "-e",
+            console_script,
+        ],
+        timeout_seconds=15,
+    )
+    try:
+        console_payload = json.loads(console_result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "console egress probe did not return JSON"
+        ) from exc
+    if console_payload != {"internet_1_1_1_1": False}:
+        raise LiveKindHelmSmokeError(
+            "Console OIDC egress allowlist permitted an unauthorized destination"
+        )
+    probes["console"] = console_payload
+    probes["unauthorized_dependency_ingress"] = _verify_dependency_ingress_denial(
+        execute,
+        kubectl=kubectl,
+    )
+    return {"policies": policy_evidence, "probes": probes}
+
+
+def _verify_dependency_ingress_denial(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, object]:
+    pod_name = "hallu-network-ingress-probe"
+    opensearch_pod_ip = _selected_opensearch_pod_ip(execute, kubectl=kubectl)
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "labels": {
+                "app.kubernetes.io/name": RELEASE_NAME,
+                "app.kubernetes.io/instance": RELEASE_NAME,
+                "app.kubernetes.io/component": "unauthorized-probe",
+            },
+        },
+        "spec": {
+            "automountServiceAccountToken": False,
+            "restartPolicy": "Never",
+            "securityContext": {
+                "runAsNonRoot": True,
+                "runAsUser": 10001,
+                "runAsGroup": 10001,
+                "seccompProfile": {"type": "RuntimeDefault"},
+            },
+            "containers": [
+                {
+                    "name": "probe",
+                    "image": API_IMAGE,
+                    "imagePullPolicy": "Never",
+                    "command": ["python", "-c", "import time; time.sleep(120)"],
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "readOnlyRootFilesystem": True,
+                        "capabilities": {"drop": ["ALL"]},
+                    },
+                    "resources": {
+                        "requests": {"cpu": "10m", "memory": "32Mi"},
+                        "limits": {"cpu": "100m", "memory": "64Mi"},
+                    },
+                }
+            ],
+        },
+    }
+    probe_error: Exception | None = None
+    evidence: dict[str, object] | None = None
+    try:
+        execute(
+            [*kubectl, "apply", "--filename", "-"],
+            timeout_seconds=30,
+            input_text=json.dumps(manifest, separators=(",", ":")),
+        )
+        execute(
+            [
+                *kubectl,
+                "wait",
+                "--for=condition=Ready",
+                "--timeout=60s",
+                f"pod/{pod_name}",
+            ],
+            timeout_seconds=75,
+        )
+        script = """
+import json
+import socket
+
+unauthorized_dependency_ingress_probe = True
+
+def connected(host, port):
+    try:
+        connection = socket.create_connection((host, port), timeout=2)
+    except OSError:
+        return False
+    connection.close()
+    return True
+
+print(json.dumps({
+    "api": connected("hallu-defense-api", 8000),
+    "console": connected("hallu-defense-console", 3000),
+    "worker": connected("hallu-defense-worker", 9090),
+    "pgvector": connected("hallu-defense-pgvector", 5432),
+    "opensearch": connected("hallu-defense-opensearch", 9200),
+    "opensearch_transport_pod_ip_9300": connected(__OPENSEARCH_POD_IP__, 9300),
+    "vault": connected("hallu-defense-vault", 8200),
+}, sort_keys=True))
+""".replace("__OPENSEARCH_POD_IP__", json.dumps(opensearch_pod_ip))
+        result = execute(
+            [*kubectl, "exec", f"pod/{pod_name}", "--", "python", "-c", script],
+            timeout_seconds=15,
+        )
+        try:
+            payload = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as exc:
+            raise LiveKindHelmSmokeError(
+                "unauthorized dependency ingress probe did not return JSON"
+            ) from exc
+        expected = {
+            "api": False,
+            "console": False,
+            "worker": False,
+            "opensearch": False,
+            "opensearch_transport_pod_ip_9300": False,
+            "pgvector": False,
+            "vault": False,
+        }
+        if payload != expected:
+            raise LiveKindHelmSmokeError(
+                "an application workload accepted ingress from an unauthorized peer"
+            )
+        evidence = dict(expected)
+        allowlist_script = """
+import json
+import socket
+import time
+
+application_ingress_allowlist_probe = True
+expected = json.loads(__EXPECTED__)
+
+def connected(host, port):
+    try:
+        connection = socket.create_connection((host, port), timeout=1)
+    except OSError:
+        return False
+    connection.close()
+    return True
+
+def snapshot():
+    return {
+        "api": connected("hallu-defense-api", 8000),
+        "console": connected("hallu-defense-console", 3000),
+        "worker": connected("hallu-defense-worker", 9090),
+    }
+
+for _ in range(20):
+    actual = snapshot()
+    if actual == expected:
+        print(json.dumps(actual, sort_keys=True))
+        break
+    time.sleep(0.25)
+else:
+    raise SystemExit("application ingress allowlist did not converge")
+"""
+        explicit_allowlists: dict[str, dict[str, bool]] = {}
+        for label_value, expected_connections in (
+            ("api", {"api": True, "console": False, "worker": False}),
+            ("console", {"api": False, "console": True, "worker": False}),
+            ("metrics", {"api": True, "console": False, "worker": True}),
+        ):
+            execute(
+                [
+                    *kubectl,
+                    "label",
+                    "pod",
+                    pod_name,
+                    f"hallu-defense.openai.com/network-client={label_value}",
+                    "--overwrite",
+                ],
+                timeout_seconds=30,
+            )
+            allow_result = execute(
+                [
+                    *kubectl,
+                    "exec",
+                    f"pod/{pod_name}",
+                    "--",
+                    "python",
+                    "-c",
+                    allowlist_script.replace(
+                        "__EXPECTED__",
+                        json.dumps(json.dumps(expected_connections, sort_keys=True)),
+                    ),
+                ],
+                timeout_seconds=15,
+            )
+            try:
+                allow_payload = json.loads(allow_result.stdout.strip())
+            except json.JSONDecodeError as exc:
+                raise LiveKindHelmSmokeError(
+                    f"{label_value} ingress allowlist probe did not return JSON"
+                ) from exc
+            if allow_payload != expected_connections:
+                raise LiveKindHelmSmokeError(
+                    f"{label_value} ingress allowlist returned unexpected evidence"
+                )
+            explicit_allowlists[label_value] = expected_connections
+        evidence["explicit_application_allowlists"] = explicit_allowlists
+    except Exception as exc:
+        probe_error = exc
+    finally:
+        delete_result = execute(
+            [
+                *kubectl,
+                "delete",
+                "pod",
+                pod_name,
+                "--ignore-not-found=true",
+                "--wait=true",
+                "--timeout=60s",
+            ],
+            check=False,
+            timeout_seconds=75,
+        )
+        absence_result = execute(
+            [*kubectl, "get", "pod", pod_name, "--output=name"],
+            check=False,
+            timeout_seconds=15,
+        )
+        cleanup_error = None
+        if delete_result.returncode != 0:
+            cleanup_error = delete_result.stderr.strip() or "probe Pod delete failed"
+        elif absence_result.returncode == 0:
+            cleanup_error = "unauthorized ingress probe Pod remained after delete"
+        if cleanup_error is not None:
+            if probe_error is None:
+                raise LiveKindHelmSmokeError(cleanup_error)
+            print(
+                f"dependency ingress probe cleanup failed: {cleanup_error[:1000]}",
+                file=sys.stderr,
+            )
+    if probe_error is not None:
+        raise probe_error
+    if evidence is None:
+        raise LiveKindHelmSmokeError("dependency ingress probe produced no evidence")
+    evidence["probe_pod_deleted"] = True
+    return evidence
+
+
+def _selected_opensearch_pod_ip(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> str:
+    result = execute(
+        [
+            *kubectl,
+            "get",
+            "pods",
+            "--selector",
+            "app.kubernetes.io/component=opensearch",
+            "--output=json",
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "OpenSearch Pod IP inventory did not return JSON"
+        ) from exc
+    items = payload.get("items") if isinstance(payload, Mapping) else None
+    if (
+        not isinstance(items, list)
+        or len(items) != 1
+        or not isinstance(items[0], Mapping)
+    ):
+        raise LiveKindHelmSmokeError(
+            "OpenSearch Pod IP inventory must contain exactly one Pod"
+        )
+    status = items[0].get("status")
+    pod_ip = status.get("podIP") if isinstance(status, Mapping) else None
+    try:
+        parsed = ipaddress.ip_address(pod_ip) if isinstance(pod_ip, str) else None
+    except ValueError as exc:
+        raise LiveKindHelmSmokeError("OpenSearch Pod IP was invalid") from exc
+    if parsed is None or parsed.version != 4:
+        raise LiveKindHelmSmokeError("OpenSearch Pod IP must be one valid IPv4 address")
+    return str(parsed)
+
+
+def _preflight_admission_policy(
+    execute: CommandExecutor,
+    *,
+    context: str,
+    namespace: str,
+) -> None:
+    rendered = execute(
+        [
+            "helm",
+            "template",
+            RELEASE_NAME,
+            str(CHART_DIR),
+            "--namespace",
+            namespace,
+            "--values",
+            str(KIND_VALUES_PATH),
+            "--show-only",
+            "templates/sandbox-validating-admission-policy.yaml",
+        ],
+        timeout_seconds=120,
+    )
+    if "kind: ValidatingAdmissionPolicy" not in rendered.stdout:
+        raise LiveKindHelmSmokeError(
+            "admission preflight render did not contain the sandbox policy"
+        )
+    execute(
+        [
+            "kubectl",
+            "--context",
+            context,
+            "--namespace",
+            namespace,
+            "apply",
+            "--server-side",
+            "--dry-run=server",
+            "--filename",
+            "-",
+        ],
+        input_text=rendered.stdout,
+        timeout_seconds=60,
+    )
+
+
+def _kind_secret_manifests(
+    *,
+    namespace: str,
+    oidc_jwks: object,
+) -> list[dict[str, object]]:
+    vault_tls = _new_kind_vault_tls_material(namespace=namespace)
+    redis_tls = _new_kind_redis_tls_material(namespace=namespace)
+    runtime_postgres_dsn = (
+        f"postgresql://prod_user:prod_pass@{RELEASE_NAME}-pgvector:5432/prod_db"
+        "?sslmode=disable&gssencmode=disable"
+    )
+    vault_token = secret_generator.token_urlsafe(32)
+    secret_data = (
+        (
+            f"{RELEASE_NAME}-runtime",
+            {
+                "keycloak-jwks.json": json.dumps(oidc_jwks, separators=(",", ":")),
+                "vault-token": vault_token,
+                "postgres-dsn": runtime_postgres_dsn,
+            },
+        ),
+        (
+            f"{RELEASE_NAME}-bootstrap",
+            {"vault-token": vault_token},
+        ),
+        (
+            f"{RELEASE_NAME}-migrations",
+            {"migrations-postgres-dsn": runtime_postgres_dsn},
+        ),
+        (
+            f"{RELEASE_NAME}-postgres",
+            {
+                "POSTGRES_USER": "prod_user",
+                "POSTGRES_PASSWORD": "prod_pass",
+                "POSTGRES_DB": "prod_db",
+            },
+        ),
+        (
+            f"{RELEASE_NAME}-kind-vault",
+            {
+                "root-token": vault_token,
+                "ca.crt": vault_tls["ca_certificate"],
+                "tls.crt": vault_tls["tls_certificate"],
+                "tls.key": vault_tls["tls_private_key"],
+            },
+        ),
+        (
+            f"{RELEASE_NAME}-kind-redis-tls",
+            {
+                "ca.crt": redis_tls["ca_certificate"],
+                "tls.crt": redis_tls["tls_certificate"],
+                "tls.key": redis_tls["tls_private_key"],
+            },
+        ),
+    )
+    return [
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": {"hallu-defense.openai.com/live-fixture": "true"},
+            },
+            "type": "Opaque",
+            "stringData": string_data,
+        }
+        for name, string_data in secret_data
+    ]
+
+
+def _new_kind_oidc_material() -> dict[str, object]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_numbers = private_key.public_key().public_numbers()
+    key_id = f"kind-{secret_generator.token_hex(8)}"
+    jwks: dict[str, object] = {
+        "keys": [
+            {
+                "kty": "RSA",
+                "kid": key_id,
+                "use": "sig",
+                "alg": "RS256",
+                "n": _base64url_uint(public_numbers.n),
+                "e": _base64url_uint(public_numbers.e),
+            }
+        ]
+    }
+    now = int(datetime.now(timezone.utc).timestamp())
+    header = _base64url_json({"alg": "RS256", "kid": key_id, "typ": "JWT"})
+    claims = _base64url_json(
+        {
+            "iss": OIDC_ISSUER,
+            "aud": OIDC_AUDIENCE,
+            "sub": "kind-sandbox-runner",
+            "tenant_id": "kind-smoke-tenant",
+            "roles": ["sandbox_runner"],
+            "iat": now,
+            "nbf": now - 5,
+            "exp": now + 900,
+        }
+    )
+    signing_input = f"{header}.{claims}".encode("ascii")
+    signature = private_key.sign(
+        signing_input,
+        padding=padding.PKCS1v15(),
+        algorithm=hashes.SHA256(),
+    )
+    return {
+        "jwks": jwks,
+        "token": f"{header}.{claims}.{_base64url_bytes(signature)}",
+    }
+
+
+def _new_kind_vault_tls_material(*, namespace: str) -> dict[str, str]:
+    return _new_kind_service_tls_material(
+        namespace=namespace,
+        service_name=f"{RELEASE_NAME}-vault",
+        ca_common_name="hallu-kind-vault-ca",
+    )
+
+
+def _new_kind_redis_tls_material(*, namespace: str) -> dict[str, str]:
+    return _new_kind_service_tls_material(
+        namespace=namespace,
+        service_name=f"{RELEASE_NAME}-redis",
+        ca_common_name="hallu-kind-redis-ca",
+    )
+
+
+def _new_kind_service_tls_material(
+    *,
+    namespace: str,
+    service_name: str,
+    ca_common_name: str,
+) -> dict[str, str]:
+    now = datetime.now(timezone.utc)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, ca_common_name)])
+    ca_certificate = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    server_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, service_name)])
+    dns_names = (
+        service_name,
+        f"{service_name}.{namespace}",
+        f"{service_name}.{namespace}.svc",
+        f"{service_name}.{namespace}.svc.cluster.local",
+    )
+    server_certificate = (
+        x509.CertificateBuilder()
+        .subject_name(server_name)
+        .issuer_name(ca_name)
+        .public_key(server_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(name) for name in dns_names]),
+            critical=False,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    return {
+        "ca_certificate": ca_certificate.public_bytes(
+            serialization.Encoding.PEM
+        ).decode("ascii"),
+        "tls_certificate": server_certificate.public_bytes(
+            serialization.Encoding.PEM
+        ).decode("ascii"),
+        "tls_private_key": server_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode("ascii"),
+    }
+
+
+def _base64url_uint(value: int) -> str:
+    payload = value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big")
+    return _base64url_bytes(payload)
+
+
+def _base64url_json(value: Mapping[str, object]) -> str:
+    return _base64url_bytes(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _base64url_bytes(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _verify_kind_redis(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> dict[str, bool]:
+    script = """import json
+import os
+import socket
+
+from redis import Redis
+from redis.exceptions import AuthenticationError, ResponseError
+
+from hallu_defense.api.dependencies import tool_validation_rate_limiter
+from hallu_defense.services.rate_limit import RATE_LIMIT_KEY_PREFIX
+
+tool_validation_rate_limiter.health_check()
+rate_limit_eval_allowed = tool_validation_rate_limiter.allow(
+    tenant_id="kind-redis-acl",
+    subject_id="smoke-subject",
+    tool_name="smoke-tool",
+)
+redis_client = tool_validation_rate_limiter._client
+ca_path = os.environ["HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_CA_PATH"]
+invalid_url = (
+    "rediss://hallu-rate-limiter:" + ("0" * 64) + "@hallu-defense-redis:6379/0"
+)
+invalid_client = Redis.from_url(
+    invalid_url,
+    ssl_ca_certs=ca_path,
+    ssl_cert_reqs="required",
+    socket_connect_timeout=3,
+    socket_timeout=3,
+)
+invalid_auth_rejected = False
+try:
+    invalid_client.ping()
+except AuthenticationError:
+    invalid_auth_rejected = True
+finally:
+    invalid_client.close()
+
+acl_prefix_rejected = False
+try:
+    redis_client.eval(
+        "return redis.call('INCR', KEYS[1])",
+        1,
+        "outside-rate-limit-prefix",
+    )
+except ResponseError:
+    acl_prefix_rejected = True
+
+acl_command_rejected = False
+try:
+    redis_client.set(RATE_LIMIT_KEY_PREFIX + "forbidden-set", "1")
+except ResponseError:
+    acl_command_rejected = True
+
+plaintext_rejected = False
+connection = socket.create_connection(("hallu-defense-redis", 6379), timeout=3)
+try:
+    connection.settimeout(3)
+    connection.sendall(b"*1\\r\\n$4\\r\\nPING\\r\\n")
+    try:
+        plaintext_rejected = b"+PONG" not in connection.recv(128)
+    except OSError:
+        plaintext_rejected = True
+finally:
+    connection.close()
+
+print(json.dumps({
+    "acl_command_rejected": acl_command_rejected,
+    "acl_prefix_rejected": acl_prefix_rejected,
+    "invalid_auth_rejected": invalid_auth_rejected,
+    "plaintext_rejected": plaintext_rejected,
+    "rate_limit_eval_allowed": rate_limit_eval_allowed,
+    "tls_ca_vault_health": True,
+}, sort_keys=True))
+"""
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-api",
+            "--",
+            "python",
+            "-c",
+            script,
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "kind Redis verification did not return JSON"
+        ) from exc
+    expected = {
+        "acl_command_rejected": True,
+        "acl_prefix_rejected": True,
+        "invalid_auth_rejected": True,
+        "plaintext_rejected": True,
+        "rate_limit_eval_allowed": True,
+        "tls_ca_vault_health": True,
+    }
+    if payload != expected:
+        raise LiveKindHelmSmokeError("kind Redis TLS/AUTH/Vault verification failed")
+    return expected
+
+
+def _verify_api_sandbox_rbac(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    application_namespace: str,
+    sandbox_namespace: str,
+) -> dict[str, object]:
+    command_prefix = list(kubectl)
+    try:
+        namespace_index = command_prefix.index("--namespace")
+    except ValueError as exc:
+        raise LiveKindHelmSmokeError(
+            "kubectl command is missing its namespace"
+        ) from exc
+    del command_prefix[namespace_index : namespace_index + 2]
+    service_account = (
+        f"system:serviceaccount:{application_namespace}:{RELEASE_NAME}-api"
+    )
+
+    def can_i(namespace: str, verb: str, resource: str) -> bool:
+        result = execute(
+            [
+                *command_prefix,
+                "--namespace",
+                namespace,
+                "auth",
+                "can-i",
+                verb,
+                resource,
+                "--as",
+                service_account,
+            ],
+            check=False,
+            timeout_seconds=30,
+        )
+        answer = result.stdout.strip().lower()
+        if answer not in {"yes", "no"}:
+            raise LiveKindHelmSmokeError(
+                f"kubectl auth can-i returned invalid evidence for {verb} {resource}"
+            )
+        if (answer == "yes") != (result.returncode == 0):
+            raise LiveKindHelmSmokeError(
+                f"kubectl auth can-i exit status disagreed for {verb} {resource}"
+            )
+        return answer == "yes"
+
+    application_denials = {
+        f"{verb}:{resource}": can_i(application_namespace, verb, resource)
+        for verb, resource in (
+            ("list", "pods"),
+            ("get", "pods/log"),
+            ("delete", "jobs.batch"),
+        )
+    }
+    if any(application_denials.values()):
+        raise LiveKindHelmSmokeError(
+            "API ServiceAccount unexpectedly has workload access in the application namespace"
+        )
+    sandbox_grants = {
+        f"{verb}:{resource}": can_i(sandbox_namespace, verb, resource)
+        for verb, resource in (
+            ("create", "jobs.batch"),
+            ("get", "jobs.batch"),
+            ("delete", "jobs.batch"),
+            ("list", "pods"),
+            ("get", "pods/log"),
+            ("list", "networkpolicies.networking.k8s.io"),
+        )
+    }
+    if not all(sandbox_grants.values()):
+        raise LiveKindHelmSmokeError(
+            "API ServiceAccount lacks an expected sandbox namespace operation"
+        )
+    return {
+        "application_namespace_denied": {
+            name: not allowed for name, allowed in application_denials.items()
+        },
+        "sandbox_namespace_allowed": sandbox_grants,
+    }
+
+
+def _verify_api_workspace_read_only(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+) -> bool:
+    script = """
+from pathlib import Path
+
+api_workspace_read_only = True
+target = Path("/workspace/smoke-repo/api-write-probe")
+try:
+    target.write_text("must-not-write", encoding="utf-8")
+except OSError:
+    print("api-workspace-read-only")
+else:
+    target.unlink(missing_ok=True)
+    raise SystemExit("API workspace mount unexpectedly accepted a write")
+"""
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            f"deployment/{RELEASE_NAME}-api",
+            "--",
+            "python",
+            "-c",
+            script,
+        ],
+        timeout_seconds=30,
+    )
+    if result.stdout.strip() != "api-workspace-read-only":
+        raise LiveKindHelmSmokeError(
+            "API workspace read-only probe did not return deterministic evidence"
+        )
+    return True
+
+
+def _verify_kubernetes_sandbox(
+    execute: CommandExecutor,
+    *,
+    application_kubectl: Sequence[str],
+    sandbox_kubectl: Sequence[str],
+    application_namespace: str,
+    sandbox_namespace: str,
+    bearer_token: str,
+) -> dict[str, object]:
+    admission = _assert_admission_rejects_malicious_job(
+        execute,
+        kubectl=sandbox_kubectl,
+        application_namespace=application_namespace,
+    )
+    rbac = _verify_api_sandbox_rbac(
+        execute,
+        kubectl=application_kubectl,
+        application_namespace=application_namespace,
+        sandbox_namespace=sandbox_namespace,
+    )
+    api_workspace_read_only = _verify_api_workspace_read_only(
+        execute,
+        kubectl=application_kubectl,
+    )
+
+    successful_run = _repo_checks_request(
+        execute,
+        kubectl=application_kubectl,
+        bearer_token=bearer_token,
+        payload={
+            "repo_ref": "smoke-repo",
+            "commands": [
+                "python probe.py",
+                "python -c \"print('sandbox-second')\"",
+            ],
+            "network_policy": "deny",
+        },
+        expected_status=200,
+    )
+    if successful_run.get("exit_codes") != [7, 0]:
+        raise LiveKindHelmSmokeError(
+            "sandbox smoke did not preserve both batched command exit codes"
+        )
+    stdout = successful_run.get("stdout")
+    stderr = successful_run.get("stderr")
+    artifacts = successful_run.get("artifacts")
+    if (
+        not isinstance(stdout, list)
+        or not stdout
+        or "sandbox-stdout" not in str(stdout[0])
+        or len(stdout) != 2
+        or "sandbox-second" not in str(stdout[1])
+    ):
+        raise LiveKindHelmSmokeError("sandbox smoke did not capture stdout")
+    if (
+        not isinstance(stderr, list)
+        or not stderr
+        or "sandbox-stderr" not in str(stderr[0])
+    ):
+        raise LiveKindHelmSmokeError("sandbox smoke did not capture stderr")
+    if (
+        not isinstance(artifacts, list)
+        or "artifacts/sandbox-smoke.txt" not in artifacts
+    ):
+        raise LiveKindHelmSmokeError(
+            "sandbox smoke did not report its generated artifact"
+        )
+    evidence = successful_run.get("evidence")
+    if not isinstance(evidence, list):
+        raise LiveKindHelmSmokeError("sandbox smoke did not return inspection evidence")
+    inspection = next(
+        (
+            item.get("structured_content")
+            for item in evidence
+            if isinstance(item, Mapping)
+            and item.get("source_ref") == "sandbox://inspection"
+        ),
+        None,
+    )
+    git_report = inspection.get("git") if isinstance(inspection, Mapping) else None
+    if (
+        not isinstance(git_report, Mapping)
+        or git_report.get("is_repository") is not True
+    ):
+        raise LiveKindHelmSmokeError(
+            "sandbox fixture was not inspected as a real Git repository"
+        )
+    if git_report.get("errors") != []:
+        raise LiveKindHelmSmokeError("API runtime Git inspection reported errors")
+
+    escaped = _repo_checks_request(
+        execute,
+        kubectl=application_kubectl,
+        bearer_token=bearer_token,
+        payload={
+            "repo_ref": "../",
+            "commands": ["python probe.py"],
+            "network_policy": "deny",
+        },
+        expected_status=400,
+    )
+    if "escapes the configured workspace" not in str(escaped.get("detail", "")):
+        raise LiveKindHelmSmokeError(
+            "sandbox path escape was not rejected by the workspace guard"
+        )
+
+    timeout_run = _repo_checks_request(
+        execute,
+        kubectl=application_kubectl,
+        bearer_token=bearer_token,
+        payload={
+            "repo_ref": "smoke-repo",
+            "commands": ["python timeout.py"],
+            "network_policy": "deny",
+        },
+        expected_status=200,
+    )
+    if timeout_run.get("exit_codes") != [SANDBOX_TIMEOUT_RETURN_CODE]:
+        raise LiveKindHelmSmokeError(
+            "sandbox timeout did not return the bounded timeout code"
+        )
+    timeout_stderr = timeout_run.get("stderr")
+    if (
+        not isinstance(timeout_stderr, list)
+        or not timeout_stderr
+        or "timed out" not in str(timeout_stderr[0])
+    ):
+        raise LiveKindHelmSmokeError("sandbox timeout did not return timeout evidence")
+
+    egress_run = _repo_checks_request(
+        execute,
+        kubectl=application_kubectl,
+        bearer_token=bearer_token,
+        payload={
+            "repo_ref": "smoke-repo",
+            "commands": ["python egress.py"],
+            "network_policy": "deny",
+        },
+        expected_status=200,
+    )
+    egress_stdout = egress_run.get("stdout")
+    egress_stderr = egress_run.get("stderr")
+    if egress_run.get("exit_codes") != [0] or (
+        not isinstance(egress_stdout, list)
+        or not egress_stdout
+        or "egress-blocked" not in str(egress_stdout[0])
+    ):
+        raise LiveKindHelmSmokeError(
+            "kindnet did not produce real failed egress evidence"
+        )
+    if isinstance(egress_stderr, list) and any(
+        "egress-unexpectedly-allowed" in str(item) for item in egress_stderr
+    ):
+        raise LiveKindHelmSmokeError(
+            "sandbox egress unexpectedly reached the external endpoint"
+        )
+
+    jobs_result = execute(
+        [
+            *sandbox_kubectl,
+            "get",
+            "jobs",
+            "--selector",
+            SANDBOX_JOB_LABEL,
+            "--output=json",
+        ],
+        timeout_seconds=30,
+    )
+    try:
+        jobs_payload = json.loads(jobs_result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "sandbox residual Job check did not return JSON"
+        ) from exc
+    if not isinstance(jobs_payload, Mapping) or jobs_payload.get("items") != []:
+        raise LiveKindHelmSmokeError("sandbox execution left residual Kubernetes Jobs")
+
+    return {
+        "admission": admission,
+        "rbac": rbac,
+        "api_workspace_read_only": api_workspace_read_only,
+        "admission_rejected_malicious_job": True,
+        "admission_accepted_backend_job": True,
+        "admission_accepted_equivalent_quantities": True,
+        "exit_code": 7,
+        "batched_commands": 2,
+        "stdout": "sandbox-stdout",
+        "stderr": "sandbox-stderr",
+        "artifact": "artifacts/sandbox-smoke.txt",
+        "path_escape_rejected": True,
+        "timeout_exit_code": SANDBOX_TIMEOUT_RETURN_CODE,
+        "egress_blocked_by_kindnet": True,
+        "residual_jobs": 0,
+    }
+
+
+def _assert_admission_rejects_malicious_job(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    application_namespace: str,
+) -> dict[str, object]:
+    try:
+        namespace = kubectl[kubectl.index("--namespace") + 1]
+    except (ValueError, IndexError) as exc:
+        raise LiveKindHelmSmokeError(
+            "kubectl command is missing its namespace"
+        ) from exc
+    service_account = (
+        f"system:serviceaccount:{application_namespace}:{RELEASE_NAME}-api"
+    )
+    policy_name = _sandbox_admission_policy_name(
+        application_namespace,
+        namespace,
+    )
+    activation = _wait_for_sandbox_admission_policy(
+        execute,
+        kubectl=kubectl,
+        namespace=namespace,
+        service_account=service_account,
+        policy_name=policy_name,
+    )
+    valid_manifest = _sandbox_admission_valid_manifest(
+        namespace,
+        name="hallu-sandbox-admission-valid",
+    )
+    valid_result = execute(
+        [
+            *kubectl,
+            "--as",
+            service_account,
+            "create",
+            "--dry-run=server",
+            "--output=name",
+            "--filename",
+            "-",
+        ],
+        check=False,
+        timeout_seconds=30,
+        input_text=json.dumps(valid_manifest, separators=(",", ":")),
+    )
+    if valid_result.returncode != 0:
+        denial = f"{valid_result.stdout}\n{valid_result.stderr}".strip()
+        denial = JWT_PATTERN.sub("<redacted-jwt>", denial)[:4_000]
+        raise LiveKindHelmSmokeError(
+            "ValidatingAdmissionPolicy rejected the exact KubernetesJobBackend manifest"
+            + (f": {denial}" if denial else "")
+        )
+    equivalent_manifest = _sandbox_admission_equivalent_quantity_manifest(namespace)
+    equivalent_result = execute(
+        [
+            *kubectl,
+            "--as",
+            service_account,
+            "create",
+            "--dry-run=server",
+            "--output=name",
+            "--filename",
+            "-",
+        ],
+        check=False,
+        timeout_seconds=30,
+        input_text=json.dumps(equivalent_manifest, separators=(",", ":")),
+    )
+    if equivalent_result.returncode != 0:
+        denial = f"{equivalent_result.stdout}\n{equivalent_result.stderr}".strip()
+        denial = JWT_PATTERN.sub("<redacted-jwt>", denial)[:4_000]
+        raise LiveKindHelmSmokeError(
+            "ValidatingAdmissionPolicy rejected semantically equivalent quantities"
+            + (f": {denial}" if denial else "")
+        )
+    probes = _sandbox_admission_probe_manifests(namespace)
+    for job_name, manifest in probes:
+        result = execute(
+            [
+                *kubectl,
+                "--as",
+                service_account,
+                "create",
+                "--dry-run=server",
+                "--output=name",
+                "--filename",
+                "-",
+            ],
+            check=False,
+            timeout_seconds=30,
+            input_text=json.dumps(manifest, separators=(",", ":")),
+        )
+        if result.returncode == 0:
+            raise LiveKindHelmSmokeError(
+                f"ValidatingAdmissionPolicy allowed malicious sandbox Job {job_name}"
+            )
+        denial = f"{result.stdout}\n{result.stderr}"
+        if policy_name not in denial:
+            denial = JWT_PATTERN.sub("<redacted-jwt>", denial).strip()[:4_000]
+            raise LiveKindHelmSmokeError(
+                f"malicious Job {job_name} was rejected without evidence from the "
+                "sandbox admission policy" + (f": {denial}" if denial else "")
+            )
+    return {
+        **activation,
+        "exact_backend_manifest_accepted": True,
+        "equivalent_quantities_accepted": True,
+        "malicious_jobs_denied": len(probes),
+    }
+
+
+def _wait_for_sandbox_admission_policy(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    namespace: str,
+    service_account: str,
+    policy_name: str,
+) -> dict[str, object]:
+    activation_manifest = dict(_sandbox_admission_probe_manifests(namespace))[
+        "hallu-sandbox-admission-finalizer"
+    ]
+    last_detail = ""
+    for _ in range(ADMISSION_POLICY_ACTIVATION_ATTEMPTS):
+        policy_result = execute(
+            [
+                *kubectl,
+                "get",
+                "validatingadmissionpolicy",
+                policy_name,
+                "--output=json",
+            ],
+            check=False,
+            timeout_seconds=30,
+        )
+        if policy_result.returncode == 0:
+            try:
+                policy = json.loads(policy_result.stdout)
+            except json.JSONDecodeError:
+                policy = {}
+            metadata = policy.get("metadata") if isinstance(policy, Mapping) else None
+            status = policy.get("status") if isinstance(policy, Mapping) else None
+            generation = (
+                metadata.get("generation") if isinstance(metadata, Mapping) else None
+            )
+            observed = (
+                status.get("observedGeneration")
+                if isinstance(status, Mapping)
+                else None
+            )
+            if (
+                isinstance(generation, int)
+                and generation > 0
+                and observed == generation
+            ):
+                activation_result = execute(
+                    [
+                        *kubectl,
+                        "--as",
+                        service_account,
+                        "create",
+                        "--dry-run=server",
+                        "--output=name",
+                        "--filename",
+                        "-",
+                    ],
+                    check=False,
+                    timeout_seconds=30,
+                    input_text=json.dumps(activation_manifest, separators=(",", ":")),
+                )
+                denial = f"{activation_result.stdout}\n{activation_result.stderr}"
+                if activation_result.returncode != 0 and policy_name in denial:
+                    return {
+                        "policy": policy_name,
+                        "generation": generation,
+                        "observed_generation": observed,
+                    }
+                last_detail = denial.strip()
+            else:
+                last_detail = (
+                    f"generation={generation!r}, observedGeneration={observed!r}"
+                )
+        else:
+            last_detail = f"{policy_result.stdout}\n{policy_result.stderr}".strip()
+        time.sleep(ADMISSION_POLICY_ACTIVATION_INTERVAL_SECONDS)
+    last_detail = JWT_PATTERN.sub("<redacted-jwt>", last_detail)[:4_000]
+    raise LiveKindHelmSmokeError(
+        "sandbox ValidatingAdmissionPolicy generation did not become active"
+        + (f": {last_detail}" if last_detail else "")
+    )
+
+
+def _sandbox_admission_probe_manifests(
+    namespace: str,
+) -> list[tuple[str, dict[str, object]]]:
+    base = _sandbox_admission_valid_manifest(
+        namespace,
+        name="hallu-sandbox-admission-base",
+    )
+    probes: list[tuple[str, dict[str, object]]] = []
+
+    privileged = _named_probe(base, "hallu-sandbox-admission-privileged")
+    privileged_pod = _probe_pod_spec(privileged)
+    privileged_runner = _probe_containers(privileged_pod)[0]
+    privileged_security = cast(dict[str, object], privileged_runner["securityContext"])
+    privileged_security["privileged"] = True
+    privileged_security["allowPrivilegeEscalation"] = True
+    privileged_runner["image"] = "busybox:latest"
+    cast(list[dict[str, object]], privileged_pod["volumes"]).append(
+        {"name": "host", "hostPath": {"path": "/"}}
+    )
+    cast(list[dict[str, object]], privileged_runner["volumeMounts"]).append(
+        {"name": "host", "mountPath": "/host"}
+    )
+    probes.append(("hallu-sandbox-admission-privileged", privileged))
+
+    secret_env = _named_probe(base, "hallu-sandbox-admission-secret-env")
+    _probe_containers(_probe_pod_spec(secret_env))[0]["envFrom"] = [
+        {"secretRef": {"name": "forbidden-secret"}}
+    ]
+    probes.append(("hallu-sandbox-admission-secret-env", secret_env))
+
+    workspace_root = _named_probe(base, "hallu-sandbox-admission-workspace-root")
+    workspace_runner = _probe_containers(_probe_pod_spec(workspace_root))[0]
+    cast(list[dict[str, object]], workspace_runner["volumeMounts"]).append(
+        {"name": "workspace", "mountPath": "/workspace-root"}
+    )
+    probes.append(("hallu-sandbox-admission-workspace-root", workspace_root))
+
+    writable_source = _named_probe(base, "hallu-sandbox-admission-source-rw")
+    writable_runner = _probe_containers(_probe_pod_spec(writable_source))[0]
+    source_mount = next(
+        mount
+        for mount in cast(list[dict[str, object]], writable_runner["volumeMounts"])
+        if mount["name"] == "source"
+    )
+    source_mount["readOnly"] = False
+    probes.append(("hallu-sandbox-admission-source-rw", writable_source))
+
+    unbounded = _named_probe(base, "hallu-sandbox-admission-unbounded")
+    unbounded_runner = _probe_containers(_probe_pod_spec(unbounded))[0]
+    resources = cast(dict[str, object], unbounded_runner["resources"])
+    limits = cast(dict[str, object], resources["limits"])
+    limits.update({"cpu": "1001m", "memory": "513Mi"})
+    unbounded_volumes = cast(
+        list[dict[str, object]], _probe_pod_spec(unbounded)["volumes"]
+    )
+    results_volume = next(
+        volume for volume in unbounded_volumes if volume["name"] == "results"
+    )
+    cast(dict[str, object], results_volume["emptyDir"])["sizeLimit"] = "1024Mi"
+    probes.append(("hallu-sandbox-admission-unbounded", unbounded))
+
+    unmasked = _named_probe(base, "hallu-sandbox-admission-unmasked")
+    unmasked_pod = _probe_pod_spec(unmasked)
+    unmasked_pod["hostUsers"] = False
+    unmasked_runner = _probe_containers(unmasked_pod)[0]
+    cast(dict[str, object], unmasked_runner["securityContext"])["procMount"] = (
+        "Unmasked"
+    )
+    probes.append(("hallu-sandbox-admission-unmasked", unmasked))
+
+    controls = _named_probe(base, "hallu-sandbox-admission-controls")
+    controls_metadata = cast(dict[str, object], controls["metadata"])
+    cast(dict[str, object], controls_metadata["annotations"])["unexpected"] = "true"
+    controls_spec = cast(dict[str, object], controls["spec"])
+    controls_spec["suspend"] = True
+    controls_runner = _probe_containers(_probe_pod_spec(controls))[0]
+    controls_runner["ports"] = [{"containerPort": 9000, "hostPort": 9000}]
+    probes.append(("hallu-sandbox-admission-controls", controls))
+
+    entrypoint = _named_probe(base, "hallu-sandbox-admission-entrypoint")
+    entrypoint_runner = _probe_containers(_probe_pod_spec(entrypoint))[0]
+    entrypoint_runner["command"] = ["python", "-c"]
+    entrypoint_runner["args"] = ["print('bypass')"]
+    entrypoint_runner["stdin"] = True
+    probes.append(("hallu-sandbox-admission-entrypoint", entrypoint))
+
+    supplemental = _named_probe(base, "hallu-sandbox-admission-groups")
+    supplemental_pod = _probe_pod_spec(supplemental)
+    cast(dict[str, object], supplemental_pod["securityContext"])[
+        "supplementalGroups"
+    ] = [0]
+    probes.append(("hallu-sandbox-admission-groups", supplemental))
+
+    selector = _named_probe(base, "hallu-sandbox-admission-selector")
+    selector_spec = cast(dict[str, object], selector["spec"])
+    selector_spec["manualSelector"] = True
+    selector_spec["selector"] = {
+        "matchLabels": {"hallu-defense.openai.com/sandbox": "true"}
+    }
+    probes.append(("hallu-sandbox-admission-selector", selector))
+
+    finalizer = _named_probe(base, "hallu-sandbox-admission-finalizer")
+    finalizer_metadata = cast(dict[str, object], finalizer["metadata"])
+    finalizer_metadata["finalizers"] = ["hallu-defense.openai.com/stuck"]
+    finalizer_metadata["generateName"] = "hallu-sandbox-attacker-"
+    probes.append(("hallu-sandbox-admission-finalizer", finalizer))
+
+    return probes
+
+
+def _sandbox_admission_valid_manifest(
+    namespace: str,
+    *,
+    name: str,
+) -> dict[str, object]:
+    from hallu_defense.services.sandbox_kubernetes import (
+        KubernetesApiTransport,
+        KubernetesJobBackend,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="hallu-admission-probe-") as temp_dir:
+        workspace = Path(temp_dir)
+        backend = KubernetesJobBackend(
+            image=SANDBOX_IMAGE,
+            namespace=namespace,
+            pvc_name=f"{RELEASE_NAME}-sandbox-workspace",
+            workspace_root=workspace,
+            workspace_mount_path="/workspace",
+            network_policy_name=f"{RELEASE_NAME}-sandbox-deny-egress",
+            memory_mb=512,
+            cpus=1,
+            pids_limit=256,
+            poll_interval_seconds=0.25,
+            job_ttl_seconds=60,
+            api_request_timeout_seconds=5,
+            setup_grace_seconds=15,
+            timeout_grace_seconds=2,
+            transport=cast(KubernetesApiTransport, None),
+        )
+        base = backend.build_job_manifest(
+            job_name=name,
+            argv=["python", "probe.py"],
+            workspace_sub_path="smoke-repo",
+            env={"HALLU_DEFENSE_NETWORK_POLICY": "deny"},
+            timeout=5,
+            output_caps=12_000,
+        )
+    return base
+
+
+def _sandbox_admission_equivalent_quantity_manifest(
+    namespace: str,
+) -> dict[str, object]:
+    manifest = _sandbox_admission_valid_manifest(
+        namespace,
+        name="hallu-sandbox-admission-equivalent-quantities",
+    )
+    pod_spec = _probe_pod_spec(manifest)
+    for container in _probe_containers(pod_spec):
+        resources = cast(dict[str, object], container["resources"])
+        requests = cast(dict[str, object], resources["requests"])
+        limits = cast(dict[str, object], resources["limits"])
+        if container["name"] == "runner":
+            requests.update({"cpu": "1000m", "memory": "524288Ki"})
+            limits.update({"cpu": "1000m", "memory": "524288Ki"})
+        else:
+            requests.update({"cpu": "0.01", "memory": "16384Ki"})
+            limits.update({"cpu": "0.1", "memory": "65536Ki"})
+    volumes = cast(list[dict[str, object]], pod_spec["volumes"])
+    for volume in volumes:
+        if volume["name"] == "results":
+            cast(dict[str, object], volume["emptyDir"])["sizeLimit"] = "1024Ki"
+        elif volume["name"] == "workspace":
+            cast(dict[str, object], volume["emptyDir"])["sizeLimit"] = "524288Ki"
+        elif volume["name"] == "tmp":
+            cast(dict[str, object], volume["emptyDir"])["sizeLimit"] = "65536Ki"
+    return manifest
+
+
+def _named_probe(
+    manifest: Mapping[str, object],
+    name: str,
+) -> dict[str, object]:
+    probe = cast(dict[str, object], copy.deepcopy(manifest))
+    cast(dict[str, object], probe["metadata"])["name"] = name
+    return probe
+
+
+def _probe_pod_spec(manifest: Mapping[str, object]) -> dict[str, object]:
+    spec = cast(dict[str, object], manifest["spec"])
+    template = cast(dict[str, object], spec["template"])
+    return cast(dict[str, object], template["spec"])
+
+
+def _probe_containers(pod_spec: Mapping[str, object]) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], pod_spec["containers"])
+
+
+def _sandbox_admission_policy_name(
+    application_namespace: str,
+    sandbox_namespace: str,
+) -> str:
+    identity = f"{application_namespace}/{sandbox_namespace}"
+    namespace_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+    prefix = RELEASE_NAME[:40].rstrip("-")
+    return f"{prefix}-sandbox-jobs-{namespace_hash}"[:63].rstrip("-")
+
+
+def _repo_checks_request(
+    execute: CommandExecutor,
+    *,
+    kubectl: Sequence[str],
+    bearer_token: str,
+    payload: Mapping[str, object],
+    expected_status: int,
+) -> Mapping[str, object]:
+    request_input = json.dumps(
+        {"token": bearer_token, "body": payload},
+        separators=(",", ":"),
+    )
+    script = """import json
+import sys
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+request_input = json.loads(sys.stdin.read())
+request = Request(
+    "http://127.0.0.1:8000/repo/checks/run",
+    data=json.dumps(request_input["body"]).encode("utf-8"),
+    headers={
+        "Authorization": "Bearer " + request_input["token"],
+        "Content-Type": "application/json",
+    },
+    method="POST",
+)
+try:
+    with urlopen(request, timeout=45) as response:
+        status = response.status
+        body = response.read().decode("utf-8")
+except HTTPError as exc:
+    status = exc.code
+    body = exc.read().decode("utf-8")
+print(json.dumps({"status": status, "body": body}, separators=(",", ":")))
+"""
+    result = execute(
+        [
+            *kubectl,
+            "exec",
+            "--stdin",
+            f"deployment/{RELEASE_NAME}-api",
+            "--",
+            "python",
+            "-c",
+            script,
+        ],
+        timeout_seconds=60,
+        input_text=request_input,
+    )
+    try:
+        envelope = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "authenticated sandbox request returned invalid JSON"
+        ) from exc
+    if not isinstance(envelope, Mapping) or envelope.get("status") != expected_status:
+        raise LiveKindHelmSmokeError(
+            f"authenticated sandbox request expected HTTP {expected_status}"
+        )
+    body = envelope.get("body")
+    if not isinstance(body, str):
+        raise LiveKindHelmSmokeError("authenticated sandbox response body was not text")
+    try:
+        decoded = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError(
+            "authenticated sandbox response body was not JSON"
+        ) from exc
+    if not isinstance(decoded, Mapping):
+        raise LiveKindHelmSmokeError("authenticated sandbox response was not an object")
+    return decoded
+
+
+def _emit_diagnostics(
+    execute: CommandExecutor,
+    *,
+    context: str,
+    namespace: str,
+    sandbox_namespace: str,
+) -> None:
+    application_kubectl = ["kubectl", "--context", context, "--namespace", namespace]
+    sandbox_kubectl = [
+        "kubectl",
+        "--context",
+        context,
+        "--namespace",
+        sandbox_namespace,
+    ]
+    for label, command in (
+        ("resources", [*application_kubectl, "get", "all,pvc", "--output=wide"]),
+        ("events", [*application_kubectl, "get", "events", "--sort-by=.lastTimestamp"]),
+        (
+            "pod-logs",
+            [
+                *application_kubectl,
+                "logs",
+                "--selector=app.kubernetes.io/instance=hallu-defense",
+                "--all-containers",
+                "--tail=200",
+            ],
+        ),
+        ("sandbox-resources", [*sandbox_kubectl, "get", "all,pvc", "--output=wide"]),
+        (
+            "sandbox-events",
+            [*sandbox_kubectl, "get", "events", "--sort-by=.lastTimestamp"],
+        ),
+        (
+            "sandbox-pod-logs",
+            [
+                *sandbox_kubectl,
+                "logs",
+                "--selector=app.kubernetes.io/instance=hallu-defense",
+                "--all-containers",
+                "--tail=200",
+            ],
+        ),
+    ):
+        try:
+            result = execute(command, check=False, timeout_seconds=60)
+        except Exception as exc:
+            print(
+                f"[kind-smoke:{label}] unavailable: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            continue
+        output = (result.stdout.strip() or result.stderr.strip())[:20_000]
+        if output:
+            print(f"[kind-smoke:{label}]\n{output}", file=sys.stderr)
+
+
+def _run(
+    command: Sequence[str],
+    *,
+    check: bool = True,
+    timeout_seconds: float = 120,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            list(command),
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            input=input_text,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        message = f"{_command_display(command)} timed out after {timeout_seconds:g}s"
+        if check:
+            raise LiveKindHelmSmokeError(message) from exc
+        return subprocess.CompletedProcess(
+            list(command),
+            124,
+            _coerce_output(exc.stdout),
+            _coerce_output(exc.stderr) or message,
+        )
+    if check and result.returncode != 0:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit {result.returncode}"
+        )[:4000]
+        raise LiveKindHelmSmokeError(f"{_command_display(command)} failed: {detail}")
+    return result
+
+
+def _health_payload(raw: str) -> dict[str, str]:
+    try:
+        payload = json.loads(raw.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError("API /health did not return JSON") from exc
+    if not isinstance(payload, Mapping) or payload.get("status") != "ok":
+        raise LiveKindHelmSmokeError("API /health did not report status=ok")
+    environment = payload.get("environment")
+    if environment != "production":
+        raise LiveKindHelmSmokeError(
+            "API /health did not report the production environment"
+        )
+    return {"status": "ok", "environment": "production"}
+
+
+def _ready_payload(raw: str) -> dict[str, str]:
+    try:
+        payload = json.loads(raw.strip())
+    except json.JSONDecodeError as exc:
+        raise LiveKindHelmSmokeError("API /ready did not return JSON") from exc
+    if not isinstance(payload, Mapping) or payload.get("status") != "ready":
+        raise LiveKindHelmSmokeError("API /ready did not report status=ready")
+    return {"status": "ready"}
+
+
+def _validated_dns_label(value: str, env_name: str) -> str:
+    if len(value) > 63 or DNS_LABEL_PATTERN.fullmatch(value) is None:
+        raise LiveKindHelmSmokeError(f"{env_name} must be a valid DNS label")
+    return value
+
+
+def _validated_kind_node_image(env: Mapping[str, str]) -> str:
+    configured = _optional(env, KIND_NODE_IMAGE_ENV)
+    if configured is not None and configured != KIND_NODE_IMAGE:
+        raise LiveKindHelmSmokeError(
+            f"{KIND_NODE_IMAGE_ENV} must equal the digest-pinned image {KIND_NODE_IMAGE}"
+        )
+    return KIND_NODE_IMAGE
+
+
+def _command_display(command: Sequence[str]) -> str:
+    return JWT_PATTERN.sub("<redacted-jwt>", " ".join(command))
+
+
+def _coerce_output(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _optional(env: Mapping[str, str], name: str) -> str | None:
@@ -120,7 +3785,9 @@ def _json_result(result: Mapping[str, object]) -> str:
     return json.dumps(result, sort_keys=True, separators=(",", ":"))
 
 
-def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None
+) -> int:
     _ = argv
     try:
         result = run_from_env(env)

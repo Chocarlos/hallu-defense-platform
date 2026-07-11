@@ -3,26 +3,29 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 from opentelemetry.util.types import AttributeValue
 
 from hallu_defense.config import Settings
 from hallu_defense.domain.models import (
+    Authority,
     Claim,
     ClaimExtractionRequest,
     ClaimType,
     ClaimVerdict,
     Evidence,
     EvidenceKind,
+    Freshness,
     PolicyEvaluationRequest,
     PolicyEvaluationResponse,
     RiskLevel,
+    StalenessClass,
     VerdictAction,
     VerdictStatus,
     VerificationRun,
     VerificationRunRequest,
 )
-from hallu_defense.services.audit import AuditLedger
 from hallu_defense.services.claim_classifier import ClaimClassifier
 from hallu_defense.services.claim_extractor import ClaimExtractor
 from hallu_defense.services.content_security import ContentSecurityScanner, ContentThreat
@@ -39,7 +42,6 @@ class VerificationOrchestrator:
     def __init__(
         self,
         settings: Settings,
-        audit: AuditLedger,
         extractor: ClaimExtractor,
         classifier: ClaimClassifier,
         retriever: HybridRetriever,
@@ -51,7 +53,6 @@ class VerificationOrchestrator:
         content_scanner: ContentSecurityScanner | None = None,
     ) -> None:
         self._settings = settings
-        self._audit = audit
         self._extractor = extractor
         self._classifier = classifier
         self._retriever = retriever
@@ -190,7 +191,6 @@ class VerificationOrchestrator:
             final_text=repair.final_text,
             policy_version=self._settings.policy_version,
         )
-        self._audit.append(run)
         self._record_metrics(run, started_at)
         return run
 
@@ -293,7 +293,6 @@ class VerificationOrchestrator:
             final_text=repair.final_text,
             policy_version=self._settings.policy_version,
         )
-        self._audit.append(run)
         self._record_metrics(run, started_at)
         return run
 
@@ -383,7 +382,6 @@ class VerificationOrchestrator:
             final_text=repair.final_text,
             policy_version=self._settings.policy_version,
         )
-        self._audit.append(run)
         self._record_metrics(run, started_at)
         return run
 
@@ -411,6 +409,11 @@ class VerificationOrchestrator:
                 "matched_rules": policy_response.matched_rules,
                 "threats": [threat.to_metadata() for threat in threats],
             },
+            authority=Authority.INTERNAL,
+            freshness=Freshness(
+                retrieved_at=datetime.now(timezone.utc),
+                staleness_class=StalenessClass.FRESH,
+            ),
         )
 
     def _threat_evidence_ids(self, evidence: list[Evidence]) -> list[str]:

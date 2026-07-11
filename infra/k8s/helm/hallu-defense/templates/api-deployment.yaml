@@ -1,3 +1,6 @@
+{{- if and .Values.sandbox.fixture.enabled (not .Values.kindDependencies.enabled) }}
+{{- fail "sandbox.fixture.enabled=true is allowed only when kindDependencies.enabled=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,11 +24,71 @@ spec:
         {{- include "hallu-defense.labels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      serviceAccountName: {{ include "hallu-defense.apiServiceAccountName" . }}
+      # The token is projected explicitly into the API container only. Init
+      # containers cannot use the Kubernetes API identity.
+      automountServiceAccountToken: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        {{- include "hallu-defense.migrationWaitInitContainer" . | nindent 8 }}
+        - name: bootstrap-opensearch-schema
+          image: {{ include "hallu-defense.apiImage" . | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import subprocess
+              import time
+
+              deadline = time.monotonic() + {{ .Values.migrations.waitTimeoutSeconds }}
+              while True:
+                  result = subprocess.run(
+                      ["python", "/app/scripts/dev/bootstrap_opensearch_template.py"],
+                      text=True,
+                      capture_output=True,
+                      timeout=30,
+                      check=False,
+                  )
+                  if result.returncode == 0:
+                      print(result.stdout.strip())
+                      break
+                  if "reindex" in result.stderr.lower():
+                      raise SystemExit("OpenSearch schema v3 requires operator reindex")
+                  if time.monotonic() >= deadline:
+                      raise SystemExit("OpenSearch schema bootstrap timed out")
+                  time.sleep(2)
+          securityContext:
+            {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "hallu-defense.opensearchBootstrapEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: bootstrap-secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: vault-ca
+              mountPath: {{ .Values.vault.caPath | quote }}
+              subPath: {{ .Values.vault.caSecretKey | quote }}
+              readOnly: true
+            {{- if and (not .Values.kindDependencies.enabled) .Values.opensearch.caSecretName }}
+            - name: opensearch-ca
+              mountPath: {{ .Values.opensearch.caPath | quote }}
+              subPath: {{ .Values.opensearch.caSecretKey | quote }}
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
       containers:
         - name: api
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          image: {{ include "hallu-defense.apiImage" . | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           securityContext:
             {{- include "hallu-defense.containerSecurityContext" . | nindent 12 }}
@@ -35,6 +98,19 @@ spec:
           env:
             {{- include "hallu-defense.apiEnv" . | nindent 12 }}
           volumeMounts:
+            - name: runtime-secrets
+              mountPath: /run/secrets
+              readOnly: true
+            {{- if not .Values.kindDependencies.enabled }}
+            - name: postgres-ca
+              mountPath: {{ .Values.postgres.caPath | quote }}
+              subPath: {{ .Values.postgres.caSecretKey | quote }}
+              readOnly: true
+            {{- end }}
+            - name: vault-ca
+              mountPath: {{ .Values.vault.caPath | quote }}
+              subPath: {{ .Values.vault.caSecretKey | quote }}
+              readOnly: true
             - name: keycloak-jwks
               mountPath: {{ .Values.oidc.jwksPath | quote }}
               subPath: keycloak-jwks.json
@@ -42,32 +118,123 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: workspace
-              mountPath: /workspace
+              mountPath: {{ .Values.sandbox.workspace.mountPath | quote }}
+              readOnly: true
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: redis-ca
+              mountPath: {{ .Values.rateLimit.redis.caPath | quote }}
+              subPath: {{ .Values.rateLimit.redis.caSecretKey | quote }}
+              readOnly: true
+            {{- if and (not .Values.kindDependencies.enabled) .Values.opensearch.caSecretName }}
+            - name: opensearch-ca
+              mountPath: {{ .Values.opensearch.caPath | quote }}
+              subPath: {{ .Values.opensearch.caSecretKey | quote }}
+              readOnly: true
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
       volumes:
+        - name: runtime-secrets
+          secret:
+            secretName: {{ include "hallu-defense.runtimeSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.runtime.vaultTokenKey | quote }}
+                path: hallu_defense_vault_token
+              - key: {{ .Values.secrets.runtime.postgresDsnKey | quote }}
+                path: hallu_defense_postgres_dsn
+        - name: runtime-postgres-secret
+          secret:
+            secretName: {{ include "hallu-defense.runtimeSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.runtime.postgresDsnKey | quote }}
+                path: hallu_defense_postgres_dsn
+        {{- if not .Values.kindDependencies.enabled }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ include "hallu-defense.postgresCaSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.postgres.caSecretKey | quote }}
+                path: {{ .Values.postgres.caSecretKey | quote }}
+        {{- end }}
+        - name: bootstrap-secrets
+          secret:
+            secretName: {{ include "hallu-defense.bootstrapSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.bootstrap.vaultTokenKey | quote }}
+                path: hallu_defense_vault_token
+        - name: vault-ca
+          secret:
+            secretName: {{ include "hallu-defense.vaultCaSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.vault.caSecretKey | quote }}
+                path: {{ .Values.vault.caSecretKey | quote }}
         - name: keycloak-jwks
           secret:
-            secretName: {{ include "hallu-defense.fullname" . }}-runtime
+            secretName: {{ include "hallu-defense.runtimeSecretName" . }}
             items:
-              - key: keycloak-jwks.json
+              - key: {{ .Values.secrets.runtime.keycloakJwksKey | quote }}
                 path: keycloak-jwks.json
+        - name: redis-ca
+          secret:
+            secretName: {{ include "hallu-defense.redisCaSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.rateLimit.redis.caSecretKey | quote }}
+                path: {{ .Values.rateLimit.redis.caSecretKey | quote }}
+        {{- if and (not .Values.kindDependencies.enabled) .Values.opensearch.caSecretName }}
+        - name: opensearch-ca
+          secret:
+            secretName: {{ .Values.opensearch.caSecretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.opensearch.caSecretKey | quote }}
+                path: {{ .Values.opensearch.caSecretKey | quote }}
+        {{- end }}
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
         - name: workspace
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: {{ include "hallu-defense.sandboxApiWorkspaceClaimName" . }}
+        - name: kube-api-access
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 3600
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
 ---
 apiVersion: v1
 kind: Service

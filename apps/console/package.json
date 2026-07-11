@@ -16,7 +16,7 @@
     "@hallu-defense/contracts": "0.1.0",
     "@hallu-defense/sdk": "0.1.0",
     "lucide-react": "^0.468.0",
-    "next": "16.3.0-canary.80",
+    "next": "16.2.10",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

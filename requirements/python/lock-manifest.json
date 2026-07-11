@@ -1,0 +1,18 @@
+{
+  "schema_version": "python-lock-manifest.v1",
+  "target": {
+    "implementation": "CPython",
+    "python": "3.12.13",
+    "os": "linux"
+  },
+  "compiler": {
+    "name": "pip-tools",
+    "version": "7.5.3"
+  },
+  "locks": {
+    "build-tools-linux-py312.lock": "92a68a5a0c6220aa299410c33e433c633b1cdacf17af2496645f947733273e4b",
+    "dev-linux-py312.lock": "ff70eb2eaffe20deb4d2a7521965b27d477b64b75bf193252b791dd442594569",
+    "runtime-linux-py312.lock": "96cf18f23b6a756f5694eb636187bd6de268cbbb935ac0ead32e78a66fb4eea3",
+    "sandbox-linux-py312.lock": "23df6907e9f8d67d5c3734a12ac988aa5330c349b5a3e94c8c237ed9496ab392"
+  }
+}
