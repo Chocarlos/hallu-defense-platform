@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
-import { isTrustedLogoutRequest } from "../app/auth/logout/route";
+import { isTrustedLogoutRequest } from "./request-security";
 
 const expectedOrigin = "https://console.example.test";
 
@@ -10,27 +10,16 @@ describe("Console logout origin validation", () => {
     expect(requestIsTrusted({ origin: expectedOrigin })).toBe(true);
   });
 
-  it("accepts a user-activated same-origin navigation when no-referrer serializes Origin as null", () => {
-    expect(
-      requestIsTrusted({
-        origin: "null",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-user": "?1"
-      })
-    ).toBe(true);
-  });
-
   it.each([
     { origin: "https://attacker.example.test" },
     {
-      origin: "null",
+      origin: expectedOrigin,
       "sec-fetch-site": "cross-site",
       "sec-fetch-mode": "navigate",
       "sec-fetch-user": "?1"
     },
     {
-      origin: "null",
+      origin: expectedOrigin,
       "sec-fetch-site": "same-origin",
       "sec-fetch-mode": "cors",
       "sec-fetch-user": "?1"

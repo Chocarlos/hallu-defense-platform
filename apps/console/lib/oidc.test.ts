@@ -7,6 +7,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildEndSessionUrl,
   discoverOidc,
   resetOidcProviderCacheForTests,
   validateTokenSet,
@@ -44,7 +45,8 @@ const discovery: OidcDiscovery = {
   issuer: config.issuer,
   authorizationEndpoint: `${config.issuer}/protocol/openid-connect/auth`,
   tokenEndpoint: `${config.issuer}/protocol/openid-connect/token`,
-  jwksUri: `${config.issuer}/protocol/openid-connect/certs`
+  jwksUri: `${config.issuer}/protocol/openid-connect/certs`,
+  endSessionEndpoint: `${config.issuer}/protocol/openid-connect/logout`
 };
 
 const idClaims = {
@@ -70,6 +72,14 @@ const accessClaims = {
 
 describe("OIDC discovery and token validation", () => {
   beforeEach(() => resetOidcProviderCacheForTests());
+
+  it("builds provider logout without placing an ID or access token in the URL", () => {
+    const logout = new URL(buildEndSessionUrl(config, discovery));
+    expect(logout.origin + logout.pathname).toBe(discovery.endSessionEndpoint);
+    expect(logout.searchParams.get("client_id")).toBe(config.clientId);
+    expect(logout.searchParams.get("post_logout_redirect_uri")).toBe(config.publicOrigin);
+    expect(logout.search).not.toMatch(/token|id_token_hint|access/iu);
+  });
 
   it("accepts a signed token set and derives identity only from access-token claims", async () => {
     const result = await validate(idClaims, accessClaims, NONCE);
@@ -314,6 +324,7 @@ function discoveryDocument(
     authorization_endpoint: discovery.authorizationEndpoint,
     token_endpoint: discovery.tokenEndpoint,
     jwks_uri: discovery.jwksUri,
+    end_session_endpoint: discovery.endSessionEndpoint,
     code_challenge_methods_supported: ["S256"],
     response_types_supported: ["code"],
     ...overrides

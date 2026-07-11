@@ -28,6 +28,7 @@ export interface OidcDiscovery {
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly jwksUri: string;
+  readonly endSessionEndpoint: string;
 }
 
 export interface PkceMaterial {
@@ -142,6 +143,11 @@ async function fetchDiscoveryDocument(
   );
   const tokenEndpoint = discoveryEndpoint(document.token_endpoint, "token endpoint", config);
   const jwksUri = discoveryEndpoint(document.jwks_uri, "JWKS endpoint", config);
+  const endSessionEndpoint = discoveryEndpoint(
+    document.end_session_endpoint,
+    "end-session endpoint",
+    config
+  );
   const challengeMethods = document.code_challenge_methods_supported;
   if (!stringArray(challengeMethods).includes("S256")) {
     throw new OidcSecurityError("OIDC provider does not advertise PKCE S256.");
@@ -154,8 +160,19 @@ async function fetchDiscoveryDocument(
     issuer: config.issuer,
     authorizationEndpoint,
     tokenEndpoint,
-    jwksUri
+    jwksUri,
+    endSessionEndpoint
   });
+}
+
+export function buildEndSessionUrl(
+  config: ConsoleOidcRuntimeConfig,
+  discovery: OidcDiscovery
+): string {
+  const url = new URL(discovery.endSessionEndpoint);
+  url.searchParams.set("client_id", config.clientId);
+  url.searchParams.set("post_logout_redirect_uri", config.publicOrigin);
+  return url.toString();
 }
 
 export async function exchangeAuthorizationCode(

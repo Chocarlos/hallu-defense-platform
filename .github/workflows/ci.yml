@@ -144,6 +144,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
+      - name: Check Console production artifacts for fixture leakage
+        run: npm --workspace @hallu-defense/console run check:build
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Run browser e2e

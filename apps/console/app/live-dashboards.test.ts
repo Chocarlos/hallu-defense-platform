@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { CorpusGrant, EvalReport, VerificationRunSummary } from "@hallu-defense/contracts";
-import { newestEvalReports, newestGrants, newestRuns } from "./live-dashboards";
+import {
+  mergeEvalReports,
+  mergeGrants,
+  mergeRuns,
+  newestEvalReports,
+  newestGrants,
+  newestRuns
+} from "./live-dashboards";
 
 describe("live dashboard ordering", () => {
   it("orders event-backed run summaries newest first without mutating input", () => {
@@ -35,15 +42,39 @@ describe("live dashboard ordering", () => {
       "evr_old"
     ]);
   });
+
+  it("deduplicates overlapping pages and keeps the newest run and highest grant version", () => {
+    const oldRun: VerificationRunSummary = {
+      trace_id: "tr_same",
+      final_decision: "blocked",
+      created_at: "2026-07-10T10:00:00Z"
+    };
+    const newRun: VerificationRunSummary = {
+      ...oldRun,
+      final_decision: "allow",
+      created_at: "2026-07-10T12:00:00Z"
+    };
+    const oldGrant = grant("shared", "2026-07-10T13:00:00Z", 1);
+    const higherGrant = grant("shared", "2026-07-10T11:00:00Z", 2);
+
+    expect(mergeRuns([oldRun], [newRun, newRun])).toEqual([newRun]);
+    expect(mergeGrants([oldGrant], [higherGrant, oldGrant])).toEqual([higherGrant]);
+  });
+
+  it("deduplicates evaluation reports by report_id", () => {
+    const older = report("evr_same", "2026-07-10T08:00:00Z");
+    const newer = report("evr_same", "2026-07-10T09:00:00Z");
+    expect(mergeEvalReports([older], [newer, older])).toEqual([newer]);
+  });
 });
 
-function grant(corpusId: string, updatedAt: string): CorpusGrant {
+function grant(corpusId: string, updatedAt: string, version: number = 1): CorpusGrant {
   return {
     tenant_id: "tenant-a",
     corpus_id: corpusId,
     reader_roles: [],
     writer_roles: [],
-    version: 1,
+    version,
     created_by: "writer",
     updated_by: "writer",
     created_at: updatedAt,

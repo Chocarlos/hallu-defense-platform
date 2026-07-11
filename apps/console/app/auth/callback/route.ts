@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 import {
   consumeAuthorizationTransaction,
-  createConsoleSession,
+  rotateConsoleSession,
   sessionCookieName,
   transactionCookieName
 } from "../../../lib/auth-store";
@@ -36,17 +36,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return unavailable();
   }
 
-  const rateLimit = consumeAuthRateLimit("callback", request, config);
-  if (!rateLimit.allowed) {
-    const response = NextResponse.json(
-      { error: "Too many authentication requests." },
-      { status: 429 }
-    );
-    response.headers.set("retry-after", String(rateLimit.retryAfterSeconds));
-    secureResponse(response);
-    return response;
-  }
-
   try {
     const state = singletonParameter(request.nextUrl.searchParams, "state", 128);
     const issuer = singletonParameter(request.nextUrl.searchParams, "iss", 2048);
@@ -54,6 +43,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       state,
       request.cookies.get(transactionCookieName(config))?.value
     );
+    // Invalid or replayed state must not consume the callback quota. This also
+    // ensures a callback is one-time before any provider traffic occurs.
+    const rateLimit = consumeAuthRateLimit("callback", request, config);
+    if (!rateLimit.allowed) {
+      const response = NextResponse.json(
+        { error: "Too many authentication requests." },
+        { status: 429 }
+      );
+      response.headers.set("retry-after", String(rateLimit.retryAfterSeconds));
+      clearTransactionCookie(response, config);
+      secureResponse(response);
+      return response;
+    }
     if (issuer !== config.issuer) {
       throw new Error("Authorization response issuer mismatch.");
     }
@@ -78,12 +80,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       tokenResponse,
       transaction.nonce
     );
-    const session = createConsoleSession(tokenSet);
+    // The Strict session cookie is intentionally absent on the cross-site IdP
+    // callback. Rotate the exact session captured in the one-shot transaction.
+    const session = rotateConsoleSession(transaction, tokenSet);
     const response = NextResponse.redirect(config.publicOrigin, 303);
     response.cookies.set(sessionCookieName(config), session.sessionId, {
       httpOnly: true,
       secure: config.productionLike,
-      sameSite: "lax",
+      sameSite: "strict",
       path: "/",
       maxAge: Math.max(1, session.expiresAtSeconds - Math.floor(Date.now() / 1000)),
       priority: "high"

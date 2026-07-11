@@ -5,7 +5,7 @@ const REVIEWER_HEADERS = {
   "content-type": "application/json",
   "x-tenant-id": "tenant-a",
   "x-subject-id": "e2e-reviewer",
-  "x-roles": "approval_reviewer"
+  "x-roles": "approval_reviewer,tool_operator"
 };
 
 interface ApprovalRecordPayload {
@@ -22,21 +22,38 @@ interface ApprovalListPayload {
   readonly approvals: readonly ApprovalRecordPayload[];
 }
 
+interface ToolValidationPayload {
+  readonly approval_id?: string | null;
+}
+
 async function openConsole(page: Page): Promise<void> {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Consola DevEx" })).toBeVisible();
 }
 
-async function enqueueHighRiskToolCall(page: Page): Promise<string> {
-  await page.getByRole("button", { name: "Encolar" }).click();
-  const message = page.locator(".approval-message");
-  await expect(message).toContainText("Pendiente apr_", { timeout: 20_000 });
-  const text = (await message.textContent()) ?? "";
-  const match = text.match(/apr_[a-f0-9]+/);
-  if (match === null) {
-    throw new Error(`Approval id was not found in message: ${text}`);
+async function enqueueHighRiskToolCall(
+  page: Page,
+  request: APIRequestContext
+): Promise<{ readonly approvalId: string; readonly sensitiveFixture: string }> {
+  const sensitiveFixture = "e2e-redaction-sensitive-value";
+  const response = await request.post(`${API_BASE_URL}/tools/validate-input`, {
+    headers: REVIEWER_HEADERS,
+    data: {
+      tool_name: "delete_repository",
+      input: { repo: "core", api_key: sensitiveFixture },
+      schema: { type: "object", required: ["repo"] },
+      risk_level: "high",
+      approval_required: false,
+      caller_context: { subject: "console-reviewer" }
+    }
+  });
+  expect(response.ok()).toBeTruthy();
+  const payload = (await response.json()) as ToolValidationPayload;
+  if (payload.approval_id === undefined || payload.approval_id === null) {
+    throw new Error("Sensitive approval fixture did not return an approval id.");
   }
-  return match[0];
+  await page.getByRole("button", { name: "Actualizar approvals" }).click();
+  return { approvalId: payload.approval_id, sensitiveFixture };
 }
 
 function approvalRow(page: Page, approvalId: string): Locator {
@@ -62,7 +79,7 @@ test.describe("approval queue console flow", () => {
   }) => {
     await openConsole(page);
 
-    const approvalId = await enqueueHighRiskToolCall(page);
+    const { approvalId, sensitiveFixture } = await enqueueHighRiskToolCall(page, request);
     const row = approvalRow(page, approvalId);
     await expect(row).toBeVisible();
     await expect(row).toContainText("delete_repository");
@@ -75,8 +92,8 @@ test.describe("approval queue console flow", () => {
     expect(record).toBeDefined();
     expect(record?.tool_call.tool_name).toBe("delete_repository");
     expect(record?.tool_call.input["api_key"]).toBe("[REDACTED]");
-    expect(JSON.stringify(pending)).not.toContain('"api_key":"demo"');
-    expect(await page.content()).not.toContain('"api_key":"demo"');
+    expect(JSON.stringify(pending)).not.toContain(sensitiveFixture);
+    expect(await page.content()).not.toContain(sensitiveFixture);
 
     await row.getByRole("button", { name: "Aprobar" }).click();
     await expect(page.locator(".approval-message")).toHaveText("Aprobado", { timeout: 20_000 });
@@ -96,7 +113,7 @@ test.describe("approval queue console flow", () => {
   test("rejects a queued high-risk tool call from the UI", async ({ page, request }) => {
     await openConsole(page);
 
-    const approvalId = await enqueueHighRiskToolCall(page);
+    const { approvalId } = await enqueueHighRiskToolCall(page, request);
     const row = approvalRow(page, approvalId);
     await expect(row).toBeVisible();
 

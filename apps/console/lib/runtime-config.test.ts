@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  browserRuntimeConfig,
   ConsoleRuntimeConfigError,
   loadConsoleRuntimeConfig,
   parseIssuer,
@@ -41,7 +42,9 @@ describe("Console runtime configuration", () => {
     expect(first.loginRateLimitMax).toBe(20);
     expect(first.callbackRateLimitMax).toBe(30);
     expect(first.trustedProxyHops).toBe(0);
-    expect(first.demoFixtureEnabled).toBe(false);
+    expect("demoFixtureEnabled" in first).toBe(false);
+    expect(browserRuntimeConfig(first)).toEqual({ authMode: "oidc" });
+    expect(JSON.stringify(browserRuntimeConfig(first))).not.toContain("api.example.test");
   });
 
   it.each([
