@@ -8,6 +8,7 @@ import pytest
 from scripts.ci import patch_keycloak_metadata as patcher
 
 
+@pytest.mark.posix
 def test_patch_keycloak_metadata_removes_legacy_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -21,10 +22,7 @@ def test_patch_keycloak_metadata_removes_legacy_path(
     corrected = library / patcher.CORRECTED_NAME.decode("ascii")
     corrected.write_bytes(b"corrected-jackson")
     legacy = library / patcher.LEGACY_NAME.decode("ascii")
-    try:
-        legacy.symlink_to(corrected.name)
-    except OSError:
-        pytest.skip("creating symlinks requires an unavailable Windows privilege")
+    legacy.symlink_to(corrected.name)
     monkeypatch.setattr(
         patcher,
         "CORRECTED_SHA256",

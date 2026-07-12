@@ -67,9 +67,7 @@ jobs:
       - run: python scripts/ci/check_gitleaks_config.py
       - run: python scripts/ci/run_gitleaks.py
       - name: Exercise real Gitleaks fixtures
-        run: python -m pytest -q apps/api/tests/test_gitleaks_gate.py
-        env:
-          HALLU_DEFENSE_GITLEAKS_LIVE_TEST: "true"
+        run: python -m pytest -q apps/api/tests/test_gitleaks_gate.py --suite-lane=live
       - run: python scripts/ci/secret_scan.py
       - run: python scripts/ci/check_encryption_config.py
       - run: python scripts/ci/check_release_security_config.py

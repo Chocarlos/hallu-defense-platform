@@ -41,6 +41,13 @@ hallu_defense = ["py.typed"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = [
+  "linux: requires Linux-specific kernel/process semantics",
+  "live: requires explicitly provisioned external services or binaries",
+  "posix: requires POSIX permissions or symbolic-link semantics",
+  "windows: requires Windows Job Object or filesystem semantics",
+]
 
 [tool.ruff]
 target-version = "py312"

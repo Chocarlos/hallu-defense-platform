@@ -48,7 +48,7 @@ jobs:
       - name: Check JSON Schema contracts
         run: python scripts/ci/check_json_schemas.py
       - name: Test API
-        run: python -m pytest apps/api/tests
+        run: python -m pytest apps/api/tests --suite-lane=auto
       - name: Check OpenAPI drift
         run: python scripts/ci/check_openapi.py
       - name: Check semantic contract versions

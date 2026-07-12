@@ -7287,3 +7287,59 @@ Remaining risks:
 - Linux lock recompilation, GitHub GPG/OIDC attestations, external replay CAS,
   managed-service durability, and Console multi-replica session state remain
   deployment/remote-run evidence. None is represented as locally completed.
+
+## 2026-07-12 - Zero-skip API test lanes and live MinIO coverage
+
+Slice selected:
+
+- Investigated all 28 skips from the final integrated API suite, removed the
+  accidental skip, and converted environment-dependent coverage into explicit,
+  fail-closed platform and live lanes.
+
+Implementation:
+
+- Classified the baseline as one incorrect optional-dependency test, 20
+  POSIX/Linux permission, symlink, and process tests, six real-Gitleaks tests,
+  and one live MinIO-compatible S3 backup/restore test.
+- Reworked the PostgreSQL optional-pool test to simulate the missing import
+  deterministically even when `psycopg-pool` is installed.
+- Added strict `linux`, `posix`, `windows`, and `live` markers plus the
+  `--suite-lane` selector. The default `auto` lane runs all compatible offline
+  tests, and a runtime skip now fails the pytest session instead of silently
+  weakening evidence.
+- Replaced OS/symlink skip branches with explicit platform ownership, preserved
+  the four Windows Job Object tests in the Windows lane, and corrected the
+  POSIX symlink-secret expectation exposed by the real WSL run.
+- Moved real Gitleaks coverage to the explicit live lane and updated its static
+  checker. Added a dedicated isolated MinIO backup/restore live job, exact
+  scratch cleanup, and a checker that fails if the job or test is removed.
+- Corrected the live S3 cleanup assertion to accept the client's documented
+  empty sequence rather than requiring a concrete empty list.
+
+Validation:
+
+- Baseline reproduced exactly: `2697 passed, 28 skipped`.
+- Final Windows auto lane: `2716 passed, 27 deselected, 0 skipped`; the 27 are
+  20 incompatible POSIX/Linux nodes plus seven explicitly provisioned live
+  nodes. Final Windows-only lane: `4 passed, 2739 deselected`.
+- WSL Ubuntu POSIX lane from the exact hashed Linux dependency lock:
+  `20 passed`; dependency check reported no broken packages.
+- Official Gitleaks 8.30.1 Windows binary and checksum passed all six live
+  fixture tests with zero skips.
+- The pinned SeaweedFS commit was downloaded with its repository checksum,
+  built with Go 1.26.4 after verifying the official archive checksum and exact
+  Thrift/x/net module versions, then passed the live encrypted S3 drill:
+  `1 passed`; all service, build, and virtualenv scratch was removed.
+- Ruff passed across API/tests/scripts/evals; mypy passed all 59 API sources;
+  workflow YAML parsed; foundation, Gitleaks, and MinIO configuration gates
+  passed; `git diff --check` was clean.
+
+Remaining risks:
+
+- The upstream FastAPI/Starlette TestClient deprecation warning remains; it is
+  unrelated to the former skips and requires an upstream-compatible dependency
+  migration rather than suppressing the warning.
+- Docker Desktop container creation remained unusable locally, so the MinIO
+  live proof used an isolated WSL process built from the same pinned,
+  checksum-verified SeaweedFS source. The new GitHub live job still exercises
+  the Compose image and exact scratch-resource teardown on an Ubuntu runner.

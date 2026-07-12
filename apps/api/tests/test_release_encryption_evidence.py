@@ -776,6 +776,7 @@ def test_external_inputs_must_be_absolute_distinct_and_outside_bundle(tmp_path: 
     assert bundled_report["failure_codes"] == ["external.bundle_owned"]
 
 
+@pytest.mark.posix
 def test_external_path_traversal_and_symlink_are_rejected(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     traversal = str(fixture.keyring_path.parent / ".." / "trusted" / fixture.keyring_path.name)
@@ -788,10 +789,7 @@ def test_external_path_traversal_and_symlink_are_rejected(tmp_path: Path) -> Non
     assert traversal_report["failure_codes"] == ["external.path_traversal"]
 
     symlink = fixture.keyring_path.with_name("keyring-link.json")
-    try:
-        symlink.symlink_to(fixture.keyring_path)
-    except OSError:
-        pytest.skip("symlink creation is unavailable on this host")
+    symlink.symlink_to(fixture.keyring_path)
     symlink_report = verifier.verify_bundle(
         fixture.bundle_path,
         fixture.report_path,

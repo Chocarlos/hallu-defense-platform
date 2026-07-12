@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -193,7 +192,7 @@ def test_production_postgres_rejects_hostaddr_override(
         )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX trust-file modes are unavailable")
+@pytest.mark.posix
 def test_production_postgres_rejects_writable_ca_trust_file(tmp_path: Path) -> None:
     ca_path = (tmp_path / "postgres-ca.crt").resolve()
     ca_path.write_text("fixture-ca", encoding="utf-8")

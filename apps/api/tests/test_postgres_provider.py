@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -414,9 +413,17 @@ def test_module_import_does_not_require_psycopg_pool() -> None:
     assert pool.contexts[-1].committed is True
 
 
-def test_lazy_path_requires_psycopg_pool_when_absent() -> None:
-    if importlib.util.find_spec("psycopg_pool") is not None:
-        pytest.skip("psycopg-pool is installed; lazy import would succeed")
+def test_lazy_path_requires_psycopg_pool_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import_module = importlib.import_module
+
+    def import_without_pool(name: str) -> object:
+        if name == "psycopg_pool":
+            raise ModuleNotFoundError(name)
+        return real_import_module(name)
+
+    monkeypatch.setattr(postgres, "import_module", import_without_pool)
     provider = PooledPostgresProvider(dsn="postgresql://localhost/db")
 
     with pytest.raises(PostgresProviderError, match="psycopg-pool"):

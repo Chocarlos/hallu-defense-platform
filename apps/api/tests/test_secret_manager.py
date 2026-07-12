@@ -160,6 +160,7 @@ def test_vault_backend_reads_rotatable_file_token_for_production(
     assert seen_tokens == ["first-token", "rotated-token"]
 
 
+@pytest.mark.posix
 def test_load_settings_preserves_projected_secret_path_across_rotation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -174,11 +175,8 @@ def test_load_settings_preserves_projected_secret_path_across_rotation(
     os.chmod(first_version / "vault-token", 0o440)
     os.chmod(second_version / "vault-token", 0o440)
     token_path = mount / "vault-token"
-    try:
-        (mount / "..data").symlink_to(first_version.name, target_is_directory=True)
-        token_path.symlink_to("..data/vault-token")
-    except OSError:
-        pytest.skip("symlink creation is unavailable for this test identity")
+    (mount / "..data").symlink_to(first_version.name, target_is_directory=True)
+    token_path.symlink_to("..data/vault-token")
 
     monkeypatch.setattr(runtime_secrets, "_is_root_owned", lambda _metadata: True)
     monkeypatch.setattr(
@@ -214,10 +212,7 @@ def test_load_settings_preserves_projected_secret_path_across_rotation(
 
     replacement = mount / "..data-next"
     replacement.symlink_to(second_version.name, target_is_directory=True)
-    try:
-        os.replace(replacement, mount / "..data")
-    except OSError:
-        pytest.skip("atomic projected-Secret symlink replacement is unavailable")
+    os.replace(replacement, mount / "..data")
     manager.get_secret("providers/openai/api-key")
 
     assert seen_tokens == ["first-token", "second-token"]

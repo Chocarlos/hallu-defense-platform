@@ -14,6 +14,8 @@ DOC_PATH = ROOT / "docs" / "security" / "backup-restore-retention.md"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_PATH = ROOT / ".github" / "workflows" / "security.yml"
+LIVE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "live.yml"
+LIVE_TEST_PATH = ROOT / "apps" / "api" / "tests" / "test_live_minio_backup_restore_drill.py"
 
 EXPECTED_MANIFEST_FIELDS = {
     "source_ref",
@@ -36,6 +38,8 @@ def validate_repository() -> None:
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         ci_text=CI_PATH.read_text(encoding="utf-8"),
         security_text=SECURITY_PATH.read_text(encoding="utf-8"),
+        live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        live_test_text=LIVE_TEST_PATH.read_text(encoding="utf-8"),
     )
 
 
@@ -49,6 +53,8 @@ def validate_sources(
     makefile_text: str,
     ci_text: str,
     security_text: str,
+    live_workflow_text: str,
+    live_test_text: str,
 ) -> None:
     errors: list[str] = []
     _require_markers(
@@ -156,6 +162,34 @@ def validate_sources(
         errors.append("CI workflow must run the MinIO backup drill gate")
     if gate not in security_text:
         errors.append("security workflow must run the MinIO backup drill gate")
+    _require_markers(
+        live_test_text,
+        (
+            "@pytest.mark.live",
+            "test_live_minio_replica_restore_is_tenant_scoped_and_rejects_corruption",
+            "hallu-drill-src-",
+            "hallu-drill-rep-",
+            "_assert_synthetic_prefixes_empty",
+        ),
+        "MinIO live test",
+        errors,
+    )
+    _require_markers(
+        live_workflow_text,
+        (
+            "minio-backup-restore-live:",
+            "hallu-minio-${{ github.run_id }}-${{ github.run_attempt }}",
+            "docker compose up -d minio",
+            "HALLU_DEFENSE_MINIO_BACKUP_ENDPOINT: http://127.0.0.1:9000",
+            "HALLU_DEFENSE_SECRET_BACKUP_ENCRYPTION_KEY:",
+            "test_live_minio_backup_restore_drill.py --suite-lane=live",
+            "docker compose stop minio",
+            "docker compose rm -f minio",
+            'docker volume rm "${COMPOSE_PROJECT_NAME}_seaweedfs-data"',
+        ),
+        "live workflow",
+        errors,
+    )
     if errors:
         raise MinioBackupDrillConfigError("\n".join(errors))
 

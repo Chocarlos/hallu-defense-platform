@@ -16,9 +16,6 @@ from hallu_defense.services.minio_backup_drill import (
 )
 from scripts.dev import minio_backup_restore_drill as cli
 
-LIVE_ENV = "HALLU_DEFENSE_MINIO_BACKUP_LIVE_SMOKE_ENABLED"
-
-
 class CorruptingReplicaStore:
     def __init__(
         self,
@@ -128,10 +125,7 @@ class CorruptingReplicaStore:
         )
 
 
-@pytest.mark.skipif(
-    os.getenv(LIVE_ENV, "").strip().lower() not in {"1", "true", "yes", "on"},
-    reason=f"set {LIVE_ENV}=true to run the live MinIO drill",
-)
+@pytest.mark.live
 def test_live_minio_replica_restore_is_tenant_scoped_and_rejects_corruption(
     tmp_path: Path,
 ) -> None:
@@ -254,12 +248,12 @@ def _assert_synthetic_prefixes_empty(
     replica_bucket: str,
 ) -> None:
     for bucket in (source_bucket, replica_bucket):
-        assert store.list_objects(
+        assert not store.list_objects(
             bucket=bucket,
             prefix="__hallu_backup_drill__/",
             max_output_bytes=64 * 1024,
             timeout_seconds=60,
-        ) == []
+        )
 
 
 def _sha256(payload: bytes) -> str:

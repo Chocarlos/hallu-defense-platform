@@ -51,7 +51,7 @@ def test_runtime_secret_file_rejects_unsafe_payloads(
 
 
 @pytest.mark.parametrize("mode", [0o660, 0o444, 0o640, 0o550])
-@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX file modes")
+@pytest.mark.posix
 def test_runtime_secret_file_rejects_unsafe_permissions(
     tmp_path: Path,
     mode: int,
@@ -87,18 +87,21 @@ def test_runtime_secret_loads_file_without_exposing_value_in_error(tmp_path: Pat
     )
 
 
-def test_runtime_secret_rejects_symlink(tmp_path: Path) -> None:
+@pytest.mark.posix
+def test_runtime_secret_rejects_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     target = _secret_file(tmp_path)
     link = tmp_path / "runtime-secret-link"
-    try:
-        link.symlink_to(target)
-    except OSError:
-        pytest.skip("symlink creation is unavailable for this test identity")
+    link.symlink_to(target)
+    monkeypatch.setattr(runtime_secrets, "_is_root_owned", lambda _metadata: True)
 
-    with pytest.raises(RuntimeSecretError, match="symlink"):
+    with pytest.raises(RuntimeSecretError, match="regular file or a Kubernetes projected"):
         read_runtime_secret_file(str(link), variable_name="SECRET_FILE")
 
 
+@pytest.mark.posix
 def test_runtime_secret_accepts_read_only_kubernetes_projected_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -109,11 +112,8 @@ def test_runtime_secret_accepts_read_only_kubernetes_projected_layout(
     target = version / "vault-token"
     target.write_text("projected-secret\n", encoding="utf-8")
     os.chmod(target, 0o440)
-    try:
-        (mount / "..data").symlink_to(version.name, target_is_directory=True)
-        (mount / "vault-token").symlink_to("..data/vault-token")
-    except OSError:
-        pytest.skip("symlink creation is unavailable for this test identity")
+    (mount / "..data").symlink_to(version.name, target_is_directory=True)
+    (mount / "vault-token").symlink_to("..data/vault-token")
     monkeypatch.setattr(runtime_secrets, "_is_root_owned", lambda _metadata: True)
     monkeypatch.setattr(
         runtime_secrets,
@@ -130,6 +130,7 @@ def test_runtime_secret_accepts_read_only_kubernetes_projected_layout(
     )
 
 
+@pytest.mark.posix
 def test_runtime_secret_rejects_projected_layout_on_writable_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -140,11 +141,8 @@ def test_runtime_secret_rejects_projected_layout_on_writable_mount(
     target = version / "vault-token"
     target.write_text("projected-secret\n", encoding="utf-8")
     os.chmod(target, 0o440)
-    try:
-        (mount / "..data").symlink_to(version.name, target_is_directory=True)
-        (mount / "vault-token").symlink_to("..data/vault-token")
-    except OSError:
-        pytest.skip("symlink creation is unavailable for this test identity")
+    (mount / "..data").symlink_to(version.name, target_is_directory=True)
+    (mount / "vault-token").symlink_to("..data/vault-token")
     monkeypatch.setattr(runtime_secrets, "_is_root_owned", lambda _metadata: True)
     monkeypatch.setattr(
         runtime_secrets,

@@ -95,14 +95,12 @@ def test_secret_scan_fails_closed_for_non_utf8_files(tmp_path: Path) -> None:
     assert result.ok is False
 
 
+@pytest.mark.posix
 def test_secret_scan_fails_closed_for_symlinks(tmp_path: Path) -> None:
     target = tmp_path.parent / "external-secret-fixture.txt"
     target.write_text(_synthetic_secret_assignment(), encoding="utf-8")
     link = tmp_path / "linked.txt"
-    try:
-        link.symlink_to(target)
-    except OSError:
-        pytest.skip("symlink creation is unavailable on this platform")
+    link.symlink_to(target)
 
     result = scan_tree(tmp_path)
 

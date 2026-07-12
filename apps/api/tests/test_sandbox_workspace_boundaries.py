@@ -128,11 +128,10 @@ def test_container_and_api_fingerprints_match_at_zero_byte_and_mode_boundaries(
     ) == sandbox_module._workspace_fingerprint(tmp_path)
 
 
+@pytest.mark.posix
 def test_executable_mode_is_normalized_in_cross_platform_fingerprints(
     tmp_path: Path,
 ) -> None:
-    if os.name == "nt":
-        pytest.skip("Windows does not expose POSIX executable mode semantics")
     workspace_helper = _load_helper(
         "sandbox_workspace_executable_mode",
         "sandbox_workspace.py",
@@ -400,7 +399,7 @@ def test_default_process_runner_timeout_cleans_descendant_and_pipe_threads(
     assert not any(thread.name.startswith("sandbox-docker-") for thread in threading.enumerate())
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+@pytest.mark.windows
 def test_default_process_runner_fails_closed_on_job_assignment_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -424,7 +423,7 @@ def test_default_process_runner_fails_closed_on_job_assignment_error(
     assert not any(thread.name.startswith("sandbox-docker-") for thread in threading.enumerate())
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+@pytest.mark.windows
 def test_default_process_runner_propagates_job_termination_error_after_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -563,11 +562,10 @@ def test_runner_and_artifact_walkers_do_not_use_materializing_path_iterdir(
     assert batch_runner.artifact_snapshot(source)["artifacts/result.txt"][0] == 6
 
 
+@pytest.mark.linux
 def test_linux_batch_runner_reaps_detached_descendant_before_snapshot(
     tmp_path: Path,
 ) -> None:
-    if not sys.platform.startswith("linux"):
-        pytest.skip("Linux subreaper behavior is exercised in the sandbox container")
     marker = tmp_path / "detached-survived.txt"
     helper_path = str(DOCKER_HELPERS)
     grandchild = (
