@@ -1,17 +1,22 @@
 # Privileged Release Process
 
 The release workflow is manually dispatched from a protected default branch and has four
-fresh jobs across three execution trust domains:
+fresh release stages across three execution trust domains:
 `verify-tag -> build-release -> scan-release -> attest-release`. The first job uses
 external public trust roots to verify and peel the annotated tag in a bare repository; it
-never checks out or executes tag code and has no OIDC or attestation permission. The
+fetches the immutable workflow-dispatch control commit by exact object ID and fails unless
+the peeled source is an ancestor of that exact control commit. It never checks out or
+executes tag code and has no OIDC or attestation permission. The
 unprivileged build job checks out and executes only that verified peeled commit, but has
 only `contents: read`. A fresh unprivileged scan job has `permissions: {}`, never checks
 out or executes tag/artifact code, and treats the build upload as inert data. The build
 and scan jobs receive no Environment, signing material, OIDC token, or attestation
 permission. The separate privileged attestation job receives OIDC and attestation
 permissions only after scanning succeeds; it never checks out or executes the signed tag.
-It handles downloaded files strictly as inert data.
+It handles downloaded files strictly as inert data. A fifth `release-verdict` job has no
+token permissions or Environment and uses `if: always()` to observe all four stage results.
+It fails unless every stage succeeded, so a trust job that was skipped, cancelled, or failed
+cannot leave a visually green workflow with no release artifacts.
 
 This split is mandatory. A tag-triggered workflow executes workflow code from the tag and
 therefore cannot safely bootstrap trust by verifying itself after obtaining privileged
@@ -44,10 +49,13 @@ policy and trust.
 
 The `verify-tag` job first validates a canonical `vMAJOR.MINOR.PATCH` input and a protected
 `main`/`master` control ref. It decodes the externally supplied public-key bundle, rejects
-`sec`/`ssb` packets before and after import, fetches only the requested tag into a bare
-repository, verifies the annotated tag signature, and emits only the exact tag-object and
-peeled-commit SHAs. It cleans the keyring, bundle, credential helper, and bare repository
-on success or failure. It has no checkout step and cannot execute subject code.
+`sec`/`ssb` packets before and after import, and requests only the exact `GITHUB_SHA` control
+commit plus the requested tag through explicit refspecs into a bare repository. It verifies
+the annotated tag signature and emits only the exact tag-object and peeled-commit SHAs. The
+immutable workflow-dispatch control commit is never rediscovered from a mutable branch tip;
+the job verifies the fetched object ID and requires the peeled commit to be its ancestor. It
+cleans the keyring, bundle, credential helper, and bare repository on success or failure. It
+has no checkout step and cannot execute subject code.
 
 The `build-release` job depends on successful `verify-tag`, validates the immutable SHA
 handoff, and checks out exactly the verified peeled commit without persisted Git
@@ -113,8 +121,9 @@ temporary directory, inspects it before import, and rejects secret-key packets (
 A second post-import check rejects any secret key that reached the temporary keyring.
 
 The job verifies the annotated tag signature, resolves its tag object and exact peeled
-commit, and reads the eight Dockerfile blobs plus both runtime lock blobs only to compute
-their hashes. It then deletes the key
+commit, and independently fetches the immutable `GITHUB_SHA` control object.
+It revalidates the same ancestry before reading the eight Dockerfile blobs plus both runtime
+lock blobs only to compute their hashes. It then deletes the key
 file, `GNUPGHOME`, credential helper, and bare repository and unsets credential variables.
 Cleanup is guarded by a trap on both success and failure and completes before downloaded
 data is parsed or an OIDC-backed action runs.

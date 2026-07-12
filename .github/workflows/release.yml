@@ -25,6 +25,7 @@ jobs:
   verify-tag:
     if: >-
       github.ref_protected && github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch &&
       (github.ref_name == 'main' || github.ref_name == 'master')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -88,6 +89,8 @@ jobs:
           export GIT_CONFIG_GLOBAL=/dev/null
           export GIT_TERMINAL_PROMPT=0
           export GIT_ASKPASS="${askpass}"
+          control_commit="${GITHUB_SHA}"
+          [[ "${control_commit}" =~ ^[0-9a-f]{40}$ ]]
           cat > "${askpass}" <<'ASKPASS'
           #!/usr/bin/env bash
           case "$1" in
@@ -99,7 +102,14 @@ jobs:
           chmod 0700 "${askpass}"
           git init --bare "${bare_repo}"
           git --git-dir="${bare_repo}" -c core.hooksPath=/dev/null fetch \
-            --no-tags --depth=1 \
+            --no-tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "${control_commit}:refs/release-control/dispatch"
+          test "$(git --git-dir="${bare_repo}" rev-parse \
+            "refs/release-control/dispatch^{commit}")" = "${control_commit}"
+          test "$(git --git-dir="${bare_repo}" cat-file -t "${control_commit}")" = commit
+          git --git-dir="${bare_repo}" -c core.hooksPath=/dev/null fetch \
+            --no-tags \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
             "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
           git --git-dir="${bare_repo}" cat-file -e "refs/tags/${RELEASE_TAG}^{tag}"
@@ -108,6 +118,8 @@ jobs:
           source_commit="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
           [[ "${tag_object}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
+          git --git-dir="${bare_repo}" merge-base --is-ancestor \
+            "${source_commit}" "${control_commit}"
           printf 'tag-object=%s\n' "${tag_object}" >> "${GITHUB_OUTPUT}"
           printf 'source-commit=%s\n' "${source_commit}" >> "${GITHUB_OUTPUT}"
 
@@ -116,6 +128,7 @@ jobs:
     if: >-
       needs.verify-tag.result == 'success' &&
       github.ref_protected && github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch &&
       (github.ref_name == 'main' || github.ref_name == 'master')
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -364,6 +377,7 @@ jobs:
     if: >-
       needs.build-release.result == 'success' &&
       github.ref_protected && github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch &&
       (github.ref_name == 'main' || github.ref_name == 'master')
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -690,6 +704,7 @@ jobs:
     if: >-
       needs.scan-release.result == 'success' &&
       github.ref_protected && github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch &&
       (github.ref_name == 'main' || github.ref_name == 'master')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -780,6 +795,8 @@ jobs:
           export GIT_CONFIG_GLOBAL=/dev/null
           export GIT_TERMINAL_PROMPT=0
           export GIT_ASKPASS="${askpass}"
+          control_commit="${GITHUB_SHA}"
+          [[ "${control_commit}" =~ ^[0-9a-f]{40}$ ]]
           cat > "${askpass}" <<'ASKPASS'
           #!/usr/bin/env bash
           case "$1" in
@@ -791,7 +808,14 @@ jobs:
           chmod 0700 "${askpass}"
           git init --bare "${bare_repo}"
           git --git-dir="${bare_repo}" -c core.hooksPath=/dev/null fetch \
-            --no-tags --depth=1 \
+            --no-tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "${control_commit}:refs/release-control/dispatch"
+          test "$(git --git-dir="${bare_repo}" rev-parse \
+            "refs/release-control/dispatch^{commit}")" = "${control_commit}"
+          test "$(git --git-dir="${bare_repo}" cat-file -t "${control_commit}")" = commit
+          git --git-dir="${bare_repo}" -c core.hooksPath=/dev/null fetch \
+            --no-tags \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
             "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
           git --git-dir="${bare_repo}" cat-file -e "refs/tags/${RELEASE_TAG}^{tag}"
@@ -799,6 +823,8 @@ jobs:
           expected_tag_object="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{tag}")"
           expected_source_commit="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
           test "$(git --git-dir="${bare_repo}" cat-file -t "${expected_source_commit}")" = commit
+          git --git-dir="${bare_repo}" merge-base --is-ancestor \
+            "${expected_source_commit}" "${control_commit}"
           node_lock_object="$(git --git-dir="${bare_repo}" rev-parse "${expected_source_commit}:package-lock.json")"
           test "$(git --git-dir="${bare_repo}" cat-file -t "${node_lock_object}")" = blob
           expected_node_lock_sha256="$(git --git-dir="${bare_repo}" cat-file blob "${node_lock_object}" | sha256sum | cut -d' ' -f1)"
@@ -1459,3 +1485,33 @@ jobs:
           compression-level: 0
           overwrite: false
           retention-days: 30
+
+  release-verdict:
+    needs:
+      - verify-tag
+      - build-release
+      - scan-release
+      - attest-release
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail unless every release stage completed
+        shell: bash
+        env:
+          VERIFY_TAG_RESULT: ${{ needs.verify-tag.result }}
+          BUILD_RELEASE_RESULT: ${{ needs.build-release.result }}
+          SCAN_RELEASE_RESULT: ${{ needs.scan-release.result }}
+          ATTEST_RELEASE_RESULT: ${{ needs.attest-release.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${VERIFY_TAG_RESULT}" != "success" ||
+                "${BUILD_RELEASE_RESULT}" != "success" ||
+                "${SCAN_RELEASE_RESULT}" != "success" ||
+                "${ATTEST_RELEASE_RESULT}" != "success" ]]; then
+            printf 'Release incomplete: verify-tag=%s build-release=%s scan-release=%s attest-release=%s\n' \
+              "${VERIFY_TAG_RESULT}" "${BUILD_RELEASE_RESULT}" \
+              "${SCAN_RELEASE_RESULT}" "${ATTEST_RELEASE_RESULT}" >&2
+            exit 1
+          fi
