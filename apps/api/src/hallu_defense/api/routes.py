@@ -71,6 +71,7 @@ from hallu_defense.domain.models import (
     EvalReportListResponse,
     EvalReportPublishRequest,
     EvalReportPublishResponse,
+    FinalDecision,
     PolicyEvaluationRequest,
     PolicyEvaluationResponse,
     RepoChecksRunRequest,
@@ -96,7 +97,7 @@ from hallu_defense.services.approvals import (
     ApprovalExecutionGrantError,
     ApprovalNotFoundError,
 )
-from hallu_defense.services.audit import AuditLedgerError
+from hallu_defense.services.audit import AuditLedgerError, ReplaySourceConflictError
 from hallu_defense.services.corpus_grants import (
     CorpusGrantNotFoundError,
     CorpusGrantPaginationError,
@@ -129,6 +130,9 @@ from hallu_defense.services.verification_history import (
 LOGGER = logging.getLogger(__name__)
 READINESS_UNAVAILABLE_MESSAGE = "Service dependencies are not ready."
 RATE_LIMIT_UNAVAILABLE_MESSAGE = "Tool validation rate limit is unavailable."
+AUDIT_HISTORY_UNAVAILABLE_MESSAGE = "Audit history is unavailable."
+VERIFICATION_PERSISTENCE_UNAVAILABLE_MESSAGE = "Verification persistence is unavailable."
+VERIFICATION_REPLAY_SOURCE_CONFLICT_MESSAGE = "Verification replay source is ambiguous."
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse},
@@ -157,8 +161,47 @@ def _authenticated_tenant_id(
     return context.tenant_id
 
 
-def _record_verification_completed(run: VerificationRun, *, path: str) -> None:
-    audit_ledger.append_completed_run(run, path=path)
+def _record_verification_completed(
+    run: VerificationRun,
+    *,
+    path: str,
+    tenant_id: str,
+    trace_id: str,
+    source_trace_id: str | None = None,
+    source_final_decision: FinalDecision | None = None,
+) -> VerificationRun:
+    if run.tenant_id != tenant_id or run.trace_id != trace_id:
+        LOGGER.error(
+            "verification completion identity mismatch",
+            extra={"path": path},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=VERIFICATION_PERSISTENCE_UNAVAILABLE_MESSAGE,
+        )
+    try:
+        if path == "/verification/replay":
+            if source_trace_id is None or source_final_decision is None:
+                raise AuditLedgerError("Replay completion metadata is incomplete.")
+            completed = audit_ledger.append_replayed_run(
+                run,
+                source_trace_id=source_trace_id,
+                source_final_decision=source_final_decision,
+            )
+        else:
+            completed = audit_ledger.append_completed_run(run, path=path)
+    except (AuditLedgerError, PostgresProviderError) as exc:
+        LOGGER.error(
+            "verification completion persistence failed",
+            extra={"path": path, "exception_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=VERIFICATION_PERSISTENCE_UNAVAILABLE_MESSAGE,
+        ) from exc
+    # The ledger stores a redacted snapshot. Preserve the public response
+    # contract while adopting the canonical timestamp on an idempotent retry.
+    return run.model_copy(update={"created_at": completed.run.created_at})
 
 
 def _canonical_tool_call(
@@ -172,9 +215,10 @@ def _canonical_tool_call(
     )
     if context.principal.is_authenticated:
         caller_context["subject"] = context.principal.subject_id
-    elif not isinstance(caller_context.get("subject"), str) or not str(
-        caller_context["subject"]
-    ).strip():
+    elif (
+        not isinstance(caller_context.get("subject"), str)
+        or not str(caller_context["subject"]).strip()
+    ):
         caller_context["subject"] = "anonymous"
     return request.model_copy(update={"caller_context": caller_context}, deep=True)
 
@@ -596,7 +640,9 @@ def verify_claims(
     request: ClaimVerificationRequest,
     _context: RequestContext = Depends(require_endpoint_roles("POST /claims/verify")),
 ) -> ClaimVerificationResponse:
-    return ClaimVerificationResponse(verdicts=claim_verifier.verify(request.claims, request.evidence))
+    return ClaimVerificationResponse(
+        verdicts=claim_verifier.verify(request.claims, request.evidence)
+    )
 
 
 @router.post("/v2/claims/verify", response_model=ClaimVerificationResponseV2)
@@ -648,8 +694,7 @@ def validate_tool_input(
     )
 
     if result.approval_required and (
-        tool_request.approval_id is not None
-        or tool_request.approval_execution_token is not None
+        tool_request.approval_id is not None or tool_request.approval_execution_token is not None
     ):
         try:
             approval = approval_queue.consume_execution_grant(
@@ -720,7 +765,9 @@ def evaluate_policy(
             "policy.risk_level": request.risk_level.value,
         },
     ) as span:
-        response = policy_engine.evaluate(request, trace_id=context.trace_id, tenant_id=context.tenant_id)
+        response = policy_engine.evaluate(
+            request, trace_id=context.trace_id, tenant_id=context.tenant_id
+        )
         span.set_attribute("policy.allowed", response.allowed)
         span.set_attribute("policy.action", response.action.value)
         span.set_attribute("policy.matched_rule_count", len(response.matched_rules))
@@ -733,7 +780,9 @@ def list_approvals(
     request: ApprovalListRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /approvals/list")),
 ) -> ApprovalListResponse:
-    return ApprovalListResponse(approvals=approval_queue.list_for_tenant(context.tenant_id, request))
+    return ApprovalListResponse(
+        approvals=approval_queue.list_for_tenant(context.tenant_id, request)
+    )
 
 
 @router.post("/approvals/decide", response_model=ApprovalDecisionResponse)
@@ -809,18 +858,38 @@ def run_repo_checks(
         return run
 
 
-@router.post("/audit/export", response_model=AuditExportResponse)
+@router.post(
+    "/audit/export",
+    response_model=AuditExportResponse,
+    responses={503: {"model": ErrorResponse}},
+)
 def export_audit(
     request: AuditExportRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /audit/export")),
 ) -> AuditExportResponse:
     tenant_id = _authenticated_tenant_id(request.tenant_id, context)
+    try:
+        snapshot = audit_ledger.export_snapshot(
+            tenant_id=tenant_id,
+            trace_id=request.trace_id,
+            include_events=request.include_events,
+        )
+    except (AuditLedgerError, PostgresProviderError) as exc:
+        LOGGER.error(
+            "audit export snapshot read failed",
+            extra={
+                "trace_id": context.trace_id,
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=AUDIT_HISTORY_UNAVAILABLE_MESSAGE,
+        ) from exc
     return AuditExportResponse(
         trace_id=context.trace_id,
-        runs=audit_ledger.export(tenant_id=tenant_id, trace_id=request.trace_id),
-        events=audit_ledger.export_events(tenant_id=tenant_id, trace_id=request.trace_id)
-        if request.include_events
-        else [],
+        runs=list(snapshot.runs),
+        events=list(snapshot.events),
     )
 
 
@@ -918,7 +987,11 @@ def list_verification_runs(
     )
 
 
-@router.post("/verification/run", response_model=VerificationRun)
+@router.post(
+    "/verification/run",
+    response_model=VerificationRun,
+    responses={503: {"model": ErrorResponse}},
+)
 def run_verification(
     request: VerificationRunRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /verification/run")),
@@ -927,11 +1000,19 @@ def run_verification(
         update={"tenant_id": _authenticated_tenant_id(request.tenant_id, context)}
     )
     run = orchestrator.run(tenant_request)
-    _record_verification_completed(run, path="/verification/run")
-    return run
+    return _record_verification_completed(
+        run,
+        path="/verification/run",
+        tenant_id=context.tenant_id,
+        trace_id=context.trace_id,
+    )
 
 
-@router.post("/v2/verification/run", response_model=VerificationRunV2)
+@router.post(
+    "/v2/verification/run",
+    response_model=VerificationRunV2,
+    responses={503: {"model": ErrorResponse}},
+)
 def run_verification_v2(
     request: VerificationRunRequestV2,
     context: RequestContext = Depends(require_endpoint_roles("POST /v2/verification/run")),
@@ -940,42 +1021,59 @@ def run_verification_v2(
         update={"tenant_id": _authenticated_tenant_id(request.tenant_id, context)}
     )
     run = orchestrator.run(legacy_request)
-    _record_verification_completed(run, path="/v2/verification/run")
-    return convert_verification_run_v2(run)
+    # Validate the public v2 envelope before committing a successful completion.
+    convert_verification_run_v2(run)
+    persisted_run = _record_verification_completed(
+        run,
+        path="/v2/verification/run",
+        tenant_id=context.tenant_id,
+        trace_id=context.trace_id,
+    )
+    return convert_verification_run_v2(persisted_run)
 
 
-@router.post("/verification/replay", response_model=VerificationReplayResponse)
+@router.post(
+    "/verification/replay",
+    response_model=VerificationReplayResponse,
+    responses={409: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
 def replay_verification(
     request: VerificationReplayRequest,
     context: RequestContext = Depends(require_endpoint_roles("POST /verification/replay")),
 ) -> VerificationReplayResponse:
-    source_runs = audit_ledger.export(tenant_id=context.tenant_id, trace_id=request.trace_id)
-    source_candidates = [run for run in source_runs if not isinstance(run.input.get("replay_of"), str)]
-    if not source_candidates:
+    try:
+        source = audit_ledger.find_replay_source(
+            tenant_id=context.tenant_id,
+            trace_id=request.trace_id,
+        )
+    except ReplaySourceConflictError as exc:
+        LOGGER.warning(
+            "verification replay source is ambiguous",
+            extra={"exception_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=VERIFICATION_REPLAY_SOURCE_CONFLICT_MESSAGE,
+        ) from exc
+    except (AuditLedgerError, PostgresProviderError) as exc:
+        LOGGER.error(
+            "verification replay source persistence read failed",
+            extra={"exception_type": type(exc).__name__},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=VERIFICATION_PERSISTENCE_UNAVAILABLE_MESSAGE,
+        ) from exc
+    if source is None:
         raise HTTPException(
             status_code=404,
             detail="Verification run was not found for this tenant.",
         )
-    source = source_candidates[-1]
     replayed_run = orchestrator.replay(source)
-    _record_verification_completed(replayed_run, path="/verification/replay")
     decision_changed = replayed_run.final_decision != source.final_decision
-    audit_ledger.append_event(
-        trace_id=context.trace_id,
-        tenant_id=context.tenant_id,
-        event_type="verification_replay",
-        method="POST",
-        path="/verification/replay",
-        status_code=200,
-        outcome="success",
-        metadata={
-            "source_trace_id": source.trace_id,
-            "source_final_decision": source.final_decision.value,
-            "replay_final_decision": replayed_run.final_decision.value,
-            "decision_changed": decision_changed,
-        },
-    )
-    return VerificationReplayResponse(
+    # Construct the response once before persistence so response-model errors
+    # cannot leave a committed completion behind.
+    response = VerificationReplayResponse(
         trace_id=context.trace_id,
         source_trace_id=source.trace_id,
         source_created_at=source.created_at,
@@ -983,3 +1081,14 @@ def replay_verification(
         decision_changed=decision_changed,
         replayed_run=replayed_run,
     )
+    replayed_run = _record_verification_completed(
+        replayed_run,
+        path="/verification/replay",
+        tenant_id=context.tenant_id,
+        trace_id=context.trace_id,
+        source_trace_id=source.trace_id,
+        source_final_decision=source.final_decision,
+    )
+    if replayed_run is response.replayed_run:
+        return response
+    return response.model_copy(update={"replayed_run": replayed_run})

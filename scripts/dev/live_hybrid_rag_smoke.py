@@ -58,7 +58,7 @@ OPENSEARCH_CA_ENV = "HALLU_DEFENSE_OPENSEARCH_CA_CERT_PATH"
 TIMEOUT_ENV = "HALLU_DEFENSE_RAG_INDEX_TIMEOUT_SECONDS"
 
 DEFAULT_OPENSEARCH_ENDPOINT = "http://localhost:9200"
-EXPECTED_MIGRATION_COUNT = 13
+EXPECTED_MIGRATION_COUNT = 14
 DATABASE_PREFIX = "hallu_hybrid_smoke_"
 INDEX_PREFIX = "hallu_evidence_hybrid_smoke_"
 SAFE_RUN_ID_PATTERN = re.compile(r"^[a-z0-9]{1,20}$")
@@ -67,7 +67,9 @@ SAFE_INDEX_PATTERN = re.compile(r"^hallu_evidence_hybrid_smoke_[a-z0-9]{1,20}$")
 SAFE_TEMPLATE_PATTERN = re.compile(
     r"^hallu_evidence_hybrid_smoke_[a-z0-9]{1,20}_template$"
 )
-INDEX_TEMPLATE_PATH = ROOT / "infra" / "rag" / "opensearch" / "evidence-index-template.json"
+INDEX_TEMPLATE_PATH = (
+    ROOT / "infra" / "rag" / "opensearch" / "evidence-index-template.json"
+)
 
 
 @dataclass(frozen=True)
@@ -213,7 +215,9 @@ class PsycopgOpenSearchSmokeProvisioner:
                 template=template,
             )
             if initial_schema.index_state != "absent":
-                raise RuntimeError("Hybrid RAG smoke scratch index unexpectedly existed.")
+                raise RuntimeError(
+                    "Hybrid RAG smoke scratch index unexpectedly existed."
+                )
             index_create_attempted = True
             _create_smoke_index(
                 transport,
@@ -312,7 +316,9 @@ def run_from_env(
 
     admin_dsn = effective_env.get(ADMIN_DSN_ENV, "").strip()
     if not admin_dsn:
-        raise ValueError(f"{ADMIN_DSN_ENV} must be configured for an isolated scratch database")
+        raise ValueError(
+            f"{ADMIN_DSN_ENV} must be configured for an isolated scratch database"
+        )
     endpoint = validate_opensearch_endpoint(
         effective_env.get(OPENSEARCH_ENDPOINT_ENV, DEFAULT_OPENSEARCH_ENDPOINT)
     )
@@ -366,7 +372,9 @@ def run_live_smoke(
     return result
 
 
-def _exercise_hybrid_backend(backend: RagIndexBackend, run_id: str) -> dict[str, object]:
+def _exercise_hybrid_backend(
+    backend: RagIndexBackend, run_id: str
+) -> dict[str, object]:
     tenant_a = f"tenant-hybrid-smoke-{run_id}-a"
     tenant_b = f"tenant-hybrid-smoke-{run_id}-b"
     source_ref = f"hybrid-smoke-{run_id}-policy"
@@ -469,7 +477,9 @@ def _exercise_hybrid_backend(backend: RagIndexBackend, run_id: str) -> dict[str,
         )
     )
     if [item.evidence_id for item in tenant_a_current] != [f"ev_{run_id}_a_current"]:
-        raise RuntimeError("Hybrid smoke tenant A current revision lookup was incorrect.")
+        raise RuntimeError(
+            "Hybrid smoke tenant A current revision lookup was incorrect."
+        )
     if tenant_a_old:
         raise RuntimeError("Hybrid smoke stale revision cleanup failed for tenant A.")
     if [item.evidence_id for item in tenant_b_old] != [f"ev_{run_id}_b_old"]:
@@ -485,8 +495,13 @@ def _exercise_hybrid_backend(backend: RagIndexBackend, run_id: str) -> dict[str,
         raise RuntimeError("Hybrid smoke fused ranker observations are missing.")
     for ranker in ("opensearch_bm25_v1", "pgvector_cosine_v1"):
         observation = rankers.get(ranker)
-        if not isinstance(observation, Mapping) or observation.get("matched") is not True:
-            raise RuntimeError("Hybrid smoke did not prove participation by both rankers.")
+        if (
+            not isinstance(observation, Mapping)
+            or observation.get("matched") is not True
+        ):
+            raise RuntimeError(
+                "Hybrid smoke did not prove participation by both rankers."
+            )
 
     return {
         "indexed_count": sum(write.indexed_count for write in writes),
@@ -499,25 +514,33 @@ def _exercise_hybrid_backend(backend: RagIndexBackend, run_id: str) -> dict[str,
 def validate_run_id(run_id: str) -> str:
     normalized = run_id.strip().lower()
     if SAFE_RUN_ID_PATTERN.fullmatch(normalized) is None:
-        raise ValueError("Hybrid RAG smoke run ID must be 1-20 lowercase letters or digits.")
+        raise ValueError(
+            "Hybrid RAG smoke run ID must be 1-20 lowercase letters or digits."
+        )
     return normalized
 
 
 def validate_database_name(name: str) -> str:
     if SAFE_DATABASE_PATTERN.fullmatch(name) is None:
-        raise ValueError("Hybrid RAG smoke database name is outside the dedicated namespace.")
+        raise ValueError(
+            "Hybrid RAG smoke database name is outside the dedicated namespace."
+        )
     return name
 
 
 def validate_index_name(name: str) -> str:
     if SAFE_INDEX_PATTERN.fullmatch(name) is None:
-        raise ValueError("Hybrid RAG smoke index name is outside the dedicated namespace.")
+        raise ValueError(
+            "Hybrid RAG smoke index name is outside the dedicated namespace."
+        )
     return name
 
 
 def validate_template_name(name: str) -> str:
     if SAFE_TEMPLATE_PATTERN.fullmatch(name) is None:
-        raise ValueError("Hybrid RAG smoke template name is outside the dedicated namespace.")
+        raise ValueError(
+            "Hybrid RAG smoke template name is outside the dedicated namespace."
+        )
     return name
 
 
@@ -532,7 +555,9 @@ def validate_opensearch_endpoint(value: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError(f"{OPENSEARCH_ENDPOINT_ENV} must be a credential-free HTTP(S) origin")
+        raise ValueError(
+            f"{OPENSEARCH_ENDPOINT_ENV} must be a credential-free HTTP(S) origin"
+        )
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
@@ -704,7 +729,9 @@ def _ssl_context(ca_path: Path | None) -> ssl.SSLContext | None:
     try:
         return ssl.create_default_context(cafile=str(ca_path))
     except (OSError, ssl.SSLError):
-        raise RuntimeError("Hybrid RAG smoke OpenSearch CA could not be loaded.") from None
+        raise RuntimeError(
+            "Hybrid RAG smoke OpenSearch CA could not be loaded."
+        ) from None
 
 
 def _enabled(value: str) -> bool:

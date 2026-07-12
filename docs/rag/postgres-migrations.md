@@ -49,7 +49,10 @@ UTF-8 migration text. On every run the applier recomputes each checksum:
 Databases created before checksums were introduced can contain legacy NULL checksums.
 The first upgraded run backfills those rows from the current committed files without
 reapplying SQL. This is a one-time compatibility path because no historical checksum
-exists to compare; after backfill, all future file drift is rejected.
+exists to compare; after backfill, all future file drift is rejected. Migration `013`
+runs after that backfill and makes `checksum_sha256` `NOT NULL`, with a validated
+lowercase 64-hex-character check. New and upgraded ledgers therefore cannot return to
+the compatibility state after the integrity migration commits.
 
 ## Required Ordered Set
 
@@ -93,10 +96,102 @@ hybrid writer checks it after acquiring that lock but before touching
 OpenSearch. This prevents queued or in-flight work from recreating deleted
 tenant evidence after a successful privacy operation.
 
-Migration `013` makes audit event IDs unique within a tenant and adds the exact
-tenant/event-type/trace/time indexes used by newest-first keyset history pages.
-The unique index intentionally fails if historical duplicates exist; operators
-must investigate them before deployment rather than deleting audit evidence.
+Migration `013` adds nullable `audit_runs.completion_path` and transactionally
+upgrades legacy completion pairs. A legacy tenant/trace group is backfilled only
+when it has exactly one NULL-path run and exactly one unmatched
+`verification_completed` event whose path is allowed. The migration then verifies
+one-to-one run/event parity for every non-NULL tenant/trace/path completion key. An
+unmatched completion without exactly one NULL-path run, duplicate, incompatible path,
+or reused legacy trace with ambiguous runs and events fails the migration before
+constraints or indexes are installed. A NULL-path run with no completion is retained
+as a legitimate historical/import record and is not treated as a backfill candidate.
+The pair is never guessed from timestamps. This is important because one trace can
+legitimately be reused by v1, v2, and replay in newer data; those writes carry their
+path from the start.
+
+After the backfill, a retry of an upgraded legacy request conflicts on both rows and
+loads the existing pair instead of inserting a new run beside the old event. New
+completion writes are exactly once under a partial unique key of
+`(tenant_id, trace_id, completion_path)`. Completion events have the matching partial
+unique tenant/trace/path key, while every audit event ID remains unique within its
+tenant. `completion_path` remains nullable for explicitly non-completion/import rows,
+which are outside the final verification persistence boundary.
+
+Successful `/verification/replay` persistence is a three-record atomic unit: the
+replayed run, its `verification_completed` event, and its `verification_replay`
+provenance event commit or roll back together. Migration `013` gives the provenance
+event its own partial unique tenant/trace/path key, restricted to
+`event_type = 'verification_replay'`. A retry therefore reuses the already committed
+triple, while duplicate legacy provenance events fail index creation and require
+investigation rather than deletion.
+
+The pre-013 replay shape contained one NULL-path replay run and one provenance event,
+but no completion event. Migration `013` reconciles that shape only when exactly one
+run has `input.replay_of` equal to provenance `source_trace_id` and the run final
+decision equals `replay_final_decision`. It sets the replay completion path and inserts
+a synthetic `verification_completed` event whose ID is deterministically derived from
+the provenance row ID and whose timestamp is the persisted provenance timestamp. A
+raw rerun recognizes the resulting triple and performs no write. Final bidirectional
+parity requires exactly one run, completion, and provenance event and equality of
+source trace and final decisions; every orphan or ambiguity aborts the migration.
+
+The migration also validates the relational/JSONB envelope on both audit tables:
+tenant, trace, creation time, and event ID must agree with their payload values. A
+`verification_completed` event must be a successful `POST` with status 200, use one
+of `/verification/run`, `/v2/verification/run`, or `/verification/replay`, and carry
+a valid final decision. Completed runs enforce the same path allowlist and decision
+enum. These checks are added `NOT VALID` first and then explicitly validated, so new
+writes are fenced immediately while existing rows receive a deliberate validation
+pass.
+
+A `verification_replay` provenance event must likewise be a successful `POST` to
+exactly `/verification/replay` with status 200. Its metadata must contain a string
+`source_trace_id`, valid `source_final_decision` and `replay_final_decision` values,
+and a boolean `decision_changed`. The constraint also derives the expected boolean:
+`decision_changed` is true exactly when the source and replay final decisions differ.
+Special-event tenant IDs must be non-empty and trimmed; request, source, and
+`input.replay_of` trace IDs use the exact `^tr_[A-Za-z0-9_-]{8,80}$` contract. Completion
+metadata is exactly its final decision, and replay metadata is exactly the four
+source/replay decision fields. Invalid or internally inconsistent legacy replay
+envelopes fail the validated constraint before the migration can commit.
+
+Export indexes match all four runtime filter shapes for its bounded newest-first
+internal export: unscoped, trace-only, tenant-only, and tenant-plus-trace, followed by
+`created_at DESC` and the deterministic `id DESC` tiebreaker. The ordered indexes
+replace the four legacy prefix-only indexes from migration `003` to avoid duplicate
+write and vacuum work.
+History-page indexes use tenant, event type, optional trace, `created_at DESC`, and
+`event_id DESC`. The migration transactionally drops and recreates each named 013
+index and constraint, so executing the raw file again repairs a same-named drifted
+definition. The normal migration applier still treats an already-recorded version as
+immutable and will not execute it twice; operational schema drift requires an
+explicitly reviewed forward migration or controlled raw rerun.
+
+All uniqueness and validation operations fail closed when historical duplicates or
+invalid envelopes exist. They never delete or rewrite audit evidence. Operators must
+investigate and reconcile such data under their retention/audit process before
+retrying deployment.
+
+### Migration 013 rollout and locks
+
+`ALTER TABLE ... VALIDATE CONSTRAINT`, `SET NOT NULL`, and ordinary index creation
+scan the existing ledger and acquire PostgreSQL locks. The runner's `lock_timeout`
+and `statement_timeout` keep a busy or oversized deployment from hanging; a timeout
+rolls back the whole single PostgreSQL transaction, including every dropped/recreated
+definition and the version row. On a large production ledger, measure the scans on a
+representative copy, check tenant/event, completion-key, and replay-key duplicates,
+schedule a maintenance window, and monitor lock waiters before applying 013. Do not
+change these indexes to `CREATE INDEX CONCURRENTLY`: concurrent index DDL cannot run
+inside the applier's required atomic transaction.
+
+Helm handoff: migration `013` does not require a chart-value change. The chart
+owner's current `migration-job.yaml` `activeDeadlineSeconds: 900` remains aligned
+with the applier's 14-minute statement timeout. If a representative production
+rehearsal cannot finish the validation/index scans within that bound, the Helm owner
+(leader D in the six-front workflow) must coordinate any Job deadline adjustment
+with a reviewed change to the applier timeouts or a new online forward-migration
+strategy; increasing only the Helm deadline would not override PostgreSQL's local
+statement timeout.
 
 Adding or removing a file requires an intentional gate, test, documentation, and
 deployment update. Applied files must never be edited in place; add a new ordered
@@ -136,7 +231,8 @@ HALLU_DEFENSE_POSTGRES_DSN=postgresql://... \
 The gate is wired into normal CI, security CI, and `security-check`. It requires
 the exact fourteen-file set, immutable `000`, checksum upgrade in `008`, exact-search
 guard in `009`, persisted retrieval time in `010`, lifecycle journal in `011`,
-tenant deletion fence in `012`, audit-history integrity indexes in `013`, advisory lock, single
+tenant deletion fence in `012`, audit completion/envelope/checksum integrity and
+exact history indexes in `013`, advisory lock, single
 transaction boundary, bounded 30-second lock and 14-minute statement timeouts,
 drift/unknown-version rejection, parameter-less
 multi-statement execution test, and this documentation.

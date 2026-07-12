@@ -6246,3 +6246,265 @@ Remaining risks:
   that operators must override with their approved gateway and credential.
 - GNU Make is unavailable on this host; its canonical Python/npm subcommands
   were executed directly. No row is marked `accepted`.
+
+## 2026-07-11 - Atomic verification audit history hardening
+
+Slice selected:
+
+- Completed the WIP audit-history boundary so a final verification run and its
+  `verification_completed` event persist atomically/exactly once at the API
+  route, with replay provenance preserved as a three-record atomic unit.
+- Hardened PostgreSQL reads, history pagination, migration `013`, legacy upgrade
+  compatibility, and production fail-closed behavior without changing Helm.
+
+Implementation:
+
+- Removed persistence ambiguity from orchestration: routes validate the
+  orchestrator tenant/trace identity, construct the public response first, and
+  use one redacted persistence boundary. The public v1/v2/replay response is not
+  replaced by the redacted snapshot and retries adopt the canonical timestamp.
+- Added conflict-aware transactional pair/triple inserts, rollback on every
+  partial result, canonical retry loading, strict comparison with only run and
+  evidence retrieval timestamps normalized, and memory/JSONL concurrency plus
+  compound-record parity. Direct completion/replay event writes are rejected.
+- Preserved the observable `verification_replay` event while making it atomic,
+  validating source/replay decisions and `run.input.replay_of`, and adopting
+  both prior JSONL replay layouts without adding records on retry.
+- Hardened PostgreSQL and JSONL reads for tenant/trace request scope, relational
+  envelopes, exact metadata, IDs, timezone awareness, limits and strict order;
+  data-derived Pydantic/enum failures no longer chain payload values.
+- Expanded migration `013` with safe legacy pair/replay reconciliation,
+  deterministic synthetic replay completion, bidirectional 1/1/1 parity,
+  validated constraints, checksum format/`NOT NULL`, exact partial uniqueness,
+  and drift-correcting export/history indexes. Runs without completion remain
+  nullable imports.
+- Regenerated OpenAPI with documented `503` responses; updated API, audit and
+  migration docs plus traceability row `API-025`. A minimal middleware change
+  preserves an already fail-closed `503` when the follow-up HTTP audit write
+  also fails.
+- Updated the hybrid-RAG live smoke inventory from 13 to 14 migrations so the
+  committed `013` is included in its exact inventory assertion.
+
+Validation:
+
+- Shared worktree interpreter with current-source `PYTHONPATH`, focused audit,
+  history, replay, migration, request-middleware and migration-inventory suite:
+  `218 passed`, with one existing Starlette/TestClient deprecation warning.
+- `python scripts/ci/check_audit_ledger_config.py`: validated audit ledger
+  configuration.
+- `python scripts/ci/check_postgres_migrations.py`: validated 14 ordered
+  transactional PostgreSQL migrations.
+- `python scripts/ci/check_openapi.py`: generated OpenAPI artifact is current.
+- `python scripts/ci/check_traceability_matrix.py`: validated 183 requirement
+  rows.
+- Focused Ruff checks passed; mypy reported no issues for audit, history,
+  routes, middleware and the changed audit/history/replay/live-smoke tests.
+- Full API suite exploration reached `1949 passed`, `24 skipped`, one known
+  Starlette warning and four failures. The migration-inventory failure belonged
+  to this slice and was corrected/retested (`1 passed`); the remaining three
+  failures point only to unchanged corpus-grant, Vault-smoke and secret-scan
+  artifacts outside this front.
+- Independent adversarial reviewers reproduced the redacted-response,
+  volatile-timestamp retry, replay duplication, legacy upgrade, tenant/trace,
+  envelope, exception-leak, middleware `503`, metadata and ordering defects;
+  those then-reproducible findings were corrected and the focused gates were
+  rerun. A later coherent-export finding and its correction are recorded in the
+  next entry.
+
+Remaining risks:
+
+- Migration `013` was not executed against a real PostgreSQL server. Three
+  scratch-only Docker attempts timed out without creating a container, so SQL
+  evidence is structural, applier-based and stateful-provider based.
+- JSONL is local/test-only and serializes threads in one process; it is not a
+  multi-process durability mechanism. Production and staging require
+  PostgreSQL.
+- A successful completion can commit before the separate generic HTTP audit
+  event. If that later event fails, the client can observe an error, but a retry
+  converges on the canonical completion unit without duplication.
+- Migration validation and index creation can lock large audit tables. Leader D
+  needs no Helm value change now; if a representative rehearsal exceeds the
+  14-minute SQL/900-second Job limits, the migration and Job deadlines must be
+  reviewed together rather than changing Helm alone.
+- No requirement row is marked `accepted`, and this entry does not claim global
+  repository closure.
+
+## 2026-07-11 - Coherent audit export snapshot
+
+Slice selected:
+
+- Closed the remaining `/audit/export` race so runs and optional events are read
+  from one storage snapshot, while preserving the atomic completion/replay WIP
+  and all tenant, trace, path, envelope, cardinality and rollback invariants.
+- Kept Front A's redaction seams ready for root integration with Front B without
+  copying another worktree or overstating current PII/signed-URL coverage.
+
+Implementation:
+
+- Added `AuditLedgerSnapshot`, `AuditLedgerStorage.load_snapshot()` and one
+  `AuditLedger.export_snapshot()` boundary. The route now calls that boundary
+  exactly once and passes `include_events`; it no longer interleaves independent
+  `export()` and `export_events()` calls.
+- PostgreSQL starts `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`
+  before its first `SELECT` and performs both bounded reads through the same
+  transaction-bound provider. memory/JSONL copy both collections under one lock;
+  `include_events=false` performs no event read/copy.
+- A bounded `cap + 1` PostgreSQL lookahead distinguishes an exact-cap response
+  from true truncation, allowing exact path/triple parity at the boundary while
+  still returning no more than the configured cap.
+- Added deterministic PostgreSQL and local regressions that commit a second
+  completion pair after the former run read. The old two-read pattern observes
+  one run plus two events; the new snapshot returns only the original coherent
+  pair and exposes the concurrent commit on the next export.
+- Hardened reads against repeated relational row IDs and repeated tenant/event
+  IDs even when timestamps differ, extended event tenant/trace/cap negatives,
+  rejected non-positive export caps, and proved canonical retry cardinality
+  failures roll back without changing the existing pair.
+- PostgreSQL run reads now include and validate `completion_path`; coherent
+  snapshots compare every visible run/completion/provenance unit for decision
+  and replay-source parity. Replay source lookup excludes non-null replay markers
+  before its bounded candidate read, preserving exactly-once retries even with
+  export cap `1`; the final 0/1/>1 rule is recorded in the follow-up entry.
+- Routed every persisted replay run/event through the typed redaction seams while
+  preserving only validated structural trace identities. JSONL append `OSError`
+  now maps to the generic route `503`, and legacy replay synthesis remains next to
+  its provenance so a later event still wins the newest-record cap.
+- Extended the audit configuration gate to require the coherent snapshot and
+  isolation/pre-cap lookup markers. Updated the shared RAG checker to the exact
+  14-migration inventory and bounded both live-smoke races. API/security docs and
+  traceability record the exact guarantees and Front B integration dependency.
+
+Validation:
+
+- With `PYTHONPATH` set to this worktree's `apps/api/src`, importing
+  `hallu_defense.services.audit` resolved to
+  `sixfront-a-audit-c0ca4c8\\apps\\api\\src\\hallu_defense\\services\\audit.py`.
+- Focused audit/history/replay/migration/config/live-smoke suite: `253 passed`,
+  one existing Starlette/TestClient deprecation warning.
+- Contract/OIDC/readiness/request-middleware suite, including tenant and generic
+  `503` paths: `86 passed`, one existing Starlette/TestClient warning.
+- Explicit adversarial tenant/trace/snapshot/path/cap/cardinality/duplicate-ID
+  selection: `66 passed`, `70 deselected`, one existing warning.
+- `python scripts/ci/check_audit_ledger_config.py`: validated audit ledger
+  configuration; `python scripts/ci/check_postgres_migrations.py`: validated 14
+  ordered transactional migrations.
+- `python scripts/ci/check_openapi.py`: artifact current;
+  `python scripts/ci/check_traceability_matrix.py`: 183 requirement rows valid.
+- Focused Ruff checks passed. Mypy from `apps/api` reported no issues across all
+  13 changed API source/test files after replacing invalid test ignores with a
+  typed migration-gate input.
+- Three independent Codex reviewers reproduced the snapshot race plus JSONL
+  `500`, replay cap `404`, replay redaction-seam bypass, legacy replay cap order,
+  visible cross-table parity, duplicate-ID and type-gate defects. Each in-scope
+  finding was corrected and assigned a deterministic regression before rerun.
+- Full API exploration after corrections: `1976 passed`, `24 skipped`, one
+  existing warning and three failures confined to unchanged corpus-grant,
+  Vault-smoke and secret-scan artifacts outside this front.
+
+Remaining risks:
+
+- Full bounded PII and signed-URL inspection across every persisted run/event
+  field remains a mandatory root-integration dependency on Front B. Front A
+  currently proves its typed pre-storage seams, tested secret/signed-query
+  patterns, and that persistence redaction never contaminates public responses.
+- Idempotent conflict comparison uses the minimized persisted projection, so
+  distinct sensitive originals that collapse to the same value remain
+  indistinguishable. Front B/root integration must provide a keyed, non-exported
+  pre-redaction request commitment if that distinction is required; an unkeyed
+  raw-input digest must not be persisted.
+- Migration `013` still lacks a representative real-PostgreSQL scratch execution;
+  evidence remains structural, applier-based and stateful-provider based.
+- JSONL remains single-process local/test compatibility storage. A low-level
+  partial file write can leave a corrupt final line that fails closed on reload;
+  it is not a production atomicity mechanism. Production/staging require PostgreSQL.
+- No Helm files changed. Leader D needs no value change now; migration and Job
+  deadlines must be reviewed together only if a representative rehearsal exceeds
+  the documented 14-minute SQL/900-second Job limits.
+- The final full API suite retains three unchanged failures in
+  corpus-grant, Vault-smoke and secret-scan artifacts outside this front. No
+  requirement is marked `accepted`, and this entry does not claim global closure.
+
+## 2026-07-11 - Deep-owned audit snapshots and unambiguous replay selection
+
+Slice selected:
+
+- Closed two follow-up defects that earlier green suites missed: shared mutable
+  model graphs in the memory/JSONL ledger and ambiguous replay-source selection
+  when the same tenant/trace had more than one exact original run.
+- Preserved the prior atomic pair/triple, coherent snapshot, rollback,
+  idempotency, tenant/trace/envelope, migration `013`, and generic `503`
+  guarantees. No Docker, persistent service, Helm file, other worktree, merge,
+  rebase, push, or PR was used.
+
+Implementation:
+
+- Added deep model-graph ownership at every audit boundary. Redacted runs and
+  events are cloned after Pydantic applies `model_copy(update=...)`, storage gets
+  its own copies, and every completion/replay/retry, related event, generic event,
+  export, event export, coherent snapshot, replay-source, and event-page return is
+  independently cloned. Caller or return mutations therefore cannot change later
+  memory snapshots or a reopened JSONL ledger.
+- Replaced single-result replay selection with an internal at-most-two candidate
+  read independent of `audit_export_max_records`. PostgreSQL filters exact
+  tenant/trace rows and every non-null `replay_of` marker before `LIMIT 2`;
+  memory/JSONL use the same predicate and stop at two. Cardinality zero retains
+  the tenant-safe `404`, one replays, and more than one raises a typed conflict
+  mapped to stable `409` before `orchestrator.replay` or provider execution.
+- Added permanent memory/JSONL/reload nested-mutation regressions covering input,
+  `SourceSpan`, claim metadata, structured evidence, `Freshness`, evidence IDs,
+  validator traces, completion/provenance metadata, retry returns, and every read
+  surface. Added cap-1 v1+v2 duplicate-source regressions for memory, reopened
+  JSONL, PostgreSQL SQL shape, exact response body, zero replay calls, and no
+  request-trace run; malformed non-string replay markers now have backend parity.
+- Updated API/security documentation and traceability rows `CTR-010`, `API-025`,
+  `PY-019`, `TS-005`, `SEC-004`, and `CI-013`. The audit configuration gate and
+  its negative tests now pin deep copying, the candidate API, `LIMIT 2`, and the
+  typed conflict. This entry supersedes the earlier single-candidate WIP behavior.
+- The final adversarial route audit reproduced an unhandled audit-snapshot read
+  error. `/audit/export` now maps audit/PostgreSQL read failures to a documented
+  generic `503` without exposing the backend exception or a partial response; a
+  sentinel-leak regression and regenerated OpenAPI artifact pin that boundary.
+
+Validation:
+
+- With `PYTHONPATH` set to this worktree's `apps/api/src`, importing
+  `hallu_defense.services.audit` resolved to
+  `sixfront-a-audit-c0ca4c8\\apps\\api\\src\\hallu_defense\\services\\audit.py`.
+- Audit/config/replay regressions: `122 passed`; the broader focused audit,
+  history, migration, live-smoke, contracts, OpenAPI, trace and worklog set:
+  `321 passed`. Both runs emitted only the existing Starlette/TestClient warning.
+- Explicit adversarial tenant/trace/cap/cardinality/duplicate/scope/order/path
+  selection: `57 passed`, `87 deselected`, with the same existing warning.
+- Full API exploration: `1993 passed`, `24 skipped`, one existing warning and
+  three failures confined to unchanged corpus-grant, Vault-smoke, and secret-scan
+  artifacts outside Front A.
+- `check_audit_ledger_config.py`, `check_postgres_migrations.py` (14 ordered
+  migrations), `check_rag_persistence_config.py`, `check_contract_versions.py`,
+  `check_openapi.py`, `check_traceability_matrix.py` (183 rows), and
+  `check_worklog.py` passed. Ruff passed across `apps` and `scripts`; focused
+  mypy passed all 13 changed API source/test files.
+- A broader exploratory mypy run over all 58 API source files found only two
+  unchanged unused-ignore errors in `services/tool_safety.py`; Front A did not
+  edit that out-of-property file. Three independent post-fix reviewers re-ran the
+  mutation, duplicate-source, documentation, and full-diff reproductions read-only.
+  Their only final blocker was the export `500`; after the fix, the export tests,
+  contracts/OpenAPI, focused suites, analyzers, and gates were repeated.
+
+Remaining risks:
+
+- Full bounded PII and signed-URL redaction of every persisted run/event field is
+  still a mandatory Front B/root-integration requirement. Front A deliberately
+  preserves centralized typed seams and does not copy another worktree. A keyed,
+  non-exported pre-redaction commitment is still needed if distinct originals
+  that minimize identically must be distinguished.
+- Migration `013` remains structurally, applier-, checksum-, rerun-, and
+  stateful-provider-tested but was not executed against representative live
+  PostgreSQL data. Its lock duration remains deployment evidence.
+- JSONL is single-process local/test compatibility storage, not a production
+  multi-process durability mechanism. Production and staging fail closed unless
+  PostgreSQL is configured.
+- No Helm files changed. Leader D needs no value change now; migration and Job
+  deadlines should be reviewed together only if a representative rehearsal
+  exceeds the documented 14-minute SQL/900-second Job limits.
+- No requirement is marked `accepted`, and this Front A entry does not declare
+  global closure.

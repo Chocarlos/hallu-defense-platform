@@ -228,9 +228,7 @@ class RequestBodyLimitMiddleware:
                 error=error,
                 message=message,
                 details=(
-                    {"max_request_body_bytes": self._max_body_bytes}
-                    if details is None
-                    else details
+                    {"max_request_body_bytes": self._max_body_bytes} if details is None else details
                 ),
             ),
             headers=headers,
@@ -299,12 +297,12 @@ async def trace_and_audit_middleware(
                     metadata={"duration_ms": elapsed_ms},
                 )
             except Exception as exc:
-                if route_path not in PROBE_PATHS:
+                if route_path not in PROBE_PATHS and status_code < 500:
                     raise
                 LOGGER.warning(
-                    "Probe audit event could not be persisted.",
+                    "HTTP audit event could not be persisted.",
                     extra={
-                        "probe_path": route_path,
+                        "route_path": route_path,
                         "error_type": type(exc).__name__,
                     },
                 )
@@ -350,9 +348,7 @@ class _InvalidRequestFraming(ValueError):
 
 def _validate_transfer_encoding(scope: Scope) -> None:
     transfer_encodings = [
-        value
-        for name, value in scope.get("headers", [])
-        if name.lower() == b"transfer-encoding"
+        value for name, value in scope.get("headers", []) if name.lower() == b"transfer-encoding"
     ]
     if not transfer_encodings:
         return
@@ -369,9 +365,7 @@ def _validate_transfer_encoding(scope: Scope) -> None:
 
 def _declared_content_length(scope: Scope, max_body_bytes: int) -> int | None:
     raw_values = [
-        value
-        for name, value in scope.get("headers", [])
-        if name.lower() == b"content-length"
+        value for name, value in scope.get("headers", []) if name.lower() == b"content-length"
     ]
     if not raw_values:
         return None
@@ -388,8 +382,6 @@ def _declared_content_length(scope: Scope, max_body_bytes: int) -> int | None:
 
     normalized = normalized_values[0]
     maximum = str(max_body_bytes).encode("ascii")
-    if len(normalized) > len(maximum) or (
-        len(normalized) == len(maximum) and normalized > maximum
-    ):
+    if len(normalized) > len(maximum) or (len(normalized) == len(maximum) and normalized > maximum):
         return max_body_bytes + 1
     return int(normalized)

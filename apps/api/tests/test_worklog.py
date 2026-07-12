@@ -64,11 +64,13 @@ def test_worklog_validator_accepts_committed_document() -> None:
     entries = validate_worklog(WORKLOG_PATH.read_text(encoding="utf-8"))
 
     assert len(entries) >= 80
-    assert entries[-1].title == "Traceability and production runtime hardening"
+    assert entries[-1].title == "Deep-owned audit snapshots and unambiguous replay selection"
 
 
 def test_worklog_validator_rejects_malformed_heading() -> None:
-    malformed = VALID_WORKLOG.replace("## 2026-07-08 - Latest structured entry", "## Latest structured entry")
+    malformed = VALID_WORKLOG.replace(
+        "## 2026-07-08 - Latest structured entry", "## Latest structured entry"
+    )
 
     with pytest.raises(WorklogError, match="malformed worklog heading"):
         validate_worklog(malformed)

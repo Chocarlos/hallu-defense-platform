@@ -43,6 +43,8 @@ def test_enabled_path_runs_offline_with_injected_fake_connection() -> None:
         "dsn": _REDACTED_DSN,
         "schema_ready": True,
         "tenant_isolation": True,
+        "audit_retry_exactly_once": True,
+        "audit_race_exactly_once": True,
         "grant_race_single_success": True,
     }
     assert "hunter2pw" not in json.dumps(result)
@@ -61,7 +63,11 @@ def test_enabled_path_enforces_tenant_scoped_audit_reads() -> None:
     run_selects = [
         parameters
         for method, statement, parameters in connection.calls
-        if method == "fetch_all" and statement.startswith("SELECT payload FROM audit_runs")
+        if method == "fetch_all"
+        and statement.startswith(
+            "SELECT id, tenant_id, trace_id, completion_path, created_at, payload "
+            "FROM audit_runs"
+        )
     ]
     # Every audit-run read is scoped to a single tenant via WHERE tenant_id = %s,
     # and both smoke tenants are read back independently (isolation is enforced by
@@ -144,9 +150,11 @@ class RecordingPersistenceConnection:
         self.calls: list[tuple[str, str, tuple[object, ...]]] = []
         self.audit_run_selects: list[str] = []
         self.grant_consume_wins = 0
-        self._lock = threading.Lock()
-        self._audit_runs: list[tuple[str, dict[str, object]]] = []
-        self._audit_events: list[tuple[str, dict[str, object]]] = []
+        self._lock = threading.RLock()
+        self._audit_runs: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._audit_events: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        self._next_audit_run_id = 1
+        self._next_audit_event_id = 1
         self._records: dict[tuple[str, str], dict[str, object]] = {}
         self._grants: dict[str, _GrantRow] = {}
         self._migration_versions: dict[str, str] = {}
@@ -156,12 +164,36 @@ class RecordingPersistenceConnection:
         with self._lock:
             self.calls.append(("execute", statement, params))
             if statement.startswith("INSERT INTO audit_runs"):
-                self._audit_runs.append((_as_str(params[0]), _load_payload(params[2])))
+                payload = _load_payload(params[2])
+                run_key = (_as_str(params[0]), _as_str(params[1]), "")
+                self._audit_runs[run_key] = {
+                    "id": self._next_audit_run_id,
+                    "tenant_id": run_key[0],
+                    "trace_id": run_key[1],
+                    "created_at": _as_datetime(params[3]),
+                    "payload": payload,
+                }
+                self._next_audit_run_id += 1
             elif statement.startswith("INSERT INTO audit_events"):
-                self._audit_events.append((_as_str(params[0]), _load_payload(params[3])))
+                payload = _load_payload(params[3])
+                event_key = (
+                    _as_str(params[0]),
+                    _as_str(params[1]),
+                    _as_str(payload["event_type"]),
+                    _as_str(payload["path"]),
+                )
+                self._audit_events[event_key] = {
+                    "id": self._next_audit_event_id,
+                    "tenant_id": event_key[0],
+                    "trace_id": event_key[1],
+                    "event_id": _as_str(params[2]),
+                    "created_at": _as_datetime(params[4]),
+                    "payload": payload,
+                }
+                self._next_audit_event_id += 1
             elif statement.startswith("INSERT INTO approval_records"):
-                key = (_as_str(params[0]), _as_str(params[1]))
-                self._records[key] = _load_payload(params[4])
+                record_key = (_as_str(params[0]), _as_str(params[1]))
+                self._records[record_key] = _load_payload(params[4])
             elif statement.startswith("INSERT INTO approval_execution_grants"):
                 self._grants[_as_str(params[0])] = _GrantRow(
                     tenant_id=_as_str(params[2]),
@@ -192,21 +224,77 @@ class RecordingPersistenceConnection:
                     {"version": version, "checksum_sha256": checksum}
                     for version, checksum in sorted(self._migration_versions.items())
                 ]
-            if statement.startswith("SELECT payload FROM audit_runs"):
+            if statement.startswith(
+                "SELECT id, tenant_id, trace_id, completion_path, created_at, payload "
+                "FROM audit_runs"
+            ) and "AND completion_path = %s" in statement:
+                key = (_as_str(params[0]), _as_str(params[1]), _as_str(params[2]))
+                row = self._audit_runs.get(key)
+                return [dict(row)] if row is not None else []
+            if statement.startswith(
+                "SELECT id, tenant_id, trace_id, completion_path, created_at, payload "
+                "FROM audit_runs"
+            ):
                 self.audit_run_selects.append(statement)
                 tenant = _as_str(params[0])
-                return [{"payload": payload} for owner, payload in self._audit_runs if owner == tenant]
-            if statement.startswith("SELECT payload FROM audit_events"):
-                tenant = _as_str(params[0])
-                return [
-                    {"payload": payload} for owner, payload in self._audit_events if owner == tenant
+                trace = _as_str(params[1]) if "trace_id = %s" in statement else None
+                rows = [
+                    dict(row)
+                    for (owner, _trace, _path), row in self._audit_runs.items()
+                    if owner == tenant
+                    and (trace is None or _trace == trace)
+                    and (
+                        "payload #>> '{input,replay_of}' IS NULL" not in statement
+                        or not _is_replayed_run_row(row)
+                    )
                 ]
+                return sorted(
+                    rows,
+                    key=lambda row: (
+                        _as_datetime(row["created_at"]),
+                        _as_int(row["id"]),
+                    ),
+                    reverse=True,
+                )
+            if statement.startswith(
+                "SELECT id, tenant_id, trace_id, event_id, created_at, payload FROM audit_events"
+            ):
+                tenant = _as_str(params[0])
+                if "payload ->> 'event_type'" in statement:
+                    event_key = (
+                        tenant,
+                        _as_str(params[1]),
+                        _as_str(params[2]),
+                        _as_str(params[3]),
+                    )
+                    row = self._audit_events.get(event_key)
+                    return [dict(row)] if row is not None else []
+                rows = [
+                    dict(row)
+                    for (owner, _trace, _event_type, _path), row in self._audit_events.items()
+                    if owner == tenant
+                ]
+                return sorted(
+                    rows,
+                    key=lambda row: (
+                        _as_datetime(row["created_at"]),
+                        _as_int(row["id"]),
+                    ),
+                    reverse=True,
+                )
             if statement.startswith("SELECT payload FROM approval_records"):
                 record = self._records.get((_as_str(params[0]), _as_str(params[1])))
                 return [{"payload": record}] if record is not None else []
-            if statement.startswith("SELECT consumed_at, expires_at FROM approval_execution_grants"):
+            if statement.startswith(
+                "SELECT consumed_at, expires_at FROM approval_execution_grants"
+            ):
                 grant = self._grants.get(_as_str(params[0]))
-                if grant is None or grant.tenant_id != _as_str(params[1]):
+                if (
+                    grant is None
+                    or grant.approval_id != _as_str(params[1])
+                    or grant.tenant_id != _as_str(params[2])
+                    or grant.fingerprint != _as_str(params[3])
+                ):
                     return []
                 return [{"consumed_at": grant.consumed_at, "expires_at": grant.expires_at}]
         raise AssertionError(f"Unexpected fetch_all statement: {statement}")
@@ -219,22 +307,63 @@ class RecordingPersistenceConnection:
         params = tuple(parameters)
         with self._lock:
             self.calls.append(("execute_returning", statement, params))
+            if statement.startswith("INSERT INTO audit_runs"):
+                run_key = (
+                    _as_str(params[0]),
+                    _as_str(params[1]),
+                    _as_str(params[2]),
+                )
+                if run_key in self._audit_runs:
+                    return []
+                row = {
+                    "id": self._next_audit_run_id,
+                    "tenant_id": run_key[0],
+                    "trace_id": run_key[1],
+                    "completion_path": run_key[2],
+                    "created_at": _as_datetime(params[4]),
+                    "payload": _load_payload(params[3]),
+                }
+                self._audit_runs[run_key] = row
+                self._next_audit_run_id += 1
+                return [dict(row)]
+            if statement.startswith("INSERT INTO audit_events"):
+                payload = _load_payload(params[3])
+                event_key = (
+                    _as_str(params[0]),
+                    _as_str(params[1]),
+                    _as_str(payload["event_type"]),
+                    _as_str(payload["path"]),
+                )
+                if event_key in self._audit_events:
+                    return []
+                row = {
+                    "id": self._next_audit_event_id,
+                    "tenant_id": event_key[0],
+                    "trace_id": event_key[1],
+                    "event_id": _as_str(params[2]),
+                    "created_at": _as_datetime(params[4]),
+                    "payload": payload,
+                }
+                self._audit_events[event_key] = row
+                self._next_audit_event_id += 1
+                return [dict(row)]
             if statement.startswith("UPDATE approval_records SET status"):
-                key = (_as_str(params[3]), _as_str(params[4]))
-                record = self._records.get(key)
+                record_key = (_as_str(params[3]), _as_str(params[4]))
+                record = self._records.get(record_key)
                 if record is None or record.get("status") != "pending":
                     return []
-                self._records[key] = _load_payload(params[2])
+                self._records[record_key] = _load_payload(params[2])
                 return [{"approval_id": params[3]}]
             if statement.startswith("UPDATE approval_execution_grants SET consumed_at"):
                 grant = self._grants.get(_as_str(params[0]))
                 now = datetime.now(timezone.utc)
                 if (
                     grant is not None
-                    and grant.tenant_id == _as_str(params[1])
+                    and grant.approval_id == _as_str(params[1])
+                    and grant.tenant_id == _as_str(params[2])
                     and grant.consumed_at is None
                     and grant.expires_at > now
-                    and grant.fingerprint == _as_str(params[2])
+                    and grant.fingerprint == _as_str(params[3])
                 ):
                     grant.consumed_at = now
                     self.grant_consume_wins += 1
@@ -244,13 +373,31 @@ class RecordingPersistenceConnection:
 
     @contextmanager
     def transaction(self) -> Iterator[smoke.MigrationConnection]:
-        yield self
+        with self._lock:
+            audit_runs_snapshot = dict(self._audit_runs)
+            audit_events_snapshot = dict(self._audit_events)
+            next_run_id_snapshot = self._next_audit_run_id
+            next_event_id_snapshot = self._next_audit_event_id
+            try:
+                yield self
+            except BaseException:
+                self._audit_runs = audit_runs_snapshot
+                self._audit_events = audit_events_snapshot
+                self._next_audit_run_id = next_run_id_snapshot
+                self._next_audit_event_id = next_event_id_snapshot
+                raise
 
     def _delete_scoped(self, parameters: tuple[object, ...]) -> None:
         tenants = set(_as_str_list(parameters[0]))
-        self._audit_runs = [row for row in self._audit_runs if row[0] not in tenants]
-        self._audit_events = [row for row in self._audit_events if row[0] not in tenants]
-        self._records = {key: value for key, value in self._records.items() if key[1] not in tenants}
+        self._audit_runs = {
+            key: row for key, row in self._audit_runs.items() if key[0] not in tenants
+        }
+        self._audit_events = {
+            key: row for key, row in self._audit_events.items() if key[0] not in tenants
+        }
+        self._records = {
+            key: value for key, value in self._records.items() if key[1] not in tenants
+        }
         self._grants = {
             token: grant for token, grant in self._grants.items() if grant.tenant_id not in tenants
         }
@@ -287,6 +434,14 @@ def _load_payload(value: object) -> dict[str, object]:
     return decoded
 
 
+def _is_replayed_run_row(row: Mapping[str, object]) -> bool:
+    payload = row.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    run_input = payload.get("input")
+    return isinstance(run_input, Mapping) and isinstance(run_input.get("replay_of"), str)
+
+
 def _as_str(value: object) -> str:
     assert isinstance(value, str)
     return value
@@ -294,6 +449,11 @@ def _as_str(value: object) -> str:
 
 def _as_datetime(value: object) -> datetime:
     assert isinstance(value, datetime)
+    return value
+
+
+def _as_int(value: object) -> int:
+    assert isinstance(value, int) and not isinstance(value, bool)
     return value
 
 

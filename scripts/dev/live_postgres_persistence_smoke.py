@@ -9,10 +9,12 @@ at the DSN and is validated in an environment with Docker/pgvector.
 What the enabled path proves against a real database:
 
 1. Migrations apply cleanly (``apply_migrations`` over the pgvector schema).
-2. Audit multi-tenant isolation: runs/events written for two smoke tenants are
-   only ever returned to their own tenant on export (the storage WHERE clause,
-   not the process, enforces the boundary).
-3. Grant single-use under concurrency: one execution grant, two threads racing
+2. Audit atomicity and idempotence: a sequential retry and concurrent callers
+   persist exactly one run/completion pair and return the canonical event ID.
+3. Audit multi-tenant isolation: completion pairs written for two smoke tenants
+   are only ever returned to their own tenant on export (the storage WHERE
+   clause, not the process, enforces the boundary).
+4. Grant single-use under concurrency: one execution grant, two threads racing
    to consume it -- exactly one wins and the other is rejected with
    ``ApprovalExecutionGrantConsumedError`` (the ``UPDATE ... consumed_at IS NULL
    ... RETURNING`` guard is the invariant).
@@ -34,6 +36,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -68,8 +71,15 @@ from hallu_defense.services.approvals import (  # noqa: E402
     ApprovalQueue,
     PostgresApprovalQueueStorage,
 )
-from hallu_defense.services.audit import AuditLedger, PostgresAuditLedgerStorage  # noqa: E402
-from hallu_defense.services.postgres import PooledPostgresProvider, SqlConnectionProvider  # noqa: E402
+from hallu_defense.services.audit import (  # noqa: E402
+    AuditLedger,
+    CompletedVerificationRecord,
+    PostgresAuditLedgerStorage,
+)
+from hallu_defense.services.postgres import (  # noqa: E402
+    PooledPostgresProvider,
+    SqlConnectionProvider,
+)
 from scripts.dev.apply_postgres_migrations import (  # noqa: E402
     MIGRATIONS_DIR,
     MigrationConnection,
@@ -92,6 +102,8 @@ CLEANUP_TABLES = (
     "approval_records",
 )
 GRANT_RACE_WORKERS = 2
+AUDIT_RACE_WORKERS = 4
+RACE_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -115,6 +127,8 @@ def run_from_env(
             "dsn": _redact_dsn(dsn),
             "schema_ready": False,
             "tenant_isolation": False,
+            "audit_retry_exactly_once": False,
+            "audit_race_exactly_once": False,
             "grant_race_single_success": False,
         }
 
@@ -149,13 +163,15 @@ def run_live_smoke(
         # Clear any leftover smoke rows from a prior aborted run before writing.
         _cleanup_smoke_rows(sql_connection, tenants)
 
-        tenant_isolation = _run_audit_isolation(sql_connection, tenants, smoke_run_id)
-        grant_race_single_success = _run_grant_race(sql_connection, tenants[0], smoke_run_id)
+        audit_result = _run_audit_isolation(sql_connection, tenants, smoke_run_id)
+        grant_race_single_success = _run_grant_race(
+            sql_connection, tenants[0], smoke_run_id
+        )
         return {
             "status": "passed",
             "dsn": _redact_dsn(config.dsn),
             "schema_ready": True,
-            "tenant_isolation": tenant_isolation,
+            **audit_result,
             "grant_race_single_success": grant_race_single_success,
         }
     finally:
@@ -183,6 +199,8 @@ def main(
             "error": str(exc),
             "schema_ready": False,
             "tenant_isolation": False,
+            "audit_retry_exactly_once": False,
+            "audit_race_exactly_once": False,
             "grant_race_single_success": False,
         }
         print(_json_result(result))
@@ -195,32 +213,25 @@ def _run_audit_isolation(
     connection: SqlConnectionProvider,
     tenants: tuple[str, str],
     run_id: str,
-) -> bool:
+) -> dict[str, bool]:
     ledger = AuditLedger(storage=PostgresAuditLedgerStorage(connection=connection))
     tenant_a, tenant_b = tenants
     trace_a = f"tr_live_pg_persist_{run_id}_a"
     trace_b = f"tr_live_pg_persist_{run_id}_b"
+    run_a = _smoke_run(tenant_id=tenant_a, trace_id=trace_a)
+    run_b = _smoke_run(tenant_id=tenant_b, trace_id=trace_b)
 
-    ledger.append(_smoke_run(tenant_id=tenant_a, trace_id=trace_a))
-    ledger.append(_smoke_run(tenant_id=tenant_b, trace_id=trace_b))
-    ledger.append_event(
-        trace_id=trace_a,
-        tenant_id=tenant_a,
-        event_type="live_smoke",
-        method="POST",
-        path="/internal/live-postgres-persistence-smoke",
-        status_code=200,
-        outcome="success",
+    first_a = ledger.append_completed_run(run_a, path="/verification/run")
+    retried_a = ledger.append_completed_run(run_a, path="/verification/run")
+    retry_exactly_once = first_a.event.event_id == retried_a.event.event_id
+
+    raced_b = _append_completion_concurrently(
+        ledger,
+        run=run_b,
+        path="/verification/run",
+        worker_count=AUDIT_RACE_WORKERS,
     )
-    ledger.append_event(
-        trace_id=trace_b,
-        tenant_id=tenant_b,
-        event_type="live_smoke",
-        method="POST",
-        path="/internal/live-postgres-persistence-smoke",
-        status_code=200,
-        outcome="success",
-    )
+    race_exactly_once = len({record.event.event_id for record in raced_b}) == 1
 
     runs_a = ledger.export(tenant_id=tenant_a)
     runs_b = ledger.export(tenant_id=tenant_b)
@@ -238,6 +249,10 @@ def _run_audit_isolation(
         and _events_all_tenant(events_b, tenant_b)
         and not _has_event_trace(events_a, trace_b)
         and not _has_event_trace(events_b, trace_a)
+        and len([run for run in runs_a if run.trace_id == trace_a]) == 1
+        and len([run for run in runs_b if run.trace_id == trace_b]) == 1
+        and len([event for event in events_a if event.trace_id == trace_a]) == 1
+        and len([event for event in events_b if event.trace_id == trace_b]) == 1
     )
     if not isolation:
         raise AssertionError(
@@ -245,7 +260,56 @@ def _run_audit_isolation(
             f"tenant_a_traces={[run.trace_id for run in runs_a]}, "
             f"tenant_b_traces={[run.trace_id for run in runs_b]}"
         )
-    return True
+    if not retry_exactly_once:
+        raise AssertionError(
+            "live postgres audit sequential retry created a second completion"
+        )
+    if not race_exactly_once:
+        raise AssertionError(
+            "live postgres audit race returned multiple completion event IDs"
+        )
+    return {
+        "tenant_isolation": True,
+        "audit_retry_exactly_once": True,
+        "audit_race_exactly_once": True,
+    }
+
+
+def _append_completion_concurrently(
+    ledger: AuditLedger,
+    *,
+    run: VerificationRun,
+    path: str,
+    worker_count: int,
+) -> list[CompletedVerificationRecord]:
+    lock = threading.Lock()
+    barrier = threading.Barrier(worker_count)
+    records: list[CompletedVerificationRecord] = []
+    errors: list[str] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=RACE_TIMEOUT_SECONDS)
+            record = ledger.append_completed_run(run, path=path)
+        except Exception as exc:  # noqa: BLE001 - any error fails the live race
+            with lock:
+                errors.append(type(exc).__name__)
+            return
+        with lock:
+            records.append(record)
+
+    threads = [
+        threading.Thread(target=worker, name=f"audit-race-{index}")
+        for index in range(worker_count)
+    ]
+    for thread in threads:
+        thread.start()
+    _join_race_threads(threads, label="audit completion")
+    if errors or len(records) != worker_count:
+        raise AssertionError(
+            f"audit completion race failed: successful={len(records)}, errors={errors}"
+        )
+    return records
 
 
 def _run_grant_race(
@@ -310,8 +374,8 @@ def _consume_grant_concurrently(
     errors: list[str] = []
 
     def worker() -> None:
-        barrier.wait()
         try:
+            barrier.wait(timeout=RACE_TIMEOUT_SECONDS)
             queue.consume_execution_grant(tenant_id, tool_call)
         except ApprovalExecutionGrantConsumedError:
             with lock:
@@ -331,12 +395,20 @@ def _consume_grant_concurrently(
     ]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join()
+    _join_race_threads(threads, label="approval grant")
 
     if counters["other"]:
         raise AssertionError(f"unexpected grant race errors: {errors}")
     return counters
+
+
+def _join_race_threads(threads: Sequence[threading.Thread], *, label: str) -> None:
+    deadline = time.monotonic() + RACE_TIMEOUT_SECONDS
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    alive = [thread.name for thread in threads if thread.is_alive()]
+    if alive:
+        raise AssertionError(f"{label} race timed out: threads={alive}")
 
 
 def _cleanup_smoke_rows(
@@ -363,20 +435,22 @@ def _smoke_run(*, tenant_id: str, trace_id: str) -> VerificationRun:
         trace_id=trace_id,
         tenant_id=tenant_id,
         input={"message_text": "Live postgres persistence smoke run."},
-        claims=[Claim(claim_id=f"clm_{tenant_id}", text="Live smoke persistence claim.")],
+        claims=[
+            Claim(claim_id=f"clm_{tenant_id}", text="Live smoke persistence claim.")
+        ],
         evidence=[
-                Evidence(
-                    evidence_id=f"ev_{tenant_id}",
-                    kind=EvidenceKind.DOCUMENT_CHUNK,
-                    source_ref="live-postgres-persistence-smoke",
-                    content="Live smoke evidence content.",
-                    structured_content={},
-                    authority=Authority.UNKNOWN,
-                    freshness=Freshness(
-                        retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                        staleness_class=StalenessClass.UNKNOWN,
-                    ),
-                )
+            Evidence(
+                evidence_id=f"ev_{tenant_id}",
+                kind=EvidenceKind.DOCUMENT_CHUNK,
+                source_ref="live-postgres-persistence-smoke",
+                content="Live smoke evidence content.",
+                structured_content={},
+                authority=Authority.UNKNOWN,
+                freshness=Freshness(
+                    retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    staleness_class=StalenessClass.UNKNOWN,
+                ),
+            )
         ],
         verdicts=[
             ClaimVerdict(

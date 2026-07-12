@@ -405,7 +405,7 @@ def _validate_live_hybrid_smoke_wiring(
         "CREATE DATABASE",
         "DROP DATABASE IF EXISTS",
         "WITH (FORCE)",
-        "EXPECTED_MIGRATION_COUNT = 13",
+        "EXPECTED_MIGRATION_COUNT = 14",
         "persistent_hybrid_rrf_v1",
         "template_cleaned",
         "finally:",
