@@ -216,6 +216,10 @@ class Settings:
     approval_queue_path: Path = Path("var/approvals/approval-queue.jsonl")
     approval_execution_grant_ttl_seconds: int = 900
     approval_tool_call_commitment_secret_name: str | None = None
+    approval_tool_call_commitment_key_id: str | None = None
+    approval_tool_call_commitment_previous_secret_name: str | None = None
+    approval_tool_call_commitment_previous_key_id: str | None = None
+    approval_tool_call_commitment_previous_valid_until: str | None = None
     tool_validation_rate_limit_backend: str = "memory"
     tool_validation_rate_limit_max_requests: int = 120
     tool_validation_rate_limit_window_seconds: int = 60
@@ -493,6 +497,25 @@ def load_settings(*, expected_runtime_role: str | None = None) -> Settings:
         ),
         approval_tool_call_commitment_secret_name=(
             os.getenv("HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME") or None
+        ),
+        approval_tool_call_commitment_key_id=(
+            os.getenv("HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID") or None
+        ),
+        approval_tool_call_commitment_previous_secret_name=(
+            os.getenv(
+                "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_SECRET_NAME"
+            )
+            or None
+        ),
+        approval_tool_call_commitment_previous_key_id=(
+            os.getenv("HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_KEY_ID")
+            or None
+        ),
+        approval_tool_call_commitment_previous_valid_until=(
+            os.getenv(
+                "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_VALID_UNTIL"
+            )
+            or None
         ),
         tool_validation_rate_limit_backend=os.getenv(
             "HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_BACKEND",

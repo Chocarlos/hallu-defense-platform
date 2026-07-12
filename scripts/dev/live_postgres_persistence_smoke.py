@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -330,6 +331,9 @@ def _run_grant_race(
     queue = ApprovalQueue(
         storage=PostgresApprovalQueueStorage(connection=connection),
         tool_registry=_smoke_tool_registry(),
+        commitment_key=secrets.token_bytes(32),
+        commitment_key_id="live-smoke-active",
+        commitment_environment="test",
     )
     request_call = _smoke_tool_call(run_id)
     approval = queue.request_approval(

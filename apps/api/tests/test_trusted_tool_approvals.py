@@ -17,6 +17,7 @@ from hallu_defense.domain.models import (
 )
 from hallu_defense.services.approvals import (
     APPROVAL_BINDING_STORAGE_KEY,
+    TOOL_CALL_COMMITMENT_STORAGE_KEY,
     ApprovalAuthorizationIssuer,
     ApprovalExecutionGrantConsumedError,
     ApprovalExecutionGrantError,
@@ -425,6 +426,49 @@ def test_execution_capability_is_issuer_bound_and_single_use_in_tool_safety(
     assert replayed.action.value == "block"
 
 
+def test_execution_capability_is_bound_to_runtime_environment(tmp_path: Path) -> None:
+    issuer = ApprovalAuthorizationIssuer()
+    registry = _registry()
+    queue = ApprovalQueue(
+        tool_registry=registry,
+        authorization_issuer=issuer,
+        commitment_key=b"k" * 32,
+        commitment_environment="local",
+    )
+    approval_id, token = _approve(queue)
+    envelope = _call(approval_id=approval_id, execution_token=token)
+    authorization = queue.consume_execution_grant(
+        "tenant-a",
+        envelope,
+        subject_id="subject-a",
+    )
+    production_service = ToolSafetyService(
+        policy_engine=PolicyEngine(
+            Settings(
+                environment="test",
+                policy_version="capability-environment-test-v1",
+                auth_required=False,
+                allowed_workspace=tmp_path,
+                max_command_seconds=5,
+                max_output_chars=1_000,
+            )
+        ),
+        content_scanner=ContentSecurityScanner(),
+        tool_registry=registry,
+        authorization_issuer=issuer,
+        environment="production",
+    )
+
+    response = production_service.validate_input(
+        envelope,
+        tenant_id="tenant-a",
+        approval_authorization=authorization,
+    )
+
+    assert response.allowed is False
+    assert response.action.value == "block"
+
+
 def test_approval_binding_is_private_and_explicit_in_durable_storage(tmp_path: Path) -> None:
     queue_path = tmp_path / "approval.jsonl"
     queue = ApprovalQueue(storage_path=queue_path, tool_registry=_registry())
@@ -482,7 +526,7 @@ def test_separate_approval_records_have_distinct_commitments_and_cannot_substitu
         if item["record_type"] == "approval_record"
     ]
     bindings = [item[APPROVAL_BINDING_STORAGE_KEY] for item in snapshots]
-    commitments = [item["_hallu_tool_call_commitment_v1"] for item in snapshots]
+    commitments = [item[TOOL_CALL_COMMITMENT_STORAGE_KEY] for item in snapshots]
     assert [binding["approval_id"] for binding in bindings] == [
         first.approval_id,
         second.approval_id,

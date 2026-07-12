@@ -395,7 +395,23 @@ capabilities:
 - name: HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND
   value: postgres
 - name: HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME
-  value: approvals/tool-call-commitment-key
+  value: {{ required "approvalCommitment.activeSecretName is required" .Values.approvalCommitment.activeSecretName | quote }}
+- name: HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID
+  value: {{ required "approvalCommitment.activeKeyId is required" .Values.approvalCommitment.activeKeyId | quote }}
+{{- $previousApprovalSecret := .Values.approvalCommitment.previousSecretName }}
+{{- $previousApprovalKeyId := .Values.approvalCommitment.previousKeyId }}
+{{- $previousApprovalValidUntil := .Values.approvalCommitment.previousValidUntil }}
+{{- if or $previousApprovalSecret $previousApprovalKeyId $previousApprovalValidUntil }}
+{{- if not (and $previousApprovalSecret $previousApprovalKeyId $previousApprovalValidUntil) }}
+{{- fail "approvalCommitment previousSecretName, previousKeyId, and previousValidUntil must be configured together" }}
+{{- end }}
+- name: HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_SECRET_NAME
+  value: {{ $previousApprovalSecret | quote }}
+- name: HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_KEY_ID
+  value: {{ $previousApprovalKeyId | quote }}
+- name: HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_VALID_UNTIL
+  value: {{ $previousApprovalValidUntil | quote }}
+{{- end }}
 - name: HALLU_DEFENSE_CORPUS_GRANTS_BACKEND
   value: postgres
 - name: HALLU_DEFENSE_EVAL_REPORTS_BACKEND

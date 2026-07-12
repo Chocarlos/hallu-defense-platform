@@ -16,6 +16,11 @@ Use:
 HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND=postgres
 HALLU_DEFENSE_APPROVAL_EXECUTION_GRANT_TTL_SECONDS=900
 HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME=approvals/tool-call-commitment-key
+HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID=approval-active-v1
+# Set all three only during a bounded rotation:
+# HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_SECRET_NAME=approvals/tool-call-commitment-key-previous
+# HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_KEY_ID=approval-previous-v0
+# HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_VALID_UNTIL=2026-07-15T12:00:00Z
 HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_BACKEND=redis
 HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_MAX_REQUESTS=120
 HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_WINDOW_SECONDS=60
@@ -82,8 +87,9 @@ and traversal-limit failures follow the same fail-closed path.
 Before redaction, the queue resolves the tool through the immutable server registry
 and computes an opaque v3, domain-separated commitment over an explicit approval
 binding: the generated `approval_id`, originating trace ID, authenticated tenant and
-subject, canonical tool name and policy action, SHA-256 of canonical arguments, plus
-trusted definition version and digest. The record ID is generated before the binding,
+subject, normalized runtime environment, canonical tool name and policy action,
+SHA-256 of canonical arguments, trusted definition version and digest, commitment
+algorithm, and an opaque non-secret key ID. The record ID is generated before the binding,
 so two reviews of otherwise identical facts have distinct commitments. Public schema, risk, approval,
 side-effect, action, identity, and approval-status assertions are never authority.
 The argument hash is calculated from the original unredacted canonical arguments;
@@ -92,18 +98,29 @@ Unknown tools, mismatches, malformed canonical JSON, or definitions that do not
 require approval fail closed. Production and staging require a
 stable 32-byte-or-longer HMAC key resolved from the logical
 `HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME` through the Vault
-`SecretManager`; raw key environment variables are not accepted. Only local/test
+`SecretManager`, plus an explicit opaque
+`HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID`; key IDs are never derived from
+secret bytes and raw key environment variables are not accepted. Only local/test
 instances with no logical secret name may use the explicit domain-separated SHA-256
 fallback. Only the prefixed commitment is persisted as private approval metadata. It
 is excluded from REST/OpenAPI serialization, and neither the original payload nor an
 execution token is written or logged.
 
-On upgrade from the earlier redacted-fingerprint format, unconsumed legacy grants
-are intentionally invalidated. Pending records that predate the private commitment
-must be rejected or requested again before approval; the service never falls back to
-binding a new grant to a redacted snapshot. A queue running with an HMAC key also
-refuses to approve any persisted pending record whose commitment has the legacy
-`sha256:` prefix; only `hmac-sha256:` can produce a production execution grant.
+Rotation accepts exactly one previous Vault secret and opaque key ID until an explicit
+timezone-aware deadline. The overlap must be in the future and cannot exceed seven
+days. New approvals always use the active key. Existing approvals and grants signed by
+the previous key remain usable only inside the overlap, and a new grant is refused if
+its TTL would extend past the deadline. Active and previous names, IDs, and key bytes
+must all differ. Production and staging reject missing or partial rotation fields.
+
+On upgrade from v1, v2, or the provisional binding-v3/commitment-v1 format, pending
+approvals and unconsumed grants are intentionally invalidated. Before deployment,
+export the public redacted records needed for audit, stop writers, archive the old
+JSONL file or old PostgreSQL rows under the operator's retention controls, and have
+callers request approval again. The service rejects legacy private storage keys and
+never derives new authority from a redacted snapshot. Because one incompatible row
+causes that tenant query or JSONL replay to fail closed, archival/reapproval is a
+required pre-deployment step rather than an online best-effort migration.
 
 ## Replay Model
 
@@ -114,7 +131,7 @@ JSONL file and keeps the latest snapshot per `approval_id`.
 Approved decisions also issue a bounded execution grant. The API returns the grant's
 opaque `approval_execution_token` only to the approval caller, stores only a hash of
 that token, and binds the grant to the tenant, `approval_id`, v3 approval binding, and
-expiration time. Changing authenticated subject, tool/action, canonical arguments, or
+expiration time. Changing authenticated subject, environment, tool/action, canonical arguments, or
 trusted definition version/digest invalidates it. Definition rotation invalidates both
 pending approvals and already issued unconsumed grants. Reviewer-visible schemas may
 contain redaction markers and are display snapshots only; execution always re-resolves
@@ -125,7 +142,8 @@ same canonical tool assertions plus `approval_id` and `approval_execution_token`
 consumed exactly once and produces a process-local, issuer-bound capability that
 ToolSafety accepts once; the public contract cannot assert that capability. Missing,
 expired, reused, wrong-tenant, or
-wrong-subject, mismatched-tool/action/arguments, or stale-definition grants fail closed.
+wrong-subject, wrong-environment, mismatched-tool/action/arguments, unknown/expired
+key IDs, or stale-definition grants fail closed.
 
 Corrupt records, unsupported record types, or malformed payloads fail closed at
 startup. That prevents the API from serving a partially trusted approval state.

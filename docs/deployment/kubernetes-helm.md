@@ -20,10 +20,13 @@ one-or-more bounded replicas, the production command, metrics port 9090, and a
 bounded `setupGraceSeconds`; the migration count and checksum inventory are
 also immutable chart inputs.
 
-The API receives only the logical approval commitment secret name
-`approvals/tool-call-commitment-key`. Production operators must provision that
-Vault path with at least 32 bytes of random key material before rollout; the
-chart never renders the key into Helm history or a raw environment variable.
+The API receives only the logical approval commitment secret name and opaque
+non-secret key ID from `approvalCommitment.activeSecretName` and
+`approvalCommitment.activeKeyId`. Production operators must provision the Vault
+path with at least 32 bytes of random key material before rollout; the chart
+never renders the key into Helm history or a raw environment variable. A
+rotation sets `previousSecretName`, `previousKeyId`, and `previousValidUntil`
+together; partial values fail render and the API limits overlap to seven days.
 The disposable Kind Vault bootstrap generates and seeds a distinct ephemeral
 value for this path alongside the provider and metrics credentials.
 

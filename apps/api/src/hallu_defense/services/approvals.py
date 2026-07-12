@@ -7,7 +7,7 @@ import re
 import secrets
 import threading
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,11 +46,31 @@ APPROVAL_BINDING_COMMITMENT_DOMAIN = b"hallu-defense:approval-binding:v3\x00"
 # Compatibility name retained for the configuration integrity gate. The
 # committed message is an ApprovalBinding, not a caller-provided envelope.
 TOOL_CALL_COMMITMENT_DOMAIN = APPROVAL_BINDING_COMMITMENT_DOMAIN
-TOOL_CALL_COMMITMENT_STORAGE_KEY = "_hallu_tool_call_commitment_v1"
+APPROVAL_BINDING_COMMITMENT_STORAGE_KEY = "_hallu_approval_commitment_v3"
+# Compatibility export retained for callers/tests while the persisted key is
+# deliberately bumped. Records using the former value are rejected below.
+TOOL_CALL_COMMITMENT_STORAGE_KEY = APPROVAL_BINDING_COMMITMENT_STORAGE_KEY
 APPROVAL_BINDING_STORAGE_KEY = "_hallu_approval_binding_v3"
-TOOL_CALL_COMMITMENT_RE = re.compile(r"^(?:hmac-)?sha256:[0-9a-f]{64}$")
+LEGACY_APPROVAL_STORAGE_KEYS = frozenset(
+    {
+        "_hallu_tool_call_commitment_v1",
+        "_hallu_tool_call_commitment_v2",
+        "_hallu_approval_commitment_v1",
+        "_hallu_approval_commitment_v2",
+        "_hallu_approval_binding_v1",
+        "_hallu_approval_binding_v2",
+    }
+)
+APPROVAL_BINDING_VERSION = "approval-binding.v3"
+COMMITMENT_KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
+APPROVAL_COMMITMENT_RE = re.compile(
+    r"^v3:(?:hmac-sha256:[A-Za-z0-9][A-Za-z0-9._-]{2,63}|"
+    r"sha256:unkeyed-local):[0-9a-f]{64}$"
+)
+TOOL_DEFINITION_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 ARGUMENTS_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 MIN_COMMITMENT_KEY_BYTES = 32
+MAX_COMMITMENT_ROTATION_OVERLAP = timedelta(days=7)
 
 
 class ApprovalError(Exception):
@@ -113,24 +133,32 @@ class ApprovalExecutionGrantState:
 class ApprovalBinding:
     """The exact authorization facts reviewed by a human approver."""
 
+    schema_version: str
     approval_id: str
     origin_trace_id: str
     tenant_id: str
     subject_id: str
+    environment: str
     tool_name: str
     policy_action: str
     arguments_hash: str
     definition_version: str
     definition_digest: str
+    commitment_algorithm: str
+    commitment_key_id: str
 
     def as_payload(self) -> dict[str, str]:
         return {
             "approval_id": self.approval_id,
             "arguments_hash": self.arguments_hash,
+            "commitment_algorithm": self.commitment_algorithm,
+            "commitment_key_id": self.commitment_key_id,
             "definition_digest": self.definition_digest,
             "definition_version": self.definition_version,
+            "environment": self.environment,
             "origin_trace_id": self.origin_trace_id,
             "policy_action": self.policy_action,
+            "schema_version": self.schema_version,
             "subject_id": self.subject_id,
             "tenant_id": self.tenant_id,
             "tool_name": self.tool_name,
@@ -143,10 +171,14 @@ class ApprovalBinding:
         expected_keys = {
             "approval_id",
             "arguments_hash",
+            "commitment_algorithm",
+            "commitment_key_id",
             "definition_digest",
             "definition_version",
+            "environment",
             "origin_trace_id",
             "policy_action",
+            "schema_version",
             "subject_id",
             "tenant_id",
             "tool_name",
@@ -161,8 +193,24 @@ class ApprovalBinding:
             payload[key] = item
         if ARGUMENTS_HASH_RE.fullmatch(payload["arguments_hash"]) is None:
             raise ApprovalQueueStorageError("Approval binding arguments hash is invalid.")
-        if TOOL_CALL_COMMITMENT_RE.fullmatch(payload["definition_digest"]) is None:
+        if TOOL_DEFINITION_DIGEST_RE.fullmatch(payload["definition_digest"]) is None:
             raise ApprovalQueueStorageError("Approval binding definition digest is invalid.")
+        if payload["schema_version"] != APPROVAL_BINDING_VERSION:
+            raise ApprovalQueueStorageError("Approval binding version is unsupported.")
+        try:
+            payload["environment"] = normalize_environment(payload["environment"])
+        except ValueError as exc:
+            raise ApprovalQueueStorageError("Approval binding environment is invalid.") from exc
+        algorithm = payload["commitment_algorithm"]
+        key_id = payload["commitment_key_id"]
+        if algorithm == "hmac-sha256":
+            if COMMITMENT_KEY_ID_RE.fullmatch(key_id) is None:
+                raise ApprovalQueueStorageError("Approval binding key identifier is invalid.")
+        elif algorithm == "sha256":
+            if key_id != "unkeyed-local":
+                raise ApprovalQueueStorageError("Approval binding key identifier is invalid.")
+        else:
+            raise ApprovalQueueStorageError("Approval binding algorithm is unsupported.")
         for key in ("approval_id", "origin_trace_id", "tenant_id", "subject_id"):
             identity = payload[key]
             if (
@@ -236,7 +284,7 @@ def _set_record_tool_call_commitment(
     if commitment is None:
         record._tool_call_commitment = None
         return
-    if not isinstance(commitment, str) or TOOL_CALL_COMMITMENT_RE.fullmatch(commitment) is None:
+    if not isinstance(commitment, str) or APPROVAL_COMMITMENT_RE.fullmatch(commitment) is None:
         raise ApprovalQueueStorageError("Approval record tool-call commitment is invalid.")
     record._tool_call_commitment = commitment
 
@@ -253,7 +301,7 @@ def _record_tool_call_commitment(
                 "Approval record is missing its original tool-call commitment."
             )
         return None
-    if TOOL_CALL_COMMITMENT_RE.fullmatch(commitment) is None:
+    if APPROVAL_COMMITMENT_RE.fullmatch(commitment) is None:
         raise ApprovalQueueStorageError("Approval record tool-call commitment is invalid.")
     return commitment
 
@@ -298,6 +346,20 @@ def _copy_record_private_metadata(source: ApprovalRecord, target: ApprovalRecord
         target,
         _record_approval_binding(source, required=False),
     )
+
+
+def _pop_private_approval_metadata(
+    payload: dict[str, object],
+) -> tuple[object, object]:
+    legacy = sorted(LEGACY_APPROVAL_STORAGE_KEYS.intersection(payload))
+    if legacy:
+        raise ApprovalQueueStorageError(
+            "Legacy or provisional approval commitment storage is unsupported; "
+            "request approval again."
+        )
+    commitment = payload.pop(APPROVAL_BINDING_COMMITMENT_STORAGE_KEY, None)
+    binding = payload.pop(APPROVAL_BINDING_STORAGE_KEY, None)
+    return commitment, binding
 
 
 # --- PostgreSQL backend -------------------------------------------------------
@@ -517,8 +579,7 @@ class PostgresApprovalQueueStorage:
                 f"Postgres approval record {row_number} payload must be an object"
             )
         stored_payload = dict(payload)
-        commitment = stored_payload.pop(TOOL_CALL_COMMITMENT_STORAGE_KEY, None)
-        binding = stored_payload.pop(APPROVAL_BINDING_STORAGE_KEY, None)
+        commitment, binding = _pop_private_approval_metadata(stored_payload)
         try:
             record = ApprovalRecord.model_validate(stored_payload)
         except ValidationError as exc:
@@ -558,6 +619,11 @@ class ApprovalQueue:
         storage: ApprovalQueueStorage | None = None,
         execution_grant_ttl_seconds: int = 900,
         commitment_key: bytes | None = None,
+        commitment_key_id: str | None = None,
+        previous_commitment_keys: Sequence[bytes] = (),
+        previous_commitment_key_ids: Sequence[str] = (),
+        previous_commitment_keys_valid_until: datetime | None = None,
+        commitment_environment: str = "local",
         tool_registry: TrustedToolRegistry | None = None,
         redactor: SensitiveDataRedactor | None = None,
         authorization_issuer: ApprovalAuthorizationIssuer | None = None,
@@ -570,17 +636,112 @@ class ApprovalQueue:
         self._storage_path = storage_path
         self._storage = storage
         self._execution_grant_ttl = timedelta(seconds=execution_grant_ttl_seconds)
-        if commitment_key is not None and (
-            not isinstance(commitment_key, bytes) or len(commitment_key) < MIN_COMMITMENT_KEY_BYTES
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        try:
+            self._commitment_environment = normalize_environment(commitment_environment)
+        except ValueError as exc:
+            raise ApprovalQueueConfigurationError(
+                "Approval commitment environment is invalid."
+            ) from exc
+        self._validate_commitment_key(commitment_key)
+        if self._commitment_environment in {"production", "staging"} and commitment_key is None:
+            raise ApprovalQueueConfigurationError(
+                "Production and staging approval commitments require an HMAC key."
+            )
+        if commitment_key is None:
+            if commitment_key_id is not None:
+                raise ApprovalQueueConfigurationError(
+                    "An approval commitment key identifier requires an active key."
+                )
+            active_key_id: str | None = None
+        else:
+            if commitment_key_id is None:
+                if self._commitment_environment in {"production", "staging"}:
+                    raise ApprovalQueueConfigurationError(
+                        "Production and staging require an explicit opaque approval commitment key identifier."
+                    )
+                active_key_id = "local-active"
+            else:
+                active_key_id = self._validate_commitment_key_id(commitment_key_id)
+        previous_keys = tuple(previous_commitment_keys)
+        previous_key_ids = tuple(previous_commitment_key_ids)
+        if len(previous_keys) > 1:
+            raise ApprovalQueueConfigurationError(
+                "Approval commitment rotation supports exactly one previous key."
+            )
+        for previous_key in previous_keys:
+            self._validate_commitment_key(previous_key)
+        if commitment_key is None and previous_keys:
+            raise ApprovalQueueConfigurationError(
+                "Previous approval commitment keys require an active commitment key."
+            )
+        if previous_keys and commitment_key_id is None:
+            raise ApprovalQueueConfigurationError(
+                "Approval commitment rotation requires an explicit opaque active key identifier."
+            )
+        if previous_keys and not previous_key_ids:
+            raise ApprovalQueueConfigurationError(
+                "Approval commitment rotation requires an explicit opaque previous key identifier."
+            )
+        if len(previous_key_ids) != len(previous_keys):
+            raise ApprovalQueueConfigurationError(
+                "Previous approval commitment keys and key identifiers must match."
+            )
+        previous_key_ids = tuple(
+            self._validate_commitment_key_id(key_id) for key_id in previous_key_ids
+        )
+        if (
+            commitment_key is not None
+            and previous_keys
+            and hmac.compare_digest(commitment_key, previous_keys[0])
         ):
             raise ApprovalQueueConfigurationError(
-                "Approval tool-call commitment key must contain at least 32 bytes."
+                "Active and previous approval commitment keys must be distinct."
             )
+        if previous_keys:
+            if previous_commitment_keys_valid_until is None:
+                raise ApprovalQueueConfigurationError(
+                    "Previous approval commitment keys require a bounded valid-until timestamp."
+                )
+            valid_until = self._normalize_rotation_deadline(
+                previous_commitment_keys_valid_until
+            )
+            now = self._now()
+            if valid_until <= now:
+                raise ApprovalQueueConfigurationError(
+                    "Previous approval commitment key overlap has already expired."
+                )
+            if valid_until > now + MAX_COMMITMENT_ROTATION_OVERLAP:
+                raise ApprovalQueueConfigurationError(
+                    "Previous approval commitment key overlap cannot exceed seven days."
+                )
+            self._previous_commitment_keys_valid_until: datetime | None = valid_until
+        else:
+            if previous_commitment_keys_valid_until is not None:
+                raise ApprovalQueueConfigurationError(
+                    "A previous-key valid-until timestamp requires a previous commitment key."
+                )
+            self._previous_commitment_keys_valid_until = None
         self._commitment_key = commitment_key
+        self._active_commitment_key_id = active_key_id
+        all_commitment_keys = tuple(
+            key for key in (commitment_key, *previous_keys) if key is not None
+        )
+        key_ids = tuple(
+            key_id
+            for key_id in (active_key_id, *previous_key_ids)
+            if key_id is not None
+        )
+        if len(set(key_ids)) != len(key_ids):
+            raise ApprovalQueueConfigurationError(
+                "Approval commitment rotation keys must be distinct."
+            )
+        self._commitment_keys_by_id = dict(
+            zip(key_ids, all_commitment_keys, strict=True)
+        )
         self._tool_registry = tool_registry or TrustedToolRegistry.default()
         self._redactor = redactor or SensitiveDataRedactor()
         self._authorization_issuer = authorization_issuer or ApprovalAuthorizationIssuer()
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
         self._records: dict[str, ApprovalRecord] = {}
         self._grants: dict[str, ApprovalExecutionGrantState] = {}
@@ -767,6 +928,8 @@ class ApprovalQueue:
                 tenant_id=tenant_id,
                 subject_id=resolved_subject,
                 tool_call=tool_call,
+                commitment_algorithm=stored_binding.commitment_algorithm,
+                commitment_key_id=stored_binding.commitment_key_id,
             )
             if stored_binding != requested_binding:
                 raise ApprovalExecutionGrantError(
@@ -866,6 +1029,8 @@ class ApprovalQueue:
             tenant_id=tenant_id,
             subject_id=subject_id,
             tool_call=tool_call,
+            commitment_algorithm=stored_binding.commitment_algorithm,
+            commitment_key_id=stored_binding.commitment_key_id,
         )
         if stored_binding != requested_binding:
             raise ApprovalExecutionGrantError(
@@ -925,8 +1090,7 @@ class ApprovalQueue:
                     grants[grant_state.approval_id] = grant_state
                     continue
                 stored_payload = dict(payload)
-                commitment = stored_payload.pop(TOOL_CALL_COMMITMENT_STORAGE_KEY, None)
-                binding = stored_payload.pop(APPROVAL_BINDING_STORAGE_KEY, None)
+                commitment, binding = _pop_private_approval_metadata(stored_payload)
                 try:
                     approval = self._sanitize_record(ApprovalRecord.model_validate(stored_payload))
                 except (ValidationError, ApprovalPayloadSanitizationError) as exc:
@@ -1087,7 +1251,17 @@ class ApprovalQueue:
     ) -> tuple[ApprovalExecutionGrantState, ApprovalExecutionGrant]:
         grant_value = secrets.token_urlsafe(32)
         expires_at = self._now() + self._execution_grant_ttl
-        self._validated_record_binding(record)
+        binding = self._validated_record_binding(record)
+        if (
+            binding.commitment_algorithm == "hmac-sha256"
+            and binding.commitment_key_id != self._active_commitment_key_id
+        ):
+            valid_until = self._previous_commitment_keys_valid_until
+            if valid_until is None or expires_at > valid_until:
+                raise ApprovalQueueStorageError(
+                    "Approval grant would outlive the previous commitment key overlap; "
+                    "request approval again."
+                )
         tool_call_commitment = _record_tool_call_commitment(record, required=True)
         if tool_call_commitment is None:  # pragma: no cover - required=True fails first
             raise ApprovalQueueStorageError(
@@ -1117,12 +1291,6 @@ class ApprovalQueue:
             raise ApprovalQueueStorageError(
                 "Approval record is missing its original tool-call commitment."
             )
-        if self._commitment_key is not None and not tool_call_commitment.startswith(
-            "hmac-sha256:"
-        ):
-            raise ApprovalQueueStorageError(
-                "A keyed approval queue cannot approve a legacy unkeyed tool-call commitment; request approval again."
-            )
         binding = _record_approval_binding(record, required=True)
         if binding is None:  # pragma: no cover - required=True raises first
             raise ApprovalQueueStorageError(
@@ -1147,6 +1315,7 @@ class ApprovalQueue:
             or record.trace_id != binding.origin_trace_id
             or record.tenant_id != binding.tenant_id
             or record.requested_by != binding.subject_id
+            or binding.environment != self._commitment_environment
             or record.tool_call.tool_name != binding.tool_name
             or record.risk_level is not current_definition.risk_level
             or record.tool_call.risk_level is not current_definition.risk_level
@@ -1169,10 +1338,34 @@ class ApprovalQueue:
     def _binding_commitment(self, binding: ApprovalBinding) -> str:
         serialized = canonical_json_dumps(binding.as_payload())
         message = APPROVAL_BINDING_COMMITMENT_DOMAIN + serialized.encode("utf-8")
-        if self._commitment_key is not None:
-            digest = hmac.new(self._commitment_key, message, hashlib.sha256).hexdigest()
-            return f"hmac-sha256:{digest}"
-        return f"sha256:{hashlib.sha256(message).hexdigest()}"
+        if binding.commitment_algorithm == "hmac-sha256":
+            key = self._verification_key(binding.commitment_key_id)
+            if key is None:
+                raise ApprovalQueueStorageError(
+                    "Approval binding uses an unknown or expired commitment key; "
+                    "request approval again."
+                )
+            digest = hmac.new(key, message, hashlib.sha256).hexdigest()
+        elif (
+            binding.commitment_algorithm == "sha256"
+            and binding.commitment_key_id == "unkeyed-local"
+            and self._commitment_key is None
+        ):
+            digest = hashlib.sha256(message).hexdigest()
+        elif binding.commitment_algorithm == "sha256" and self._commitment_key is not None:
+            raise ApprovalQueueStorageError(
+                "A keyed approval queue cannot approve a legacy unkeyed commitment; "
+                "request approval again."
+            )
+        else:
+            raise ApprovalQueueStorageError(
+                "Approval binding commitment mode is incompatible with this queue; "
+                "request approval again."
+            )
+        return (
+            f"v3:{binding.commitment_algorithm}:"
+            f"{binding.commitment_key_id}:{digest}"
+        )
 
     def _tool_call_commitment(
         self,
@@ -1211,22 +1404,71 @@ class ApprovalQueue:
         tenant_id: str,
         subject_id: str,
         tool_call: ToolCallEnvelope,
+        commitment_algorithm: str | None = None,
+        commitment_key_id: str | None = None,
     ) -> ApprovalBinding:
         trusted = self._tool_registry.verify_binding(tool_call)
         arguments_hash = "sha256:" + hashlib.sha256(
             canonical_json_dumps(tool_call.input).encode("utf-8")
         ).hexdigest()
         return ApprovalBinding(
+            schema_version=APPROVAL_BINDING_VERSION,
             approval_id=self._validated_identity(approval_id, "identifier"),
             origin_trace_id=self._validated_identity(origin_trace_id, "origin trace"),
             tenant_id=tenant_id,
             subject_id=subject_id,
+            environment=self._commitment_environment,
             tool_name=trusted.tool_name,
             policy_action=trusted.policy_action,
             arguments_hash=arguments_hash,
             definition_version=trusted.definition_version,
             definition_digest=trusted.definition_digest,
+            commitment_algorithm=(
+                commitment_algorithm
+                or ("hmac-sha256" if self._commitment_key is not None else "sha256")
+            ),
+            commitment_key_id=(
+                commitment_key_id
+                or self._active_commitment_key_id
+                or "unkeyed-local"
+            ),
         )
+
+    def _verification_key(self, key_id: str) -> bytes | None:
+        key = self._commitment_keys_by_id.get(key_id)
+        if key is None:
+            return None
+        if key_id == self._active_commitment_key_id:
+            return key
+        valid_until = self._previous_commitment_keys_valid_until
+        if valid_until is None or self._now() >= valid_until:
+            return None
+        return key
+
+    @staticmethod
+    def _normalize_rotation_deadline(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ApprovalQueueConfigurationError(
+                "Previous-key valid-until timestamp must include a timezone."
+            )
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _validate_commitment_key_id(key_id: str) -> str:
+        if COMMITMENT_KEY_ID_RE.fullmatch(key_id) is None:
+            raise ApprovalQueueConfigurationError(
+                "Approval commitment key identifiers must be opaque 3-64 character labels."
+            )
+        return key_id
+
+    @staticmethod
+    def _validate_commitment_key(key: bytes | None) -> None:
+        if key is not None and (
+            not isinstance(key, bytes) or len(key) < MIN_COMMITMENT_KEY_BYTES
+        ):
+            raise ApprovalQueueConfigurationError(
+                "Approval tool-call commitment key must contain at least 32 bytes."
+            )
 
     def _resolve_subject(
         self,
@@ -1316,15 +1558,28 @@ def create_approval_queue(
         raise ApprovalQueueConfigurationError(
             "Production and staging require the PostgreSQL approval queue backend for globally atomic decisions and single-use grants."
         )
-    resolved_commitment_key = _resolve_commitment_key(
+    resolved_commitment_key, previous_commitment_keys = _resolve_commitment_keys(
         settings,
         secret_manager=secret_manager,
         explicit_key=commitment_key,
+    )
+    previous_keys_valid_until = _parse_commitment_rotation_deadline(
+        settings.approval_tool_call_commitment_previous_valid_until
+    )
+    previous_key_ids = (
+        (settings.approval_tool_call_commitment_previous_key_id,)
+        if settings.approval_tool_call_commitment_previous_key_id is not None
+        else ()
     )
     if backend == "memory":
         return ApprovalQueue(
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
             commitment_key=resolved_commitment_key,
+            commitment_key_id=settings.approval_tool_call_commitment_key_id,
+            previous_commitment_keys=previous_commitment_keys,
+            previous_commitment_key_ids=previous_key_ids,
+            previous_commitment_keys_valid_until=previous_keys_valid_until,
+            commitment_environment=environment,
             tool_registry=tool_registry,
             redactor=redactor,
             authorization_issuer=authorization_issuer,
@@ -1334,6 +1589,11 @@ def create_approval_queue(
             storage_path=settings.approval_queue_path,
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
             commitment_key=resolved_commitment_key,
+            commitment_key_id=settings.approval_tool_call_commitment_key_id,
+            previous_commitment_keys=previous_commitment_keys,
+            previous_commitment_key_ids=previous_key_ids,
+            previous_commitment_keys_valid_until=previous_keys_valid_until,
+            commitment_environment=environment,
             tool_registry=tool_registry,
             redactor=redactor,
             authorization_issuer=authorization_issuer,
@@ -1347,6 +1607,11 @@ def create_approval_queue(
             storage=PostgresApprovalQueueStorage(connection=sql_provider),
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
             commitment_key=resolved_commitment_key,
+            commitment_key_id=settings.approval_tool_call_commitment_key_id,
+            previous_commitment_keys=previous_commitment_keys,
+            previous_commitment_key_ids=previous_key_ids,
+            previous_commitment_keys_valid_until=previous_keys_valid_until,
+            commitment_environment=environment,
             tool_registry=tool_registry,
             redactor=redactor,
             authorization_issuer=authorization_issuer,
@@ -1356,15 +1621,16 @@ def create_approval_queue(
     )
 
 
-def _resolve_commitment_key(
+def _resolve_commitment_keys(
     settings: Settings,
     *,
     secret_manager: SecretManager | None,
     explicit_key: bytes | None,
-) -> bytes | None:
+) -> tuple[bytes | None, tuple[bytes, ...]]:
     environment = settings.environment.strip().lower()
     production_like = environment in {"production", "staging"}
     secret_name = settings.approval_tool_call_commitment_secret_name
+    previous_secret_name = settings.approval_tool_call_commitment_previous_secret_name
     if production_like and explicit_key is not None:
         raise ApprovalQueueConfigurationError(
             "Production approval commitments must resolve a logical SecretManager name."
@@ -1374,7 +1640,11 @@ def _resolve_commitment_key(
             raise ApprovalQueueConfigurationError(
                 "Production and staging require an approval commitment SecretManager name."
             )
-        return explicit_key
+        if previous_secret_name is not None and previous_secret_name.strip():
+            raise ApprovalQueueConfigurationError(
+                "A previous approval commitment secret requires an active logical secret."
+            )
+        return explicit_key, ()
     if explicit_key is not None:
         raise ApprovalQueueConfigurationError(
             "Configure either a logical approval commitment secret or an explicit local key."
@@ -1387,15 +1657,60 @@ def _resolve_commitment_key(
         raise ApprovalQueueConfigurationError(
             "Approval commitment secret resolution requires SecretManager."
         )
+    active_name = secret_name.strip()
+    previous_name = (
+        previous_secret_name.strip()
+        if previous_secret_name is not None
+        else ""
+    )
+    if previous_name and previous_name == active_name:
+        raise ApprovalQueueConfigurationError(
+            "Active and previous approval commitment secret names must differ."
+        )
+    key = _load_commitment_key(secret_manager, active_name, role="active")
+    previous_keys = (
+        (_load_commitment_key(secret_manager, previous_name, role="previous"),)
+        if previous_name
+        else ()
+    )
+    if previous_keys and hmac.compare_digest(key, previous_keys[0]):
+        raise ApprovalQueueConfigurationError(
+            "Active and previous approval commitment keys must differ."
+        )
+    return key, previous_keys
+
+
+def _parse_commitment_rotation_deadline(value: str | None) -> datetime | None:
+    if value is None or not value.strip():
+        return None
     try:
-        secret_value = secret_manager.get_secret(secret_name.strip()).reveal()
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ApprovalQueueConfigurationError(
+            "Previous approval commitment valid-until timestamp must be ISO 8601."
+        ) from exc
+    if parsed.tzinfo is None:
+        raise ApprovalQueueConfigurationError(
+            "Previous approval commitment valid-until timestamp must include a timezone."
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def _load_commitment_key(
+    secret_manager: SecretManager,
+    secret_name: str,
+    *,
+    role: str,
+) -> bytes:
+    try:
+        secret_value = secret_manager.get_secret(secret_name).reveal()
     except (SecretAccessError, SecretConfigurationError, SecretNotFoundError):
         raise ApprovalQueueConfigurationError(
-            "Approval commitment key could not be resolved from SecretManager."
+            f"Approval commitment {role} key could not be resolved from SecretManager."
         ) from None
     key = secret_value.encode("utf-8")
     if len(key) < MIN_COMMITMENT_KEY_BYTES:
         raise ApprovalQueueConfigurationError(
-            "Approval commitment key from SecretManager must contain at least 32 bytes."
+            f"Approval commitment {role} key from SecretManager must contain at least 32 bytes."
         )
     return key

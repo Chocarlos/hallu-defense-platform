@@ -18,7 +18,11 @@ from hallu_defense.domain.models import (
     VerdictAction,
 )
 from hallu_defense.main import app
-from hallu_defense.services.approvals import ApprovalAuthorizationIssuer, ApprovalQueue
+from hallu_defense.services.approvals import (
+    ApprovalAuthorizationIssuer,
+    ApprovalQueue,
+    ApprovalQueueStorageError,
+)
 from hallu_defense.services.audit import AuditLedger
 from hallu_defense.services.content_security import ContentSecurityScanner
 from hallu_defense.services.policy import PolicyEngine
@@ -434,6 +438,34 @@ def test_oidc_tool_requester_and_execution_fingerprint_use_canonical_identity(
 
     assert execution_response.status_code == 200
     assert execution_response.json()["allowed"] is True
+
+
+def test_incompatible_approval_requires_reapproval_without_internal_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ledger = _configure_oidc_route_test(tmp_path, monkeypatch)
+
+    class IncompatibleApprovalQueue:
+        def decide_with_grant(self, *_args: object, **_kwargs: object) -> None:
+            raise ApprovalQueueStorageError("legacy private metadata")
+
+    monkeypatch.setattr(routes, "approval_queue", IncompatibleApprovalQueue())
+    response = client.post(
+        "/approvals/decide",
+        json={"approval_id": "apr_legacy", "decision": "approve"},
+        headers=_oidc_headers(
+            ["approval_reviewer"],
+            trace_id="tr_oidc_legacy_reapproval",
+        ),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == (
+        "Approval is incompatible with the current trust configuration; "
+        "request approval again."
+    )
+    assert "legacy private metadata" not in response.text
 
 
 def _configure_oidc_route_test(

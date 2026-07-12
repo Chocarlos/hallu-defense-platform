@@ -85,6 +85,33 @@ def test_approval_queue_config_requires_logical_commitment_secret_name() -> None
         )
 
 
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID=",
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_SECRET_NAME=",
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_KEY_ID=",
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_PREVIOUS_VALID_UNTIL=",
+    ],
+)
+def test_approval_queue_config_requires_v3_rotation_environment_surface(
+    variable: str,
+) -> None:
+    config = list(load_current_config())
+    config[0] = config[0].replace(variable, "")
+
+    with pytest.raises(ApprovalQueueConfigError, match=variable.split("=")[0]):
+        validate_approval_queue_config(
+            env_example_text=config[0],
+            approval_doc_text=config[1],
+            approval_service_text=config[2],
+            api_dependencies_text=config[3],
+            makefile_text=config[4],
+            ci_workflow_text=config[5],
+            security_workflow_text=config[6],
+        )
+
+
 def test_approval_queue_config_requires_production_postgres_rejection() -> None:
     config = list(load_current_config())
     config[2] = config[2].replace(

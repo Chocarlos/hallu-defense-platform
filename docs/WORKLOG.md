@@ -7115,3 +7115,51 @@ Remaining risks:
   production configuration.
 - Live PostgreSQL/Vault restart and rotation evidence remains an opt-in
   deployment gate; no persistent external data was touched by this slice.
+
+## 2026-07-12 - Root reconciliation: approval authorization v3 and bounded rotation
+
+Slice selected:
+
+- Reconciled Front B's trusted-tool/issuer capability model with Front F's
+  environment and key-rotation requirements without importing Front F's
+  incompatible whole-envelope v2 format.
+
+Implementation:
+
+- Introduced a domain-separated private v3 binding over approval ID, origin
+  trace, tenant, authenticated subject, normalized environment, trusted tool
+  and policy action, canonical argument hash, definition version/digest,
+  algorithm, and an opaque operator-selected key ID.
+- Replaced the provisional commitment storage key with
+  `_hallu_approval_commitment_v3`; v1/v2 and provisional binding-v3 plus
+  commitment-v1 records fail closed and require documented archival/reapproval.
+- Added active/previous Vault key resolution with distinct opaque IDs, a single
+  timezone-aware overlap no longer than seven days, previous-key expiry, and a
+  guard preventing a new execution grant from outliving the overlap. Key IDs
+  are not derived from secret material.
+- Preserved trusted registry re-resolution, transactional decide/grant,
+  atomic consume-once, and issuer-bound single-use capabilities. ToolSafety now
+  also binds a consumed capability to its runtime environment, and the decision
+  route maps incompatible records to a sanitized 409 reapproval response.
+- Wired the active ID and optional all-or-none rotation triplet through settings,
+  `.env.example`, production Compose, Helm values/schema/templates, the API
+  factory, and the scratch PostgreSQL persistence smoke. Helm rejects partial
+  rotation values at render time.
+
+Validation:
+
+- Approval/ToolSafety/config/OIDC/PostgreSQL-smoke focused suite: `133 passed`
+  with one existing FastAPI TestClient deprecation warning.
+- Production profile and Helm configuration suites: `286 passed`; production
+  Compose config, custom Helm static gate, `helm lint`, and `helm template`
+  passed.
+- Ruff passed over all changed Python sources/tests/checkers; standard
+  `mypy apps/api/src` passed with 59 source files.
+
+Remaining risks:
+
+- A real multi-worker PostgreSQL deployment with Vault rotation/restart still
+  requires the opt-in live lane; no persistent service or user data was touched.
+- Operators must archive incompatible private approval metadata and require
+  reapproval before deploying v3; the runtime intentionally does not reinterpret
+  redacted legacy snapshots as authority.
