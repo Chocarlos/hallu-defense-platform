@@ -20,10 +20,17 @@ SANDBOX_WORKSPACE_PATH = ROOT / "infra" / "docker" / "sandbox_workspace.py"
 MAKEFILE_PATH = ROOT / "Makefile"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
+CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 LIVE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "live.yml"
 SANDBOX_ADR_PATH = ROOT / "docs" / "adr" / "0005-sandbox-model.md"
 CONTAINER_SCANNING_DOC_PATH = ROOT / "docs" / "security" / "container-scanning.md"
 PLAYWRIGHT_CONFIG_PATH = ROOT / "apps" / "console" / "playwright.config.ts"
+PLAYWRIGHT_WEBSERVER_PATH = (
+    ROOT / "apps" / "console" / "scripts" / "run-e2e-api-webserver.ts"
+)
+PLAYWRIGHT_TEARDOWN_PATH = ROOT / "apps" / "console" / "e2e" / "global-teardown.ts"
+PLAYWRIGHT_LIFECYCLE_PATH = ROOT / "apps" / "console" / "lib" / "e2e-api-lifecycle.ts"
+PLAYWRIGHT_SANDBOX_HELPER_PATH = ROOT / "apps" / "console" / "lib" / "e2e-sandbox.ts"
 
 REQUIRED_ENV_KEYS = (
     "HALLU_DEFENSE_SANDBOX_BACKEND",
@@ -89,8 +96,13 @@ def validate_sandbox_isolation_config(
     makefile_text: str,
     env_example_text: str,
     security_workflow_text: str,
+    ci_workflow_text: str,
     live_workflow_text: str,
     playwright_config_text: str,
+    playwright_webserver_text: str,
+    playwright_teardown_text: str,
+    playwright_lifecycle_text: str,
+    playwright_sandbox_helper_text: str,
     sandbox_adr_text: str,
     container_scanning_doc_text: str,
 ) -> None:
@@ -111,8 +123,13 @@ def validate_sandbox_isolation_config(
     _validate_wiring(
         makefile_text=makefile_text,
         security_workflow_text=security_workflow_text,
+        ci_workflow_text=ci_workflow_text,
         live_workflow_text=live_workflow_text,
         playwright_config_text=playwright_config_text,
+        playwright_webserver_text=playwright_webserver_text,
+        playwright_teardown_text=playwright_teardown_text,
+        playwright_lifecycle_text=playwright_lifecycle_text,
+        playwright_sandbox_helper_text=playwright_sandbox_helper_text,
         errors=errors,
     )
     _validate_docs(
@@ -344,8 +361,13 @@ def _validate_wiring(
     *,
     makefile_text: str,
     security_workflow_text: str,
+    ci_workflow_text: str,
     live_workflow_text: str,
     playwright_config_text: str,
+    playwright_webserver_text: str,
+    playwright_teardown_text: str,
+    playwright_lifecycle_text: str,
+    playwright_sandbox_helper_text: str,
     errors: list[str],
 ) -> None:
     phony_line = next((line for line in makefile_text.splitlines() if line.startswith(".PHONY:")), "")
@@ -377,15 +399,83 @@ def _validate_wiring(
     if "HALLU_DEFENSE_LIVE_DOCKER_SANDBOX_SMOKE_ENABLED: \"true\"" not in live_workflow_text:
         errors.append("sandbox-live job must enable the Docker sandbox smoke explicitly")
     for marker in (
-        'docker build -f "infra/docker/sandbox.Dockerfile" -t hallu-defense-sandbox:ci .',
+        "node --import tsx apps/console/scripts/run-e2e-api-webserver.ts",
         'HALLU_DEFENSE_SANDBOX_BACKEND: "docker"',
-        'HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: "hallu-defense-sandbox:ci"',
+        'HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: sandboxImageTag',
+        "resolveSandboxImageTag(repoRoot, sandboxRunId)",
+        "resolvePythonExecutable(",
+        "PYTHONPATH: apiSourceRoot",
+        "globalTeardown:",
     ):
         if marker not in playwright_config_text:
             errors.append(
-                "Playwright sandbox E2E must build and select the exact current "
-                f"sandbox image; missing {marker}"
+                "Playwright sandbox/python E2E wiring must build and select this "
+                f"worktree's own scratch resources; missing {marker}"
             )
+    if "globalSetup:" in playwright_config_text:
+        errors.append(
+            "Playwright config must not use globalSetup for scratch cleanup because "
+            "webServer starts first"
+        )
+    if "hallu-defense-sandbox:ci" in playwright_config_text:
+        errors.append(
+            "Playwright config must not hardcode the shared hallu-defense-sandbox:ci "
+            "tag; it must build a per-worktree/per-run scratch tag instead"
+        )
+    for marker in (
+        "pythonSourcePreflightArgs(",
+        '"infra/docker/sandbox.Dockerfile"',
+        "SANDBOX_BUILD_TIMEOUT_MS",
+        "cleanupScratch(sandboxImageTag, stateDir, repoRoot)",
+        "runE2eApiLifecycle({",
+    ):
+        if marker not in playwright_webserver_text:
+            errors.append(
+                "Playwright API wrapper must preflight imports and clean scratch "
+                f"resources on every exit path; missing {marker}"
+            )
+    for marker in ("dependencies.preflight();", "finally {", "dependencies.finalCleanup();"):
+        if marker not in playwright_lifecycle_text:
+            errors.append(
+                "Playwright API lifecycle must keep preflight before scratch actions "
+                f"and guarantee final cleanup; missing {marker}"
+            )
+    for marker in ("DOCKER_CLEANUP_TIMEOUT_MS = 5_000", "timeout: DOCKER_CLEANUP_TIMEOUT_MS"):
+        if marker not in playwright_sandbox_helper_text:
+            errors.append(f"Playwright Docker cleanup must be time-bounded; missing {marker}")
+    for marker in ("removeSandboxImageIfPresent", "removeE2eStateDir"):
+        if marker not in playwright_teardown_text:
+            errors.append(
+                "Playwright final teardown must remove only validated scratch resources; "
+                f"missing {marker}"
+            )
+    for marker in (
+        "E2E_PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}",
+        "E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}",
+        "npm --workspace @hallu-defense/console run test:e2e-static",
+    ):
+        if marker not in ci_workflow_text:
+            errors.append(f"CI Console e2e wiring is missing {marker}")
+    build_timeout = _typescript_integer_constant(
+        playwright_webserver_text, "SANDBOX_BUILD_TIMEOUT_MS"
+    )
+    webserver_timeout = _typescript_integer_constant(
+        playwright_config_text, "API_WEB_SERVER_TIMEOUT_MS"
+    )
+    if (
+        build_timeout is None
+        or webserver_timeout is None
+        or build_timeout + 30_000 >= webserver_timeout
+    ):
+        errors.append(
+            "Playwright sandbox build timeout must leave at least 30 seconds for "
+            "wrapper final cleanup before the outer webServer timeout"
+        )
+
+
+def _typescript_integer_constant(text: str, name: str) -> int | None:
+    match = re.search(rf"const {re.escape(name)} = ([0-9_]+);", text)
+    return None if match is None else int(match.group(1).replace("_", ""))
 
 
 def _validate_docs(
@@ -427,8 +517,15 @@ def load_current_config() -> Mapping[str, str]:
         "makefile_text": MAKEFILE_PATH.read_text(encoding="utf-8"),
         "env_example_text": ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
         "security_workflow_text": SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        "ci_workflow_text": CI_WORKFLOW_PATH.read_text(encoding="utf-8"),
         "live_workflow_text": LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
         "playwright_config_text": PLAYWRIGHT_CONFIG_PATH.read_text(encoding="utf-8"),
+        "playwright_webserver_text": PLAYWRIGHT_WEBSERVER_PATH.read_text(encoding="utf-8"),
+        "playwright_teardown_text": PLAYWRIGHT_TEARDOWN_PATH.read_text(encoding="utf-8"),
+        "playwright_lifecycle_text": PLAYWRIGHT_LIFECYCLE_PATH.read_text(encoding="utf-8"),
+        "playwright_sandbox_helper_text": PLAYWRIGHT_SANDBOX_HELPER_PATH.read_text(
+            encoding="utf-8"
+        ),
         "sandbox_adr_text": SANDBOX_ADR_PATH.read_text(encoding="utf-8"),
         "container_scanning_doc_text": CONTAINER_SCANNING_DOC_PATH.read_text(encoding="utf-8"),
     }

@@ -6765,12 +6765,12 @@ Validation:
   cookie, old stolen-session revocation, replacement creation, state replay,
   callback/login failure, 2,048 stale sibling transactions, capacity, BFF
   request/response bounds, and synchronous request-coordinator errors.
-- A scratch production Next server plus headless Playwright probe passed opaque
-  Strict `HttpOnly` session creation, credential-free session JSON,
-  Origin/CSRF/allowlist rejection, skip-link focus, fixture-free render, and
-  zero direct browser requests to the API origin. The exact listener was
-  stopped and port 3110 was verified clear. `npx playwright test --list`
-  enumerated 10 tests across 4 files without collection errors.
+- A deleted, ephemeral Playwright probe had been reported during development,
+  but it cannot be reproduced from the repository and is explicitly excluded
+  from validation evidence. The committed Playwright evidence for this front
+  is the committed `npm --workspace @hallu-defense/console run test:e2e:list`
+  command, which enumerated 10 tests across 4 files without collection errors;
+  no browser result is inferred from collection.
 - `node --check scripts/dev/live_console_oidc_smoke.mjs` passed and its default
   invocation skipped safely because opt-in was disabled. This is not enabled
   live-smoke evidence.
@@ -6795,7 +6795,8 @@ Remaining risks:
   inspection and `docker compose -p hallu-console-e-20260711 down -v
   --remove-orphans` both timed out against the daemon. Root integration must
   recheck that exact label/project and run the enabled live lane on a healthy
-  daemon; no new Docker run was started during this correction. The three
+  daemon; no new Docker run was started while producing the preserved first
+  commit. The three
   hung `docker.exe` clients whose command lines contained that exact Front E
   project name were terminated and a process-level recheck found none left;
   container/volume absence could not be queried from the unresponsive daemon.
@@ -6810,3 +6811,51 @@ Remaining risks:
 - The Docker-backed full Playwright suite, enabled Keycloak browser smoke, and
   remote workflow execution remain integration evidence. No requirement row is
   marked `accepted`, and this entry does not claim global closure.
+
+### 2026-07-11 addendum - Front E audit corrections: deterministic e2e Python/sandbox hardening
+
+Slice selected:
+
+- Preserved commit `cb97b2261d25a58f6e1b63843d22ac402d9e3636` and corrected only its rejected Playwright evidence boundary: explicit Python provenance, exact-worktree imports, per-run sandbox tags, bounded final cleanup, and reproducible documentation.
+- No OIDC/CAS/session/BFF behavior was changed. No browser test, Keycloak,
+  Claude, merge, amend, reset, or push was run for this correction. One
+  malformed collection command did accidentally begin the isolated scratch
+  build described under Validation; it is invalid and supplies no live evidence.
+
+Implementation:
+
+- `playwright.config.ts` now requires an existing absolute `E2E_PYTHON_BIN`; there is no worktree-`.venv` or bare-`python` fallback. CI passes the absolute `actions/setup-python` `python-path` output and an explicit run ID.
+- The API webServer environment pins `PYTHONPATH` to this worktree's `apps/api/src`. Before any Docker command, the committed `check_e2e_python_source.py` preflight imports `hallu_defense` and rejects a missing, relative, or mismatched source root.
+- A committed Node/TypeScript wrapper validates the repo root, Python path, allowed state directory, and exact worktree/run image tag. It uses a 240-second build timeout inside Playwright's 300-second outer timeout and a tested `try/finally` lifecycle, so build/boot/signal failures still perform final cleanup.
+- The scratch image tag is a SHA-256 digest of the exact worktree path plus a validated run ID; the prior shared `hallu-defense-sandbox:ci` tag is absent from Playwright. Docker removal has a five-second timeout and catches unavailable/hung-daemon failures. State removal accepts only this worktree's exact `var/e2e` and rejects symlink/junction or non-directory components.
+- Playwright retains an idempotent `globalTeardown` backstop, while wrapper cleanup owns the partial-start and process-exit paths. The unsafe post-webServer `globalSetup` approach was removed.
+- The normal Console suite remains exactly 101 tests across 17 files. E2E runtime/cleanup tests are isolated in the committed `test:e2e-static` command: 35 tests across 3 files. Python preflight/config tests add 32 focused passing cases without changing API runtime code.
+- TRACEABILITY and this WORKLOG no longer use the deleted temporary browser probe as reproducible evidence. Current evidence is limited to committed unit/static commands, exact-source preflight, Playwright collection, lint/typecheck/build, and the production artifact checker.
+
+Validation:
+
+- `make console-check`: passed Console lint, Next typegen/typecheck, 101/101 normal unit tests, 35/35 separate e2e-static tests, contracts/SDK builds, optimized Next build, and the 181-artifact production checker.
+- `python -m pytest apps/api/tests/test_check_e2e_python_source.py apps/api/tests/test_sandbox_isolation_config.py -q`: 32 passed; `check_sandbox_isolation_config.py` passed.
+- With `PYTHONPATH` set to this worktree and the explicit shared-root-venv interpreter, `check_e2e_python_source.py` resolved `hallu_defense.__file__` under this exact `apps/api/src`.
+- With that same explicit interpreter and
+  `E2E_RUN_ID=front-e-list-cb97b22-verified`, the committed
+  `npm --workspace @hallu-defense/console run test:e2e:list` command collected
+  10 tests across 4 files. This command does not start webServers, a browser, or
+  Docker.
+- A prior `npm exec` invocation forwarded `--list` incorrectly and therefore
+  began the API webServer plus the exact Front E scratch-image build. It was
+  cancelled and is explicitly invalid: the exact tagged build client stopped,
+  wrapper `finally` issued bounded exact-tag removal, and a process/filesystem
+  recheck found no matching client, webServer, or `var/e2e` state. No browser or
+  live-test result is inferred; image absence was not queried through Docker.
+- Workflow YAML parsing, traceability/worklog gates, their 14 focused tests, static checker, independent read-only audit, and `git diff --check` passed before the corrective commit.
+
+Remaining risks:
+
+- Full Playwright execution against the real API and Docker sandbox, the enabled Keycloak browser smoke, and remote GitHub Actions remain live-pending. This correction deliberately provides no browser/live claim.
+- Docker cleanup behavior is unit/static-tested with injected fakes and bounded
+  process options. The invalid interrupted build also reached the bounded
+  exact-tag removal path, but this is not positive live evidence and tag absence
+  was not independently queried. If Docker is unavailable, cleanup returns
+  within its timeout but cannot prove a tag was removed.
+- Multi-replica OIDC transaction/session CAS remains the integration dependency documented by the preserved first commit. No requirement is marked `accepted`, and this addendum does not claim global closure.

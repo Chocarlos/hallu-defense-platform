@@ -191,8 +191,19 @@ key payload markers.
 ```text
 make console-check
 make console-build-check
+npm --workspace @hallu-defense/console run test:e2e-static
+npm --workspace @hallu-defense/console run test:e2e:list
 node scripts/dev/live_console_oidc_smoke.mjs
 ```
+
+Playwright configuration requires `E2E_PYTHON_BIN` to be an existing absolute
+interpreter path; it never falls back to a worktree `.venv` or a bare command.
+CI uses the absolute `actions/setup-python` output. Local runs may explicitly
+point at a trusted shared root venv. The API webServer sets `PYTHONPATH` to this
+worktree's `apps/api/src` and runs the committed import-source preflight before
+any Docker command. The committed `test:e2e:list` script collects the specs
+without starting webServers, a browser, or Docker; full `test:e2e` remains a
+Docker-backed live gate.
 
 The last command safely reports a skip unless
 `HALLU_DEFENSE_LIVE_CONSOLE_OIDC_SMOKE_ENABLED=true`. With the local Keycloak
