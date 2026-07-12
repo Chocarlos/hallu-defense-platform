@@ -69,6 +69,7 @@ def test_worklog_validator_accepts_committed_document() -> None:
         entry.title == "Front B - Trusted tools, bound approvals, policy, and redaction"
         for entry in entries
     )
+    assert any(entry.title == "Sandbox v3 adversarial hardening" for entry in entries)
 
 
 def test_worklog_validator_rejects_malformed_heading() -> None:

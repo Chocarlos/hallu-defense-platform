@@ -15,7 +15,9 @@ def test_sandbox_isolation_config_validates_current_artifacts() -> None:
 
 def test_sandbox_isolation_config_rejects_missing_network_none_flag() -> None:
     config = dict(load_current_config())
-    config["sandbox_exec_text"] = config["sandbox_exec_text"].replace('"--network=none"', '"--network=bridge"')
+    config["sandbox_exec_text"] = config["sandbox_exec_text"].replace(
+        '"--network=none"', '"--network=bridge"'
+    )
 
     with pytest.raises(SandboxIsolationConfigError, match="--network=none"):
         validate_sandbox_isolation_config(**config)
@@ -86,11 +88,124 @@ def test_sandbox_isolation_config_requires_post_snapshot_binding() -> None:
 
 def test_sandbox_isolation_config_requires_git_config_guard() -> None:
     config = dict(load_current_config())
-    config["sandbox_git_inspector_text"] = config[
-        "sandbox_git_inspector_text"
-    ].replace("_repository_config_guard", "removed_repository_guard")
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        "_repository_config_guard", "removed_repository_guard"
+    )
 
     with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_canonical_git_diff() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        '"--src-prefix=a/"', '"--src-prefix=source/"'
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_hidden_index_guard() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        'b"FSMN"', 'b"disabled"'
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_private_git_index() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        "_prepare_private_index", "removed_private_index"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_pre_git_repository_guard() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        "_repository_pre_git_guard", "removed_pre_git_guard"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_static_git_config_inventory() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        "_repository_static_config_guard", "removed_static_config_guard"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_head_tree_preflight() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        "_head_tree_guard", "removed_tree_preflight"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_stat_zero_private_index() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        '"--index-info"', '"--disabled-index-info"'
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_suspended_windows_job_assignment() -> None:
+    config = dict(load_current_config())
+    config["sandbox_exec_text"] = config["sandbox_exec_text"].replace(
+        "_WINDOWS_CREATE_SUSPENDED",
+        "WINDOWS_PROCESS_RACE_ALLOWED",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="bounded execution"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_fail_closed_pipe_capture() -> None:
+    config = dict(load_current_config())
+    config["sandbox_exec_text"] = config["sandbox_exec_text"].replace(
+        "_drain_bounded_pipe_safely",
+        "unsafe_pipe_drain",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="bounded execution"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_ident_attribute_guard() -> None:
+    config = dict(load_current_config())
+    config["sandbox_git_inspector_text"] = config["sandbox_git_inspector_text"].replace(
+        '    "ident",', '    "disabled-ident",'
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="configuration guard"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_hidden_index_docs() -> None:
+    config = dict(load_current_config())
+    config["sandbox_adr_text"] = config["sandbox_adr_text"].replace(
+        "assume-unchanged",
+        "hidden-index-flag",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="sandbox ADR"):
         validate_sandbox_isolation_config(**config)
 
 
@@ -102,6 +217,16 @@ def test_sandbox_isolation_config_requires_streaming_workspace_hash() -> None:
     )
 
     with pytest.raises(SandboxIsolationConfigError, match="streaming fingerprint"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_descendant_cleanup() -> None:
+    config = dict(load_current_config())
+    config["sandbox_batch_runner_text"] = config["sandbox_batch_runner_text"].replace(
+        "_ensure_child_subreaper", "removed_child_subreaper"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="batch runner"):
         validate_sandbox_isolation_config(**config)
 
 
@@ -135,6 +260,38 @@ def test_sandbox_isolation_config_requires_ephemeral_kubernetes_workspace() -> N
     )
 
     with pytest.raises(SandboxIsolationConfigError, match="/hallu-source"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_uid_conditioned_cleanup() -> None:
+    config = dict(load_current_config())
+    config["sandbox_kubernetes_text"] = config["sandbox_kubernetes_text"].replace(
+        '"preconditions": {"uid": job_uid}',
+        '"preconditions": {}',
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="ephemeral workspace"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_kubernetes_cleanup_grace() -> None:
+    config = dict(load_current_config())
+    config["sandbox_kubernetes_text"] = config["sandbox_kubernetes_text"].replace(
+        "settings.sandbox_kubernetes_cleanup_grace_seconds",
+        "settings.sandbox_docker_timeout_grace_seconds",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="cleanup|ephemeral"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_uid_cleanup_docs() -> None:
+    config = dict(load_current_config())
+    config["kubernetes_sandbox_doc_text"] = config["kubernetes_sandbox_doc_text"].replace(
+        "preconditions.uid", "preconditions.name"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="Kubernetes sandbox docs"):
         validate_sandbox_isolation_config(**config)
 
 

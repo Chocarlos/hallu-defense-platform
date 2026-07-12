@@ -5,17 +5,31 @@ from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SANDBOX_EXEC_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "sandbox_exec.py"
-SANDBOX_SERVICE_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "sandbox.py"
+SANDBOX_EXEC_PATH = (
+    ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "sandbox_exec.py"
+)
+SANDBOX_SERVICE_PATH = (
+    ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "sandbox.py"
+)
 CONFIG_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "config.py"
-API_DEPENDENCIES_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "api" / "dependencies.py"
+API_DEPENDENCIES_PATH = (
+    ROOT / "apps" / "api" / "src" / "hallu_defense" / "api" / "dependencies.py"
+)
 DOCKERFILE_PATH = ROOT / "infra" / "docker" / "sandbox.Dockerfile"
 KUBERNETES_BACKEND_PATH = (
-    ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "sandbox_kubernetes.py"
+    ROOT
+    / "apps"
+    / "api"
+    / "src"
+    / "hallu_defense"
+    / "services"
+    / "sandbox_kubernetes.py"
 )
 SANDBOX_RUNNER_PATH = ROOT / "infra" / "docker" / "sandbox_runner.py"
 SANDBOX_BATCH_RUNNER_PATH = ROOT / "infra" / "docker" / "sandbox_batch_runner.py"
-SANDBOX_GIT_INSPECTOR_SOURCE_PATH = ROOT / "infra" / "docker" / "sandbox_git_inspector.py"
+SANDBOX_GIT_INSPECTOR_SOURCE_PATH = (
+    ROOT / "infra" / "docker" / "sandbox_git_inspector.py"
+)
 SANDBOX_WORKSPACE_PATH = ROOT / "infra" / "docker" / "sandbox_workspace.py"
 MAKEFILE_PATH = ROOT / "Makefile"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
@@ -23,6 +37,9 @@ SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 LIVE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "live.yml"
 SANDBOX_ADR_PATH = ROOT / "docs" / "adr" / "0005-sandbox-model.md"
+KUBERNETES_SANDBOX_DOC_PATH = (
+    ROOT / "docs" / "deployment" / "kubernetes-sandbox-jobs.md"
+)
 CONTAINER_SCANNING_DOC_PATH = ROOT / "docs" / "security" / "container-scanning.md"
 PLAYWRIGHT_CONFIG_PATH = ROOT / "apps" / "console" / "playwright.config.ts"
 PLAYWRIGHT_WEBSERVER_PATH = (
@@ -49,13 +66,14 @@ REQUIRED_ENV_KEYS = (
     "HALLU_DEFENSE_SANDBOX_KUBERNETES_JOB_TTL_SECONDS",
     "HALLU_DEFENSE_SANDBOX_KUBERNETES_API_REQUEST_TIMEOUT_SECONDS",
     "HALLU_DEFENSE_SANDBOX_KUBERNETES_SETUP_GRACE_SECONDS",
+    "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS",
 )
 REQUIRED_DOCKER_ARG_SNIPPETS = (
     '"--rm"',
     '"--network=none"',
     '"--read-only"',
     '"--tmpfs"',
-    '"/tmp"',
+    '"/tmp:rw,nosuid,nodev,size=64m,mode=1777"',
     '"--cap-drop"',
     '"ALL"',
     '"--security-opt"',
@@ -104,6 +122,7 @@ def validate_sandbox_isolation_config(
     playwright_lifecycle_text: str,
     playwright_sandbox_helper_text: str,
     sandbox_adr_text: str,
+    kubernetes_sandbox_doc_text: str,
     container_scanning_doc_text: str,
 ) -> None:
     errors: list[str] = []
@@ -134,6 +153,7 @@ def validate_sandbox_isolation_config(
     )
     _validate_docs(
         sandbox_adr_text=sandbox_adr_text,
+        kubernetes_sandbox_doc_text=kubernetes_sandbox_doc_text,
         container_scanning_doc_text=container_scanning_doc_text,
         errors=errors,
     )
@@ -141,7 +161,9 @@ def validate_sandbox_isolation_config(
         raise SandboxIsolationConfigError("\n".join(errors))
 
 
-def _validate_settings(config_text: str, env_example_text: str, errors: list[str]) -> None:
+def _validate_settings(
+    config_text: str, env_example_text: str, errors: list[str]
+) -> None:
     for key in REQUIRED_ENV_KEYS:
         if key not in config_text:
             errors.append(f"config.py must define/read {key}")
@@ -149,8 +171,7 @@ def _validate_settings(config_text: str, env_example_text: str, errors: list[str
             errors.append(f".env.example must document {key}")
     if any(backend not in config_text for backend in ('"docker"', '"kubernetes"')):
         errors.append(
-            "config.py must restrict HALLU_DEFENSE_SANDBOX_BACKEND to "
-            "docker|kubernetes"
+            "config.py must restrict HALLU_DEFENSE_SANDBOX_BACKEND to docker|kubernetes"
         )
     if 'backend not in {"docker", "kubernetes"}' not in config_text:
         errors.append("config.py must reject the unisolated host sandbox backend")
@@ -158,7 +179,8 @@ def _validate_settings(config_text: str, env_example_text: str, errors: list[str
         errors.append("config.py must default local sandbox execution to Docker")
     if (
         "Production and staging require" not in config_text
-        or "HALLU_DEFENSE_SANDBOX_BACKEND=kubernetes for tenant-bound isolation." not in config_text
+        or "HALLU_DEFENSE_SANDBOX_BACKEND=kubernetes for tenant-bound isolation."
+        not in config_text
     ):
         errors.append(
             "config.py must allow only the tenant-bound Kubernetes sandbox in production/staging"
@@ -169,7 +191,17 @@ def _validate_settings(config_text: str, env_example_text: str, errors: list[str
         '"256"',
     ):
         if required_default not in config_text:
-            errors.append(f"config.py must keep Docker sandbox default {required_default}")
+            errors.append(
+                f"config.py must keep Docker sandbox default {required_default}"
+            )
+    for marker in (
+        "sandbox_kubernetes_cleanup_grace_seconds: float = 20.0",
+        "15 <= settings.sandbox_kubernetes_cleanup_grace_seconds <= 30",
+    ):
+        if marker not in config_text:
+            errors.append(
+                "config.py must keep a Kubernetes-specific 15-30 second cleanup grace"
+            )
 
 
 def _validate_backend_code(
@@ -193,17 +225,47 @@ def _validate_backend_code(
     ):
         if symbol not in sandbox_exec_text:
             errors.append(f"sandbox_exec.py must define {symbol}")
-    if "HostSubprocessBackend" in sandbox_exec_text or "SANDBOX_BACKEND_HOST" in sandbox_exec_text:
-        errors.append("sandbox_exec.py must not expose an unisolated host subprocess backend")
+    if (
+        "HostSubprocessBackend" in sandbox_exec_text
+        or "SANDBOX_BACKEND_HOST" in sandbox_exec_text
+    ):
+        errors.append(
+            "sandbox_exec.py must not expose an unisolated host subprocess backend"
+        )
     for snippet in REQUIRED_DOCKER_ARG_SNIPPETS:
         if snippet not in sandbox_exec_text:
-            errors.append(f"Docker sandbox argv must include pinned flag/snippet {snippet}")
+            errors.append(
+                f"Docker sandbox argv must include pinned flag/snippet {snippet}"
+            )
     if "shell=True" in sandbox_exec_text:
         errors.append("Docker sandbox execution must not use shell=True")
-    if "docker kill" not in sandbox_exec_text or "[self._docker_path, \"kill\", container_id]" not in sandbox_exec_text:
-        errors.append("Docker sandbox timeout path must kill the container by argv list")
+    if (
+        "docker kill" not in sandbox_exec_text
+        or '[self._docker_path, "kill", container_id]' not in sandbox_exec_text
+    ):
+        errors.append(
+            "Docker sandbox timeout path must kill the container by argv list"
+        )
     if "_CONTAINER_ENV_ALLOWLIST" not in sandbox_exec_text:
         errors.append("Docker sandbox must use a minimal container env allowlist")
+    for marker in (
+        "MAX_SANDBOX_OUTPUT_CHARS",
+        "MAX_SANDBOX_WORKSPACE_PATHS",
+        "MAX_SANDBOX_PATH_BYTES",
+        "MAX_SANDBOX_TOTAL_PATH_BYTES",
+        "MAX_DOCKER_CLI_OUTPUT_BYTES",
+        "_drain_bounded_pipe",
+        "_drain_bounded_pipe_safely",
+        "_cleanup_docker_process_capture",
+        "_join_pipe_threads_until",
+        "_WINDOWS_CREATE_SUSPENDED",
+        "_create_windows_kill_job",
+        "_assign_process_to_windows_job",
+        "_resume_windows_process",
+        "_terminate_owned_process_tree",
+    ):
+        if marker not in sandbox_exec_text:
+            errors.append(f"Docker sandbox bounded execution is missing {marker}")
     for marker in (
         "SANDBOX_GIT_INSPECTOR_PATH",
         "target={DOCKER_SOURCE_DIR},readonly",
@@ -232,20 +294,30 @@ def _validate_backend_code(
         "SANDBOX_GIT_INSPECTION_SCHEMA",
     ):
         if marker not in sandbox_service_text:
-            errors.append(f"SandboxRunner must use the isolated Git inspector; missing {marker}")
-    if "DESTRUCTIVE_PATTERNS" not in sandbox_service_text or "NETWORK_PATTERNS" not in sandbox_service_text:
-        errors.append("SandboxRunner must retain destructive/network preflight regex policy")
+            errors.append(
+                f"SandboxRunner must use the isolated Git inspector; missing {marker}"
+            )
+    if (
+        "DESTRUCTIVE_PATTERNS" not in sandbox_service_text
+        or "NETWORK_PATTERNS" not in sandbox_service_text
+    ):
+        errors.append(
+            "SandboxRunner must retain destructive/network preflight regex policy"
+        )
     for marker in (
         "_ephemeral_working_copy",
         "_workspace_fingerprint",
         "source workspace changed during the isolated sandbox run",
+        "source workspace changed during sandbox command policy inspection",
         "allowlisted network policy requires an exact destination allowlist",
         'INSPECTION_EVIDENCE_SOURCE = "sandbox://inspection"',
     ):
         if marker not in sandbox_service_text:
             errors.append(f"SandboxRunner ephemeral isolation is missing {marker}")
     if "_write_inspection_report" in sandbox_service_text:
-        errors.append("SandboxRunner must keep inspection evidence out of the source tree")
+        errors.append(
+            "SandboxRunner must keep inspection evidence out of the source tree"
+        )
     for marker in (
         'SOURCE_MOUNT_PATH = "/hallu-source"',
         '"readOnly": True',
@@ -253,14 +325,35 @@ def _validate_backend_code(
         '"emptyDir"',
         "def execute_batch(",
         "SANDBOX_BATCH_RUNNER_PATH",
+        '"propagationPolicy": "Foreground"',
+        '"preconditions": {"uid": job_uid}',
+        "_wait_for_job_deletion",
+        "_job_owned_pods_remain",
+        "_reconcile_ambiguous_job_creation",
+        "except SandboxExecutionError as exc",
+        "self._cleanup_grace_seconds",
+        "settings.sandbox_kubernetes_cleanup_grace_seconds",
     ):
         if marker not in sandbox_kubernetes_text:
-            errors.append(f"Kubernetes ephemeral workspace isolation is missing {marker}")
+            errors.append(
+                f"Kubernetes ephemeral workspace isolation is missing {marker}"
+            )
+    if (
+        "cleanup_grace_seconds=settings.sandbox_docker_timeout_grace_seconds"
+        in sandbox_kubernetes_text
+    ):
+        errors.append(
+            "Kubernetes foreground cleanup must not use the Docker timeout grace"
+        )
     for marker in (
         "validate_workspace_tree",
         "workspace links are forbidden",
         "workspace special files are forbidden",
         "copy_workspace_tree",
+        "MAX_WORKSPACE_PATHS",
+        "MAX_TOTAL_PATH_BYTES",
+        "_copy_regular_file_no_follow",
+        "_directory_entries_no_follow",
     ):
         if marker not in sandbox_runner_text:
             errors.append(f"sandbox runner bounded copy is missing {marker}")
@@ -272,6 +365,11 @@ def _validate_backend_code(
         "artifact_snapshot",
         "regular_file_sha256",
         "process.wait(timeout=timeout)",
+        "_drain_bounded_pipe",
+        "_drain_bounded_pipe_safely",
+        "_ensure_child_subreaper",
+        "_terminate_descendant_processes",
+        "_directory_entries_no_follow",
     ):
         if marker not in sandbox_batch_runner_text:
             errors.append(f"sandbox batch runner is missing {marker}")
@@ -291,23 +389,71 @@ def _validate_backend_code(
         '"includeif."',
         '".textconv"',
         '"core.filemode=false"',
+        '"core.ignoreCase=false"',
         '"--ignore-submodules=all"',
         '"GIT_NO_REPLACE_OBJECTS": "1"',
+        "_repository_index_guard",
+        'b"FSMN"',
+        "_repository_attributes_guard",
+        "_repository_attributes_batch_guard",
+        "_prepare_private_index",
+        "_repository_pre_git_guard",
+        "_repository_static_config_guard",
+        "_head_tree_guard",
+        "_repository_structure_guard",
+        "_git_index_guard",
+        '"--index-info"',
+        "unmerged stages",
+        '"GIT_INDEX_FILE"',
+        '"ident"',
+        '"crlf"',
+        "core.excludesfile",
+        "core.attributesfile",
+        "http-alternates",
+        "info/exclude patterns are forbidden",
+        '"--no-color"',
+        '"--src-prefix=a/"',
+        '"--dst-prefix=b/"',
+        '"--text"',
+        '"--full-index"',
+        "git_control_fingerprint_before",
+        "workspace_fingerprint_before",
+        "_drain_bounded_pipe",
+        "_drain_bounded_pipe_safely",
+        "_cleanup_git_process_capture",
+        "_write_git_stdin_safely",
+        "_WINDOWS_CREATE_SUSPENDED",
+        "_resume_windows_process",
     ):
         if marker not in sandbox_git_inspector_text:
             errors.append(f"sandbox Git configuration guard is missing {marker}")
     for marker in (
         "_update_digest_from_unchanged_regular_file",
         "regular_file_sha256",
+        "MAX_WORKSPACE_PATHS",
+        "MAX_PATH_BYTES",
+        "MAX_TOTAL_PATH_BYTES",
+        "_open_directory_no_follow",
+        "_same_descriptor_snapshot",
+        "stat.S_IMODE",
     ):
         if marker not in sandbox_workspace_text:
             errors.append(f"sandbox bounded streaming fingerprint is missing {marker}")
-    if "sandbox_execution_backend = build_sandbox_execution_backend(settings)" not in api_dependencies_text:
-        errors.append("API dependencies must create the configured sandbox execution backend")
+    if (
+        "sandbox_execution_backend = build_sandbox_execution_backend(settings)"
+        not in api_dependencies_text
+    ):
+        errors.append(
+            "API dependencies must create the configured sandbox execution backend"
+        )
 
 
 def _validate_dockerfile(dockerfile_text: str, errors: list[str]) -> None:
-    from_lines = [line.strip() for line in dockerfile_text.splitlines() if line.strip().startswith("FROM ")]
+    from_lines = [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if line.strip().startswith("FROM ")
+    ]
     if len(from_lines) < 2:
         errors.append("sandbox.Dockerfile must use pinned Python and Node stages")
     for line in from_lines:
@@ -322,9 +468,13 @@ def _validate_dockerfile(dockerfile_text: str, errors: list[str]) -> None:
         "a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd"
     )
     if sum(python_base in line for line in from_lines) != 2:
-        errors.append("sandbox.Dockerfile must use the exact pinned Python 3.12.13 Alpine base twice")
+        errors.append(
+            "sandbox.Dockerfile must use the exact pinned Python 3.12.13 Alpine base twice"
+        )
     if not any(node_base in line for line in from_lines):
-        errors.append("sandbox.Dockerfile must use the exact pinned Node 24 Alpine base")
+        errors.append(
+            "sandbox.Dockerfile must use the exact pinned Node 24 Alpine base"
+        )
     if re.search(r"(?im)^ADD\s+https?://", dockerfile_text):
         errors.append("sandbox.Dockerfile must not ADD remote URLs")
     for marker in (
@@ -370,14 +520,19 @@ def _validate_wiring(
     playwright_sandbox_helper_text: str,
     errors: list[str],
 ) -> None:
-    phony_line = next((line for line in makefile_text.splitlines() if line.startswith(".PHONY:")), "")
+    phony_line = next(
+        (line for line in makefile_text.splitlines() if line.startswith(".PHONY:")), ""
+    )
     for target in REQUIRED_MAKE_TARGETS:
         target_name = target.rstrip(":")
         if target not in makefile_text:
             errors.append(f"Makefile must expose {target_name}")
         if target_name not in phony_line:
             errors.append(f".PHONY must include {target_name}")
-    if "docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci ." not in makefile_text:
+    if (
+        "docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci ."
+        not in makefile_text
+    ):
         errors.append("Makefile sandbox-image must build hallu-defense-sandbox:ci")
     if "scripts/ci/check_sandbox_isolation_config.py" not in makefile_text:
         errors.append("Makefile must wire sandbox-isolation-config")
@@ -386,9 +541,15 @@ def _validate_wiring(
     security_section = makefile_text.partition("security-check:")[2]
     if "scripts/ci/check_sandbox_isolation_config.py" not in security_section:
         errors.append("security-check must include check_sandbox_isolation_config.py")
-    if "python scripts/ci/check_sandbox_isolation_config.py" not in security_workflow_text:
+    if (
+        "python scripts/ci/check_sandbox_isolation_config.py"
+        not in security_workflow_text
+    ):
         errors.append("security workflow must run check_sandbox_isolation_config.py")
-    if "docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci ." not in security_workflow_text:
+    if (
+        "docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci ."
+        not in security_workflow_text
+    ):
         errors.append("security workflow must build hallu-defense-sandbox:ci")
     if "image-ref: hallu-defense-sandbox:ci" not in security_workflow_text:
         errors.append("security workflow must scan hallu-defense-sandbox:ci")
@@ -396,8 +557,13 @@ def _validate_wiring(
         errors.append("live workflow must include sandbox-live job")
     if "needs: [postgres-live, keycloak-live]" not in live_workflow_text:
         errors.append("sandbox-live job must run after Batch 2 live jobs")
-    if "HALLU_DEFENSE_LIVE_DOCKER_SANDBOX_SMOKE_ENABLED: \"true\"" not in live_workflow_text:
-        errors.append("sandbox-live job must enable the Docker sandbox smoke explicitly")
+    if (
+        'HALLU_DEFENSE_LIVE_DOCKER_SANDBOX_SMOKE_ENABLED: "true"'
+        not in live_workflow_text
+    ):
+        errors.append(
+            "sandbox-live job must enable the Docker sandbox smoke explicitly"
+        )
     for marker in (
         "node --import tsx apps/console/scripts/run-e2e-api-webserver.ts",
         'HALLU_DEFENSE_SANDBOX_BACKEND: "docker"',
@@ -481,6 +647,7 @@ def _typescript_integer_constant(text: str, name: str) -> int | None:
 def _validate_docs(
     *,
     sandbox_adr_text: str,
+    kubernetes_sandbox_doc_text: str,
     container_scanning_doc_text: str,
     errors: list[str],
 ) -> None:
@@ -489,9 +656,22 @@ def _validate_docs(
         "--network=none",
         "--read-only",
         "Production and staging",
+        "assume-unchanged",
+        "skip-worktree",
+        "canonical",
+        "zero-byte",
     ):
         if marker not in sandbox_adr_text:
             errors.append(f"sandbox ADR must document {marker}")
+    for marker in (
+        "preconditions.uid",
+        "Foreground",
+        "404",
+        "Pods",
+        "tenant",
+    ):
+        if marker not in kubernetes_sandbox_doc_text:
+            errors.append(f"Kubernetes sandbox docs must document {marker}")
     for marker in (
         "hallu-defense-sandbox:ci",
         "infra/docker/sandbox.Dockerfile",
@@ -506,7 +686,9 @@ def load_current_config() -> Mapping[str, str]:
         "sandbox_service_text": SANDBOX_SERVICE_PATH.read_text(encoding="utf-8"),
         "sandbox_kubernetes_text": KUBERNETES_BACKEND_PATH.read_text(encoding="utf-8"),
         "sandbox_runner_text": SANDBOX_RUNNER_PATH.read_text(encoding="utf-8"),
-        "sandbox_batch_runner_text": SANDBOX_BATCH_RUNNER_PATH.read_text(encoding="utf-8"),
+        "sandbox_batch_runner_text": SANDBOX_BATCH_RUNNER_PATH.read_text(
+            encoding="utf-8"
+        ),
         "sandbox_git_inspector_text": SANDBOX_GIT_INSPECTOR_SOURCE_PATH.read_text(
             encoding="utf-8"
         ),
@@ -527,7 +709,12 @@ def load_current_config() -> Mapping[str, str]:
             encoding="utf-8"
         ),
         "sandbox_adr_text": SANDBOX_ADR_PATH.read_text(encoding="utf-8"),
-        "container_scanning_doc_text": CONTAINER_SCANNING_DOC_PATH.read_text(encoding="utf-8"),
+        "kubernetes_sandbox_doc_text": KUBERNETES_SANDBOX_DOC_PATH.read_text(
+            encoding="utf-8"
+        ),
+        "container_scanning_doc_text": CONTAINER_SCANNING_DOC_PATH.read_text(
+            encoding="utf-8"
+        ),
     }
 
 

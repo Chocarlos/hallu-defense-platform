@@ -23,9 +23,7 @@ from hallu_defense.runtime_secrets import (
 )
 
 PRODUCTION_LIKE_ENVIRONMENTS = {"production", "staging"}
-KNOWN_ENVIRONMENTS = frozenset(
-    {"local", "development", "test", "ci", "staging", "production"}
-)
+KNOWN_ENVIRONMENTS = frozenset({"local", "development", "test", "ci", "staging", "production"})
 KUBERNETES_DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 KUBERNETES_DNS_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$")
 SECRET_MANAGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]{0,255}$")
@@ -151,6 +149,7 @@ class Settings:
     sandbox_kubernetes_job_ttl_seconds: int = 60
     sandbox_kubernetes_api_request_timeout_seconds: float = 5.0
     sandbox_kubernetes_setup_grace_seconds: float = 15.0
+    sandbox_kubernetes_cleanup_grace_seconds: float = 20.0
     auth_claims_mode: str = "unsigned_headers"
     auth_claims_signature_secret_name: str = "auth/trusted-header-signing-key"
     auth_claims_signature_tolerance_seconds: int = 300
@@ -366,6 +365,12 @@ def load_settings(*, expected_runtime_role: str | None = None) -> Settings:
             os.getenv(
                 "HALLU_DEFENSE_SANDBOX_KUBERNETES_SETUP_GRACE_SECONDS",
                 "15",
+            )
+        ),
+        sandbox_kubernetes_cleanup_grace_seconds=float(
+            os.getenv(
+                "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS",
+                "20",
             )
         ),
         opa_enabled=_env_bool("HALLU_DEFENSE_OPA_ENABLED", False),
@@ -1127,11 +1132,13 @@ def validate_sandbox_settings(settings: Settings) -> None:
             errors.append(
                 "HALLU_DEFENSE_SANDBOX_KUBERNETES_API_REQUEST_TIMEOUT_SECONDS must be positive."
             )
-        if not (
-            0 < settings.sandbox_kubernetes_setup_grace_seconds <= 120
-        ):
+        if not (0 < settings.sandbox_kubernetes_setup_grace_seconds <= 120):
             errors.append(
                 "HALLU_DEFENSE_SANDBOX_KUBERNETES_SETUP_GRACE_SECONDS must be greater than zero and at most 120."
+            )
+        if not (15 <= settings.sandbox_kubernetes_cleanup_grace_seconds <= 30):
+            errors.append(
+                "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS must be at least 15 and at most 30."
             )
 
     if errors:

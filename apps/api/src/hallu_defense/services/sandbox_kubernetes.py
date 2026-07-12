@@ -20,6 +20,7 @@ from hallu_defense.outbound_http import OutboundHttpRedirectError, open_url_no_r
 from hallu_defense.services.sandbox_exec import (
     MAX_SANDBOX_WORKSPACE_BYTES,
     MAX_SANDBOX_WORKSPACE_FILES,
+    MAX_SANDBOX_OUTPUT_CHARS,
     SANDBOX_TIMEOUT_RETURN_CODE,
     ExecutionResult,
     SandboxExecutionBatchResult,
@@ -30,12 +31,8 @@ from hallu_defense.services.sandbox_exec import (
 )
 from hallu_defense.services.text import bounded
 
-SERVICE_ACCOUNT_TOKEN_PATH = Path(
-    "/var/run/secrets/kubernetes.io/serviceaccount/token"
-)
-SERVICE_ACCOUNT_CA_PATH = Path(
-    "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-)
+SERVICE_ACCOUNT_TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+SERVICE_ACCOUNT_CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
 NETWORK_POLICY_LABEL = "hallu-defense.openai.com/network-policy"
 NETWORK_POLICY_DENY_VALUE = "deny-egress"
 SANDBOX_LABEL = "hallu-defense.openai.com/sandbox"
@@ -50,16 +47,15 @@ MAX_JOB_NAME_LENGTH = 63
 MAX_COMMAND_ARGUMENTS = 256
 MAX_COMMAND_BYTES = 32 * 1024
 MAX_ENV_VALUE_CHARS = 1024
+MAX_CLEANUP_WAIT_SECONDS = 30.0
 SANDBOX_RUNNER_PATH = "/opt/hallu-defense/sandbox_runner.py"
 SANDBOX_BATCH_RUNNER_PATH = "/opt/hallu-defense/sandbox_batch_runner.py"
 SANDBOX_STREAM_EXPORTER_PATH = "/opt/hallu-defense/sandbox_stream_exporter.py"
-KUBERNETES_NAME_RE = re.compile(
-    r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$"
-)
-KUBERNETES_SUBDOMAIN_RE = re.compile(
-    r"^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$"
-)
+PIDS_LIMIT_ANNOTATION = "hallu-defense.openai.com/requested-pids-limit"
+KUBERNETES_NAME_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+KUBERNETES_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$")
 KUBERNETES_UID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
 
 class KubernetesApiError(SandboxExecutionError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
@@ -131,13 +127,11 @@ class InClusterKubernetesTransport:
             or parsed_server.query
             or parsed_server.fragment
         ):
-            raise SandboxExecutionConfigurationError(
-                "Kubernetes API server must use https."
-            )
+            raise SandboxExecutionConfigurationError("Kubernetes API server must use https.")
         if (token is None) == (token_loader is None):
             raise SandboxExecutionConfigurationError(
                 "Configure exactly one Kubernetes ServiceAccount token source."
-        )
+            )
         if token is not None:
             _validate_service_account_token(token)
             token_loader = _fixed_token_loader(token)
@@ -276,6 +270,7 @@ class KubernetesJobBackend:
         api_request_timeout_seconds: float,
         setup_grace_seconds: float,
         timeout_grace_seconds: float,
+        cleanup_grace_seconds: float = 20.0,
         transport: KubernetesApiTransport,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -296,6 +291,7 @@ class KubernetesJobBackend:
             api_request_timeout_seconds=api_request_timeout_seconds,
             setup_grace_seconds=setup_grace_seconds,
             timeout_grace_seconds=timeout_grace_seconds,
+            cleanup_grace_seconds=cleanup_grace_seconds,
         )
         self._image = image
         self._namespace = namespace
@@ -311,12 +307,11 @@ class KubernetesJobBackend:
         self._api_request_timeout_seconds = api_request_timeout_seconds
         self._setup_grace_seconds = setup_grace_seconds
         self._timeout_grace_seconds = timeout_grace_seconds
+        self._cleanup_grace_seconds = cleanup_grace_seconds
         self._transport = transport
         self._monotonic = monotonic
         self._sleep = sleep
-        self._name_factory = name_factory or (
-            lambda: f"hallu-sandbox-{secrets.token_hex(8)}"
-        )
+        self._name_factory = name_factory or (lambda: f"hallu-sandbox-{secrets.token_hex(8)}")
 
     @classmethod
     def from_settings(
@@ -340,11 +335,10 @@ class KubernetesJobBackend:
             pids_limit=settings.sandbox_docker_pids_limit,
             poll_interval_seconds=settings.sandbox_kubernetes_poll_interval_seconds,
             job_ttl_seconds=settings.sandbox_kubernetes_job_ttl_seconds,
-            api_request_timeout_seconds=(
-                settings.sandbox_kubernetes_api_request_timeout_seconds
-            ),
+            api_request_timeout_seconds=(settings.sandbox_kubernetes_api_request_timeout_seconds),
             setup_grace_seconds=settings.sandbox_kubernetes_setup_grace_seconds,
             timeout_grace_seconds=settings.sandbox_docker_timeout_grace_seconds,
+            cleanup_grace_seconds=(settings.sandbox_kubernetes_cleanup_grace_seconds),
             transport=transport or InClusterKubernetesTransport.from_service_account(),
             monotonic=monotonic,
             sleep=sleep,
@@ -383,11 +377,10 @@ class KubernetesJobBackend:
             output_caps=output_caps,
         )
         jobs_path = self._jobs_path()
-        cleanup_required = False
+        job_uid: str | None = None
         primary_error: Exception | None = None
         started_at = self._monotonic()
         try:
-            cleanup_required = True
             try:
                 created_job = self._request_json(
                     "POST",
@@ -396,19 +389,68 @@ class KubernetesJobBackend:
                     timeout=request_timeout,
                     label="create Job",
                 )
-            except KubernetesApiError as exc:
+            except SandboxExecutionError as exc:
                 if (
-                    exc.status_code is not None
+                    isinstance(exc, KubernetesApiError)
+                    and exc.status_code is not None
                     and 400 <= exc.status_code < 500
                 ):
-                    cleanup_required = False
+                    raise
+                try:
+                    job_uid = self._reconcile_ambiguous_job_creation(
+                        job_name,
+                        timeout=self._cleanup_grace_seconds,
+                    )
+                except Exception as reconciliation_exc:
+                    exc.add_note(
+                        "Kubernetes sandbox Job creation could not be reconciled; "
+                        "no name-only cleanup was attempted "
+                        f"({type(reconciliation_exc).__name__})."
+                    )
+                    raise exc from reconciliation_exc
+                if job_uid is None:
+                    exc.add_note(
+                        "Kubernetes sandbox Job creation reconciliation found no Job; "
+                        "no cleanup was attempted."
+                    )
+                else:
+                    exc.add_note(
+                        "Kubernetes sandbox Job creation reconciliation validated a Job UID; "
+                        "UID-bound foreground cleanup was attempted."
+                    )
                 raise
-            job_uid = _validated_resource_identity(
-                created_job,
-                expected_name=job_name,
-                expected_namespace=self._namespace,
-                label="created Job",
-            )
+            try:
+                job_uid = _validated_managed_job_identity(
+                    created_job,
+                    expected_name=job_name,
+                    expected_namespace=self._namespace,
+                    expected_pids_limit=self._pids_limit,
+                    label="created Job",
+                )
+            except SandboxExecutionError as identity_exc:
+                try:
+                    job_uid = self._reconcile_ambiguous_job_creation(
+                        job_name,
+                        timeout=self._cleanup_grace_seconds,
+                    )
+                except Exception as reconciliation_exc:
+                    identity_exc.add_note(
+                        "Kubernetes sandbox created-Job identity could not be reconciled; "
+                        "no name-only cleanup was attempted "
+                        f"({type(reconciliation_exc).__name__})."
+                    )
+                    raise identity_exc from reconciliation_exc
+                if job_uid is None:
+                    identity_exc.add_note(
+                        "Kubernetes sandbox created-Job identity reconciliation found no Job; "
+                        "no cleanup was attempted."
+                    )
+                else:
+                    identity_exc.add_note(
+                        "Kubernetes sandbox created-Job identity was recovered by a validated "
+                        "GET; UID-bound foreground cleanup was attempted."
+                    )
+                raise
 
             state = self._wait_for_job(
                 job_name,
@@ -426,9 +468,7 @@ class KubernetesJobBackend:
             else:
                 pod_name = _metadata_name(pod)
                 if not _valid_dns_subdomain(pod_name):
-                    raise SandboxExecutionError(
-                        "Kubernetes Job returned an invalid Pod name."
-                    )
+                    raise SandboxExecutionError("Kubernetes Job returned an invalid Pod name.")
                 stdout = self._pod_log(
                     pod_name,
                     STDOUT_CONTAINER,
@@ -440,25 +480,19 @@ class KubernetesJobBackend:
                     output_caps=output_caps,
                 )
             if state.timed_out:
-                timeout_message = (
-                    f"kubernetes sandbox command timed out after {timeout} second(s)"
-                )
+                timeout_message = f"kubernetes sandbox command timed out after {timeout} second(s)"
                 return ExecutionResult(
                     returncode=SANDBOX_TIMEOUT_RETURN_CODE,
                     stdout=bounded(stdout, output_caps),
                     stderr=bounded(
-                        "\n".join(
-                            part for part in [stderr.rstrip(), timeout_message] if part
-                        )
+                        "\n".join(part for part in [stderr.rstrip(), timeout_message] if part)
                         + "\n",
                         output_caps,
                     ),
                     timed_out=True,
                 )
             if pod is None:
-                raise SandboxExecutionError(
-                    "Kubernetes Job completed without a Pod result."
-                )
+                raise SandboxExecutionError("Kubernetes Job completed without a Pod result.")
             returncode = _runner_exit_code(pod)
             _assert_exporters_succeeded(pod)
             return ExecutionResult(
@@ -471,15 +505,19 @@ class KubernetesJobBackend:
             primary_error = exc
             raise
         finally:
-            if cleanup_required:
+            if job_uid is not None:
                 try:
-                    self._delete_job(job_name)
+                    self._delete_job(job_name, job_uid=job_uid)
                 except Exception as cleanup_exc:
                     if primary_error is None:
                         raise
-                    raise SandboxExecutionError(
-                        "Kubernetes Job cleanup failed after an execution error."
-                    ) from cleanup_exc
+                    cleanup_detail = bounded(str(cleanup_exc), 256)
+                    primary_error.add_note(
+                        "Kubernetes sandbox UID-bound foreground cleanup also failed "
+                        f"({type(cleanup_exc).__name__}: {cleanup_detail}); "
+                        "the primary execution error "
+                        "was preserved."
+                    )
 
     def execute_batch(
         self,
@@ -506,9 +544,7 @@ class KubernetesJobBackend:
             normalized_commands,
             separators=(",", ":"),
         )
-        total_timeout = (
-            timeout * len(normalized_commands) + self._setup_grace_seconds
-        )
+        total_timeout = timeout * len(normalized_commands) + self._setup_grace_seconds
         control_output_caps = min(
             MAX_KUBERNETES_RESPONSE_BYTES // 2,
             max(65_536, output_caps * len(normalized_commands) * 4),
@@ -528,9 +564,7 @@ class KubernetesJobBackend:
             output_caps=control_output_caps,
         )
         if completed.returncode != 0 or completed.timed_out:
-            raise SandboxExecutionError(
-                "Kubernetes sandbox batch orchestration failed."
-            )
+            raise SandboxExecutionError("Kubernetes sandbox batch orchestration failed.")
         return decode_sandbox_execution_batch(
             completed.stdout,
             expected_count=len(normalized_commands),
@@ -587,12 +621,9 @@ class KubernetesJobBackend:
             len(key) > 128 or len(value) > MAX_ENV_VALUE_CHARS
             for key, value in sanitized_env.items()
         ):
-            raise SandboxExecutionError(
-                "Kubernetes sandbox environment exceeded the safety limit."
-            )
+            raise SandboxExecutionError("Kubernetes sandbox environment exceeded the safety limit.")
         container_env = [
-            {"name": key, "value": value}
-            for key, value in sorted(sanitized_env.items())
+            {"name": key, "value": value} for key, value in sorted(sanitized_env.items())
         ]
         security_context = _container_security_context()
         result_size_mib = max(1, min(16, math.ceil(output_caps * 4 / (1024 * 1024))))
@@ -603,11 +634,7 @@ class KubernetesJobBackend:
                 "name": job_name,
                 "namespace": self._namespace,
                 "labels": labels,
-                "annotations": {
-                    "hallu-defense.openai.com/requested-pids-limit": str(
-                        self._pids_limit
-                    )
-                },
+                "annotations": {PIDS_LIMIT_ANNOTATION: str(self._pids_limit)},
             },
             "spec": {
                 "backoffLimit": 0,
@@ -677,9 +704,7 @@ class KubernetesJobBackend:
                         "volumes": [
                             {
                                 "name": "source",
-                                "persistentVolumeClaim": {
-                                    "claimName": self._pvc_name
-                                },
+                                "persistentVolumeClaim": {"claimName": self._pvc_name},
                             },
                             {
                                 "name": "workspace",
@@ -717,22 +742,14 @@ class KubernetesJobBackend:
         if not isinstance(raw_items, list) or not all(
             isinstance(item, Mapping) for item in raw_items
         ):
-            raise SandboxExecutionError(
-                "Kubernetes NetworkPolicy list returned invalid items."
-            )
+            raise SandboxExecutionError("Kubernetes NetworkPolicy list returned invalid items.")
         policies = [cast(Mapping[str, object], item) for item in raw_items]
         named_policy = next(
-            (
-                policy
-                for policy in policies
-                if _metadata_name(policy) == self._network_policy_name
-            ),
+            (policy for policy in policies if _metadata_name(policy) == self._network_policy_name),
             None,
         )
         if named_policy is None:
-            raise SandboxExecutionError(
-                "Kubernetes sandbox default-deny NetworkPolicy is missing."
-            )
+            raise SandboxExecutionError("Kubernetes sandbox default-deny NetworkPolicy is missing.")
         self._assert_named_default_deny_policy(named_policy)
         pod_labels = {
             SANDBOX_LABEL: "true",
@@ -784,9 +801,7 @@ class KubernetesJobBackend:
                 "Kubernetes sandbox NetworkPolicy must include Egress policy type."
             )
         if not isinstance(egress, list) or egress:
-            raise SandboxExecutionError(
-                "Kubernetes sandbox NetworkPolicy must deny all egress."
-            )
+            raise SandboxExecutionError("Kubernetes sandbox NetworkPolicy must deny all egress.")
 
     def _wait_for_job(
         self,
@@ -806,16 +821,15 @@ class KubernetesJobBackend:
                 timeout=min(self._api_request_timeout_seconds, deadline - now),
                 label="poll Job",
             )
-            observed_uid = _validated_resource_identity(
+            observed_uid = _validated_managed_job_identity(
                 job,
                 expected_name=job_name,
                 expected_namespace=self._namespace,
+                expected_pids_limit=self._pids_limit,
                 label="polled Job",
             )
             if observed_uid != job_uid:
-                raise SandboxExecutionError(
-                    "Kubernetes Job UID changed during sandbox execution."
-                )
+                raise SandboxExecutionError("Kubernetes Job UID changed during sandbox execution.")
             state = _job_state(job)
             if state.terminal:
                 return state
@@ -840,19 +854,13 @@ class KubernetesJobBackend:
         )
         items = pod_list.get("items")
         if not isinstance(items, list) or not all(isinstance(item, Mapping) for item in items):
-            raise SandboxExecutionError(
-                "Kubernetes Pod list returned an invalid items collection."
-            )
+            raise SandboxExecutionError("Kubernetes Pod list returned an invalid items collection.")
         if not items:
             if required:
-                raise SandboxExecutionError(
-                    "Kubernetes Job completed without a Pod."
-                )
+                raise SandboxExecutionError("Kubernetes Job completed without a Pod.")
             return None
         if len(items) != 1:
-            raise SandboxExecutionError(
-                "Kubernetes Job produced an unexpected number of Pods."
-            )
+            raise SandboxExecutionError("Kubernetes Job produced an unexpected number of Pods.")
         pod = cast(Mapping[str, object], items[0])
         _validate_job_pod_identity(
             pod,
@@ -884,22 +892,163 @@ class KubernetesJobBackend:
         )
         return body.decode("utf-8", errors="replace")
 
-    def _delete_job(self, job_name: str) -> None:
-        try:
-            self._transport.request(
-                "DELETE",
-                f"{self._jobs_path()}/{job_name}",
-                payload={
-                    "apiVersion": "v1",
-                    "kind": "DeleteOptions",
-                    "gracePeriodSeconds": 0,
-                    "propagationPolicy": "Background",
-                },
-                timeout=self._timeout_grace_seconds,
+    def _reconcile_ambiguous_job_creation(
+        self,
+        job_name: str,
+        *,
+        timeout: float,
+    ) -> str | None:
+        deadline = self._monotonic() + timeout
+        job_path = f"{self._jobs_path()}/{job_name}"
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                job = self._request_json(
+                    "GET",
+                    job_path,
+                    timeout=min(self._api_request_timeout_seconds, remaining),
+                    label="reconcile Job creation",
+                )
+            except KubernetesApiError as exc:
+                if exc.status_code is not None and exc.status_code != 404 and exc.status_code < 500:
+                    raise
+            except SandboxExecutionError:
+                pass
+            else:
+                return _validated_managed_job_identity(
+                    job,
+                    expected_name=job_name,
+                    expected_namespace=self._namespace,
+                    expected_pids_limit=self._pids_limit,
+                    label="reconciled Job",
+                )
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                return None
+            self._sleep(min(self._poll_interval_seconds, remaining))
+            continue
+
+    def _delete_job(self, job_name: str, *, job_uid: str) -> None:
+        cleanup_deadline = self._monotonic() + min(
+            self._cleanup_grace_seconds,
+            MAX_CLEANUP_WAIT_SECONDS,
+        )
+        delete_payload = {
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "gracePeriodSeconds": 0,
+            "propagationPolicy": "Foreground",
+            "preconditions": {"uid": job_uid},
+        }
+        while True:
+            try:
+                self._transport.request(
+                    "DELETE",
+                    f"{self._jobs_path()}/{job_name}",
+                    payload=delete_payload,
+                    timeout=min(
+                        self._api_request_timeout_seconds,
+                        self._remaining_cleanup_time(cleanup_deadline),
+                    ),
+                )
+            except KubernetesApiError as exc:
+                if exc.status_code in {404, 409}:
+                    break
+                if exc.status_code is not None and exc.status_code < 500:
+                    raise
+                remaining = self._remaining_cleanup_time(cleanup_deadline)
+                self._sleep(min(self._poll_interval_seconds, remaining))
+                continue
+            break
+        self._wait_for_job_deletion(
+            job_name,
+            job_uid=job_uid,
+            deadline=cleanup_deadline,
+        )
+
+    def _wait_for_job_deletion(
+        self,
+        job_name: str,
+        *,
+        job_uid: str,
+        deadline: float,
+    ) -> None:
+        job_path = f"{self._jobs_path()}/{job_name}"
+        while True:
+            target_job_absent = False
+            try:
+                job = self._request_json(
+                    "GET",
+                    job_path,
+                    timeout=min(
+                        self._api_request_timeout_seconds,
+                        self._remaining_cleanup_time(deadline),
+                    ),
+                    label="confirm Job deletion",
+                )
+            except KubernetesApiError as exc:
+                if exc.status_code != 404:
+                    raise
+                target_job_absent = True
+            else:
+                observed_uid = _validated_managed_job_identity(
+                    job,
+                    expected_name=job_name,
+                    expected_namespace=self._namespace,
+                    expected_pids_limit=self._pids_limit,
+                    label="cleanup Job",
+                )
+                target_job_absent = observed_uid != job_uid
+
+            if target_job_absent and not self._job_owned_pods_remain(
+                job_name,
+                job_uid=job_uid,
+                deadline=deadline,
+            ):
+                return
+
+            remaining = self._remaining_cleanup_time(deadline)
+            self._sleep(min(self._poll_interval_seconds, remaining))
+
+    def _job_owned_pods_remain(
+        self,
+        job_name: str,
+        *,
+        job_uid: str,
+        deadline: float,
+    ) -> bool:
+        pod_list = self._request_json(
+            "GET",
+            f"/api/v1/namespaces/{self._namespace}/pods",
+            query={"labelSelector": f"{JOB_NAME_LABEL}={job_name}"},
+            timeout=min(
+                self._api_request_timeout_seconds,
+                self._remaining_cleanup_time(deadline),
+            ),
+            label="confirm Job Pod deletion",
+        )
+        items = pod_list.get("items")
+        if not isinstance(items, list) or not all(isinstance(item, Mapping) for item in items):
+            raise SandboxExecutionError("Kubernetes cleanup Pod list returned invalid items.")
+        return any(
+            _pod_is_owned_by_job_uid(
+                cast(Mapping[str, object], item),
+                job_name=job_name,
+                job_uid=job_uid,
+                expected_namespace=self._namespace,
             )
-        except KubernetesApiError as exc:
-            if exc.status_code != 404:
-                raise
+            for item in items
+        )
+
+    def _remaining_cleanup_time(self, deadline: float) -> float:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise SandboxExecutionError(
+                "Kubernetes sandbox foreground cleanup confirmation timed out."
+            )
+        return remaining
 
     def _request_json(
         self,
@@ -925,9 +1074,7 @@ class KubernetesJobBackend:
                 f"Kubernetes API returned invalid JSON for {label}."
             ) from None
         if not isinstance(decoded, Mapping):
-            raise SandboxExecutionError(
-                f"Kubernetes API returned a non-object for {label}."
-            )
+            raise SandboxExecutionError(f"Kubernetes API returned a non-object for {label}.")
         return decoded
 
     def _jobs_path(self) -> str:
@@ -936,9 +1083,7 @@ class KubernetesJobBackend:
     def _workspace_sub_path(self, cwd: Path) -> str | None:
         resolved_cwd = cwd.resolve()
         if not resolved_cwd.is_dir():
-            raise SandboxExecutionError(
-                "Kubernetes sandbox cwd must be an existing directory."
-            )
+            raise SandboxExecutionError("Kubernetes sandbox cwd must be an existing directory.")
         try:
             relative = resolved_cwd.relative_to(self._workspace_root)
         except ValueError as exc:
@@ -950,24 +1095,13 @@ class KubernetesJobBackend:
                 "Kubernetes sandbox cwd must be a child repository so the PVC subPath is mandatory."
             )
         if any(
-            part in {"", ".", ".."}
-            or "/" in part
-            or "\\" in part
-            or "\x00" in part
+            part in {"", ".", ".."} or "/" in part or "\\" in part or "\x00" in part
             for part in relative.parts
         ):
-            raise SandboxExecutionError(
-                "Kubernetes sandbox cwd produced an invalid PVC subPath."
-            )
+            raise SandboxExecutionError("Kubernetes sandbox cwd produced an invalid PVC subPath.")
         sub_path = str(PurePosixPath(*relative.parts))
-        if (
-            not sub_path
-            or sub_path.startswith("/")
-            or ".." in PurePosixPath(sub_path).parts
-        ):
-            raise SandboxExecutionError(
-                "Kubernetes sandbox cwd produced an unsafe PVC subPath."
-            )
+        if not sub_path or sub_path.startswith("/") or ".." in PurePosixPath(sub_path).parts:
+            raise SandboxExecutionError("Kubernetes sandbox cwd produced an unsafe PVC subPath.")
         return sub_path
 
     def _new_job_name(self) -> str:
@@ -1062,9 +1196,7 @@ def _assert_exporters_succeeded(pod: Mapping[str, object]) -> None:
     statuses = _container_statuses(pod)
     for container_name in (STDOUT_CONTAINER, STDERR_CONTAINER):
         if _terminated_exit_code(statuses, container_name) != 0:
-            raise SandboxExecutionError(
-                f"Kubernetes sandbox {container_name} exporter failed."
-            )
+            raise SandboxExecutionError(f"Kubernetes sandbox {container_name} exporter failed.")
 
 
 def _container_statuses(
@@ -1073,20 +1205,14 @@ def _container_statuses(
     status = _mapping(pod.get("status"), "Pod status")
     raw_statuses = status.get("containerStatuses")
     if not isinstance(raw_statuses, list):
-        raise SandboxExecutionError(
-            "Kubernetes Pod returned invalid container statuses."
-        )
+        raise SandboxExecutionError("Kubernetes Pod returned invalid container statuses.")
     statuses: dict[str, Mapping[str, object]] = {}
     for item in raw_statuses:
         if not isinstance(item, Mapping):
-            raise SandboxExecutionError(
-                "Kubernetes Pod returned an invalid container status."
-            )
+            raise SandboxExecutionError("Kubernetes Pod returned an invalid container status.")
         name = item.get("name")
         if not isinstance(name, str):
-            raise SandboxExecutionError(
-                "Kubernetes Pod container status is missing a name."
-            )
+            raise SandboxExecutionError("Kubernetes Pod container status is missing a name.")
         statuses[name] = cast(Mapping[str, object], item)
     return statuses
 
@@ -1097,9 +1223,7 @@ def _terminated_exit_code(
 ) -> int:
     container_status = statuses.get(container_name)
     if container_status is None:
-        raise SandboxExecutionError(
-            f"Kubernetes Pod is missing {container_name} container status."
-        )
+        raise SandboxExecutionError(f"Kubernetes Pod is missing {container_name} container status.")
     state = _mapping(container_status.get("state"), f"{container_name} state")
     terminated = _mapping(
         state.get("terminated"),
@@ -1117,9 +1241,7 @@ def _metadata_name(resource: Mapping[str, object]) -> str:
     metadata = _mapping(resource.get("metadata"), "resource metadata")
     name = metadata.get("name")
     if not isinstance(name, str) or not name:
-        raise SandboxExecutionError(
-            "Kubernetes resource metadata is missing a name."
-        )
+        raise SandboxExecutionError("Kubernetes resource metadata is missing a name.")
     return name
 
 
@@ -1132,19 +1254,77 @@ def _validated_resource_identity(
 ) -> str:
     metadata = _mapping(resource.get("metadata"), f"{label} metadata")
     if metadata.get("name") != expected_name:
-        raise SandboxExecutionError(
-            f"Kubernetes API returned an unexpected {label} name."
-        )
+        raise SandboxExecutionError(f"Kubernetes API returned an unexpected {label} name.")
     if metadata.get("namespace") != expected_namespace:
-        raise SandboxExecutionError(
-            f"Kubernetes API returned an unexpected {label} namespace."
-        )
+        raise SandboxExecutionError(f"Kubernetes API returned an unexpected {label} namespace.")
     uid = metadata.get("uid")
     if not isinstance(uid, str) or KUBERNETES_UID_RE.fullmatch(uid) is None:
+        raise SandboxExecutionError(f"Kubernetes API returned an invalid {label} UID.")
+    return uid
+
+
+def _validated_managed_job_identity(
+    resource: Mapping[str, object],
+    *,
+    expected_name: str,
+    expected_namespace: str,
+    expected_pids_limit: int,
+    label: str,
+) -> str:
+    uid = _validated_resource_identity(
+        resource,
+        expected_name=expected_name,
+        expected_namespace=expected_namespace,
+        label=label,
+    )
+    metadata = _mapping(resource.get("metadata"), f"{label} metadata")
+    labels = _mapping(metadata.get("labels"), f"{label} metadata labels")
+    if (
+        labels.get(SANDBOX_LABEL) != "true"
+        or labels.get(NETWORK_POLICY_LABEL) != NETWORK_POLICY_DENY_VALUE
+    ):
         raise SandboxExecutionError(
-            f"Kubernetes API returned an invalid {label} UID."
+            f"Kubernetes API returned an unexpected {label} sandbox identity."
+        )
+    annotations = _mapping(
+        metadata.get("annotations"),
+        f"{label} metadata annotations",
+    )
+    if annotations.get(PIDS_LIMIT_ANNOTATION) != str(expected_pids_limit):
+        raise SandboxExecutionError(
+            f"Kubernetes API returned an unexpected {label} execution identity."
         )
     return uid
+
+
+def _pod_is_owned_by_job_uid(
+    pod: Mapping[str, object],
+    *,
+    job_name: str,
+    job_uid: str,
+    expected_namespace: str,
+) -> bool:
+    metadata = _mapping(pod.get("metadata"), "cleanup Pod metadata")
+    if metadata.get("namespace") != expected_namespace:
+        raise SandboxExecutionError("Kubernetes cleanup Pod belongs to an unexpected namespace.")
+    owner_references = metadata.get("ownerReferences", [])
+    if not isinstance(owner_references, list) or not all(
+        isinstance(owner, Mapping) for owner in owner_references
+    ):
+        raise SandboxExecutionError("Kubernetes cleanup Pod returned invalid owner references.")
+    for raw_owner in owner_references:
+        owner = cast(Mapping[str, object], raw_owner)
+        if owner.get("uid") != job_uid:
+            continue
+        if (
+            owner.get("apiVersion") != "batch/v1"
+            or owner.get("kind") != "Job"
+            or owner.get("name") != job_name
+            or owner.get("controller") is not True
+        ):
+            raise SandboxExecutionError("Kubernetes cleanup Pod owner identity is invalid.")
+        return True
+    return False
 
 
 def _validate_job_pod_identity(
@@ -1159,21 +1339,14 @@ def _validate_job_pod_identity(
     if not isinstance(pod_name, str) or not _valid_dns_subdomain(pod_name):
         raise SandboxExecutionError("Kubernetes Job returned an invalid Pod name.")
     if metadata.get("namespace") != expected_namespace:
-        raise SandboxExecutionError(
-            "Kubernetes Job Pod belongs to an unexpected namespace."
-        )
+        raise SandboxExecutionError("Kubernetes Job Pod belongs to an unexpected namespace.")
     pod_uid = metadata.get("uid")
-    if (
-        not isinstance(pod_uid, str)
-        or KUBERNETES_UID_RE.fullmatch(pod_uid) is None
-    ):
+    if not isinstance(pod_uid, str) or KUBERNETES_UID_RE.fullmatch(pod_uid) is None:
         raise SandboxExecutionError("Kubernetes Job Pod has an invalid UID.")
 
     labels = _mapping(metadata.get("labels"), "Job Pod labels")
     if labels.get(JOB_NAME_LABEL) != job_name or labels.get("job-name") != job_name:
-        raise SandboxExecutionError(
-            "Kubernetes Job Pod labels do not match the created Job."
-        )
+        raise SandboxExecutionError("Kubernetes Job Pod labels do not match the created Job.")
     owner_references = metadata.get("ownerReferences")
     if (
         not isinstance(owner_references, list)
@@ -1213,9 +1386,7 @@ def _selector_may_match(
         )
     for key, value in match_labels.items():
         if not isinstance(key, str) or not isinstance(value, str):
-            raise SandboxExecutionError(
-                "Kubernetes NetworkPolicy selector labels must be strings."
-            )
+            raise SandboxExecutionError("Kubernetes NetworkPolicy selector labels must be strings.")
         if labels.get(key) != value:
             return False
     expressions = selector.get("matchExpressions", [])
@@ -1240,16 +1411,10 @@ def _selector_may_match(
             raise SandboxExecutionError(
                 "Kubernetes NetworkPolicy selector expression is unsupported."
             )
-        if not isinstance(values, list) or not all(
-            isinstance(value, str) for value in values
-        ):
-            raise SandboxExecutionError(
-                "Kubernetes NetworkPolicy selector values must be strings."
-            )
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise SandboxExecutionError("Kubernetes NetworkPolicy selector values must be strings.")
         label_value = labels.get(key)
-        if operator == "In" and (
-            label_value is None or label_value not in values
-        ):
+        if operator == "In" and (label_value is None or label_value not in values):
             return False
         if operator == "NotIn" and label_value in values:
             return False
@@ -1276,6 +1441,7 @@ def _validate_backend_configuration(
     api_request_timeout_seconds: float,
     setup_grace_seconds: float,
     timeout_grace_seconds: float,
+    cleanup_grace_seconds: float,
 ) -> None:
     errors: list[str] = []
     if not _valid_image_reference(image):
@@ -1285,13 +1451,9 @@ def _validate_backend_configuration(
     if not _valid_dns_subdomain(pvc_name):
         errors.append("Kubernetes sandbox PVC name must be a valid DNS subdomain.")
     if not _valid_dns_subdomain(network_policy_name):
-        errors.append(
-            "Kubernetes sandbox NetworkPolicy name must be a valid DNS subdomain."
-        )
+        errors.append("Kubernetes sandbox NetworkPolicy name must be a valid DNS subdomain.")
     if not workspace_root.is_absolute() or not workspace_root.is_dir():
-        errors.append(
-            "Kubernetes sandbox workspace root must be an existing absolute directory."
-        )
+        errors.append("Kubernetes sandbox workspace root must be an existing absolute directory.")
     if not _valid_mount_path(workspace_mount_path):
         errors.append(
             "Kubernetes sandbox workspace mount must be an absolute canonical non-root path."
@@ -1309,9 +1471,14 @@ def _validate_backend_configuration(
         (api_request_timeout_seconds, "api_request_timeout_seconds"),
         (setup_grace_seconds, "setup_grace_seconds"),
         (timeout_grace_seconds, "timeout_grace_seconds"),
+        (cleanup_grace_seconds, "cleanup_grace_seconds"),
     ):
         if float_value <= 0 or not math.isfinite(float_value):
             errors.append(f"Kubernetes sandbox {label} must be finite and positive.")
+    if not 15 <= cleanup_grace_seconds <= MAX_CLEANUP_WAIT_SECONDS:
+        errors.append(
+            "Kubernetes sandbox cleanup_grace_seconds must be at least 15 and at most 30."
+        )
     if errors:
         raise SandboxExecutionConfigurationError("\n".join(errors))
 
@@ -1322,25 +1489,20 @@ def _validate_execution_request(
     timeout: float,
     output_caps: int,
 ) -> None:
-    if not argv or len(argv) > MAX_COMMAND_ARGUMENTS or any(
-        not isinstance(part, str) or not part or "\x00" in part
-        for part in argv
+    if (
+        not argv
+        or len(argv) > MAX_COMMAND_ARGUMENTS
+        or any(not isinstance(part, str) or not part or "\x00" in part for part in argv)
     ):
         raise SandboxExecutionError(
             "Kubernetes sandbox argv must contain non-empty NUL-free strings."
         )
     if sum(len(part.encode("utf-8")) for part in argv) > MAX_COMMAND_BYTES:
-        raise SandboxExecutionError(
-            "Kubernetes sandbox argv exceeded the safety limit."
-        )
+        raise SandboxExecutionError("Kubernetes sandbox argv exceeded the safety limit.")
     if timeout <= 0 or not math.isfinite(timeout):
-        raise SandboxExecutionError(
-            "Kubernetes sandbox timeout must be finite and positive."
-        )
-    if output_caps <= 0:
-        raise SandboxExecutionError(
-            "Kubernetes sandbox output cap must be positive."
-        )
+        raise SandboxExecutionError("Kubernetes sandbox timeout must be finite and positive.")
+    if not 0 < output_caps <= MAX_SANDBOX_OUTPUT_CHARS:
+        raise SandboxExecutionError("Kubernetes sandbox output cap must be positive and bounded.")
 
 
 def _valid_dns_label(value: str, *, max_length: int) -> bool:
@@ -1431,9 +1593,7 @@ def _valid_api_host(host: str) -> bool:
         len(host) <= 253
         and re.fullmatch(r"[A-Za-z0-9.-]+", host) is not None
         and all(
-            0 < len(label) <= 63
-            and label[0].isalnum()
-            and label[-1].isalnum()
+            0 < len(label) <= 63 and label[0].isalnum() and label[-1].isalnum()
             for label in host.split(".")
         )
     )
