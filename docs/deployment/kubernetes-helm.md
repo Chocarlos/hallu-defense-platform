@@ -327,15 +327,18 @@ accounts, storage views, and tenant IDs. See
 [`kubernetes-sandbox-jobs.md`](kubernetes-sandbox-jobs.md) for the complete
 runtime and admission contract.
 
-`sandbox.cleanupGraceSeconds` defaults to 10 seconds and is schema-bounded from
-1 through 120. For the Kubernetes backend the chart maps it only into the API
-container as
+`sandbox.cleanupGraceSeconds` defaults to 20 seconds and is schema-bounded from
+15 through 30 inclusive. For the Kubernetes backend the chart maps it only into
+the API container as
 `HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS`; it is distinct from
-the Docker timeout grace. The runtime integration must consume that variable as
-`sandbox_kubernetes_cleanup_grace_seconds` and use it as a post-`DELETE`
-convergence deadline: the exact created Job must be absent and no Pod may retain
-an `ownerReferences[].uid` equal to that Job UID. Absence by label or Job name
-alone is not sufficient cleanup evidence.
+the Docker timeout grace. The converged Front C/runtime contract consumes that
+variable as `sandbox_kubernetes_cleanup_grace_seconds`, with the same default
+20 and finite inclusive range 15 through 30, and uses it as a post-`DELETE`
+convergence deadline: the exact created Job must be absent and no Pod may
+retain an `ownerReferences[].uid` equal to that Job UID. Absence by label or
+Job name alone is not sufficient cleanup evidence. The live smoke independently
+proves the same exact Job/Pod convergence against the Kubernetes API within the
+bounded window.
 
 ## Static validation
 
@@ -435,7 +438,17 @@ captures the new Pod's controller Job name and UID, joins the HTTP request, and
 uses the bounded cleanup grace to require both an exact-Job 404 and zero Pods
 whose `ownerReferences[].uid` matches that UID. Final label inventories must
 also contain zero sandbox Jobs and zero sandbox Pods; a Jobs-only empty result
-cannot pass. It server-side dry-runs the exact
+cannot pass. Every child HTTP timeout is derived from the 15-second setup
+budget, 30 seconds per requested command, the selected 15..30-second cleanup
+grace, and a 15-second Kubernetes API/poll allowance. A plain surrounding exec
+adds a named five-second request margin. The cleanup observer's outer timeout
+separately includes its initial five-second Pod inventory, the 15-second UID
+capture allowance, the bounded request-thread join (including its request
+margin), the selected post-response convergence grace, and a distinct named
+five-second outer margin. Capture-phase Kubernetes calls use the smaller of the
+five-second API budget and the capture deadline's remaining time. Consequently
+the outer timeout strictly exceeds every substituted inner phase instead of
+depending on concurrent completion. It server-side dry-runs the exact
 backend Job through the real admission policy and proves malicious variants are
 denied with server-side dry-runs, so no intentionally malicious pod is ever
 started. It also verifies Redis through Vault, TLS, and the managed CA, proves an

@@ -117,7 +117,8 @@ sandbox:
   apiRequestTimeoutSeconds: 5
   # Additional post-DELETE convergence budget. The Kubernetes backend must use
   # it to prove that the exact Job and every Pod owned by its UID are absent.
-  cleanupGraceSeconds: 10
+  # Bounded 15..30 inclusive; defaults to 20.
+  cleanupGraceSeconds: 20
   # Bounded allowance for scheduling and the verified PVC-to-emptyDir copy;
   # each command still has its own commandTimeoutSeconds budget.
   setupGraceSeconds: 15

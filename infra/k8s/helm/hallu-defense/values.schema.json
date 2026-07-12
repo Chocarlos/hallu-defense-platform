@@ -266,7 +266,7 @@
         "pollIntervalSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 10 },
         "jobTtlSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
         "apiRequestTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 60 },
-        "cleanupGraceSeconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+        "cleanupGraceSeconds": { "type": "integer", "minimum": 15, "maximum": 30 },
         "setupGraceSeconds": { "type": "integer", "minimum": 5, "maximum": 60 },
         "resources": {
           "type": "object",

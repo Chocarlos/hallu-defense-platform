@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from string import Template
 from typing import Protocol, cast
 
 from cryptography import x509
@@ -82,7 +83,93 @@ OIDC_ISSUER = "https://auth.kind.invalid/realms/hallu-defense"
 OIDC_AUDIENCE = "hallu-defense-api"
 SANDBOX_JOB_LABEL = "hallu-defense.openai.com/sandbox=true"
 SANDBOX_TIMEOUT_RETURN_CODE = 124
-SANDBOX_CLEANUP_GRACE_SECONDS = 10
+# Sandbox request timeout budget. Every inner/outer timeout used to probe an
+# authenticated /repo/checks/run request is derived from these named pieces
+# instead of a bare literal: the chart's own setup/command/cleanup grace
+# defaults (sandbox.setupGraceSeconds / sandbox.commandTimeoutSeconds /
+# sandbox.cleanupGraceSeconds), a named Kubernetes API poll allowance for
+# kubectl exec and API-server round trips, and a fixed safety margin.
+SANDBOX_SETUP_BUDGET_SECONDS = 15
+SANDBOX_COMMAND_BUDGET_SECONDS = 30
+SANDBOX_CLEANUP_GRACE_SECONDS = 20
+SANDBOX_CLEANUP_GRACE_MIN_SECONDS = 15
+SANDBOX_CLEANUP_GRACE_MAX_SECONDS = 30
+SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS = 5
+SANDBOX_KUBE_API_POLL_REQUESTS = 3
+SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS = (
+    SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS * SANDBOX_KUBE_API_POLL_REQUESTS
+)
+SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS = 5
+SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS = (
+    SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS
+)
+SANDBOX_CLEANUP_OUTER_SAFETY_MARGIN_SECONDS = 5
+SANDBOX_JOB_CAPTURE_POLL_INTERVAL_SECONDS = 0.1
+SANDBOX_CLEANUP_POLL_INTERVAL_SECONDS = 0.2
+SANDBOX_MAX_COMMANDS = 10
+
+
+def _sandbox_supported_request_path_seconds(
+    command_count: int,
+    cleanup_grace_seconds: int,
+) -> int:
+    if (
+        isinstance(command_count, bool)
+        or not isinstance(command_count, int)
+        or not 1 <= command_count <= SANDBOX_MAX_COMMANDS
+    ):
+        raise LiveKindHelmSmokeError(
+            f"sandbox request must contain between 1 and {SANDBOX_MAX_COMMANDS} commands"
+        )
+    if (
+        isinstance(cleanup_grace_seconds, bool)
+        or not isinstance(cleanup_grace_seconds, int)
+        or not SANDBOX_CLEANUP_GRACE_MIN_SECONDS
+        <= cleanup_grace_seconds
+        <= SANDBOX_CLEANUP_GRACE_MAX_SECONDS
+    ):
+        raise LiveKindHelmSmokeError(
+            "sandbox cleanup grace must be an integer between "
+            f"{SANDBOX_CLEANUP_GRACE_MIN_SECONDS} and "
+            f"{SANDBOX_CLEANUP_GRACE_MAX_SECONDS} seconds"
+        )
+    return (
+        SANDBOX_SETUP_BUDGET_SECONDS
+        + SANDBOX_COMMAND_BUDGET_SECONDS * command_count
+        + cleanup_grace_seconds
+    )
+
+
+def _sandbox_request_timeout_seconds(
+    command_count: int,
+    cleanup_grace_seconds: int,
+) -> int:
+    return (
+        _sandbox_supported_request_path_seconds(command_count, cleanup_grace_seconds)
+        + SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
+    )
+
+
+def _sandbox_request_exec_timeout_seconds(
+    command_count: int,
+    cleanup_grace_seconds: int,
+) -> int:
+    return (
+        _sandbox_request_timeout_seconds(command_count, cleanup_grace_seconds)
+        + SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+    )
+
+
+# Default single-command values remain exported for checker/documentation drift
+# detection; request helpers derive their actual timeout from each payload.
+SANDBOX_REQUEST_TIMEOUT_SECONDS = _sandbox_request_timeout_seconds(
+    1,
+    SANDBOX_CLEANUP_GRACE_SECONDS,
+)
+SANDBOX_REQUEST_EXEC_TIMEOUT_SECONDS = _sandbox_request_exec_timeout_seconds(
+    1,
+    SANDBOX_CLEANUP_GRACE_SECONDS,
+)
 ADMISSION_POLICY_ACTIVATION_ATTEMPTS = 40
 ADMISSION_POLICY_ACTIVATION_INTERVAL_SECONDS = 0.25
 HELM_EXECUTOR_TIMEOUT_SECONDS = 960
@@ -4323,6 +4410,24 @@ def _sandbox_admission_policy_name(
     return f"{prefix}-sandbox-jobs-{namespace_hash}"[:63].rstrip("-")
 
 
+def _sandbox_payload_command_count(payload: Mapping[str, object]) -> int:
+    commands = payload.get("commands")
+    if (
+        not isinstance(commands, Sequence)
+        or isinstance(commands, (str, bytes))
+        or not all(isinstance(command, str) and command for command in commands)
+    ):
+        raise LiveKindHelmSmokeError(
+            "sandbox request commands must be a non-empty sequence of strings"
+        )
+    command_count = len(commands)
+    _sandbox_supported_request_path_seconds(
+        command_count,
+        SANDBOX_CLEANUP_GRACE_SECONDS,
+    )
+    return command_count
+
+
 def _repo_checks_request(
     execute: CommandExecutor,
     *,
@@ -4331,11 +4436,17 @@ def _repo_checks_request(
     payload: Mapping[str, object],
     expected_status: int,
 ) -> Mapping[str, object]:
+    command_count = _sandbox_payload_command_count(payload)
+    request_timeout_seconds = _sandbox_request_timeout_seconds(
+        command_count,
+        SANDBOX_CLEANUP_GRACE_SECONDS,
+    )
     request_input = json.dumps(
         {"token": bearer_token, "body": payload},
         separators=(",", ":"),
     )
-    script = """import json
+    script = Template(
+        """import json
 import sys
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -4351,7 +4462,7 @@ request = Request(
     method="POST",
 )
 try:
-    with urlopen(request, timeout=45) as response:
+    with urlopen(request, timeout=$request_timeout_seconds) as response:
         status = response.status
         body = response.read().decode("utf-8")
 except HTTPError as exc:
@@ -4359,6 +4470,7 @@ except HTTPError as exc:
     body = exc.read().decode("utf-8")
 print(json.dumps({"status": status, "body": body}, separators=(",", ":")))
 """
+    ).substitute(request_timeout_seconds=request_timeout_seconds)
     result = execute(
         [
             *kubectl,
@@ -4370,14 +4482,18 @@ print(json.dumps({"status": status, "body": body}, separators=(",", ":")))
             "-c",
             script,
         ],
-        timeout_seconds=60,
+        timeout_seconds=_sandbox_request_exec_timeout_seconds(
+            command_count,
+            SANDBOX_CLEANUP_GRACE_SECONDS,
+        ),
         input_text=request_input,
     )
     envelope = _decode_repo_checks_envelope(result.stdout, expected_status=expected_status)
     return _decode_repo_checks_body(envelope)
 
 
-SANDBOX_CLEANUP_UID_PROBE_SCRIPT = r"""import json
+SANDBOX_CLEANUP_UID_PROBE_TEMPLATE = Template(
+    r"""import json
 import os
 import ssl
 import sys
@@ -4394,8 +4510,8 @@ if (
     not isinstance(namespace, str)
     or not namespace
     or isinstance(cleanup_grace_seconds, bool)
-    or not isinstance(cleanup_grace_seconds, (int, float))
-    or not 1 <= cleanup_grace_seconds <= 120
+    or not isinstance(cleanup_grace_seconds, int)
+    or not $cleanup_grace_min_seconds <= cleanup_grace_seconds <= $cleanup_grace_max_seconds
 ):
     raise RuntimeError("sandbox cleanup probe input was invalid")
 
@@ -4412,7 +4528,12 @@ if not service_account_token:
 tls_context = ssl.create_default_context(cafile=service_account_root + "/ca.crt")
 
 
-def kube_json(path, *, allow_not_found=False, timeout_seconds=2.0):
+def kube_json(
+    path,
+    *,
+    allow_not_found=False,
+    timeout_seconds=$kube_api_request_timeout_seconds,
+):
     request = Request(
         api_root + path,
         headers={"Authorization": "Bearer " + service_account_token},
@@ -4432,7 +4553,7 @@ def kube_json(path, *, allow_not_found=False, timeout_seconds=2.0):
     return payload
 
 
-def pod_inventory(*, timeout_seconds=2.0):
+def pod_inventory(*, timeout_seconds=$kube_api_request_timeout_seconds):
     payload = kube_json(
         "/api/v1/namespaces/" + quote(namespace, safe="") + "/pods",
         timeout_seconds=timeout_seconds,
@@ -4472,7 +4593,12 @@ def pod_inventory(*, timeout_seconds=2.0):
     return inventory
 
 
-before_uids = {pod["uid"] for pod in pod_inventory()}
+before_uids = {
+    pod["uid"]
+    for pod in pod_inventory(
+        timeout_seconds=$initial_inventory_allowance_seconds
+    )
+}
 response_state = {}
 request_done = threading.Event()
 
@@ -4488,7 +4614,7 @@ def send_repo_request():
         method="POST",
     )
     try:
-        with urlopen(request, timeout=45) as response:
+        with urlopen(request, timeout=$request_timeout_seconds) as response:
             response_state["status"] = response.status
             response_state["body"] = response.read().decode("utf-8")
     except HTTPError as exc:
@@ -4504,11 +4630,19 @@ request_thread = threading.Thread(target=send_repo_request, name="sandbox-cleanu
 request_thread.start()
 target_job_name = None
 target_job_uid = None
-capture_deadline = time.monotonic() + 15
+capture_deadline = time.monotonic() + $job_capture_allowance_seconds
 try:
     while target_job_uid is None:
+        capture_remaining = capture_deadline - time.monotonic()
+        if capture_remaining <= 0:
+            raise RuntimeError("sandbox Job UID capture deadline expired")
         candidates = set()
-        for pod in pod_inventory():
+        for pod in pod_inventory(
+            timeout_seconds=min(
+                $kube_api_request_timeout_seconds,
+                capture_remaining,
+            )
+        ):
             if pod["uid"] in before_uids:
                 continue
             if pod["labels"].get("hallu-defense.openai.com/sandbox") != "true":
@@ -4529,11 +4663,18 @@ try:
             raise RuntimeError("cleanup probe observed multiple new sandbox Jobs")
         if len(candidates) == 1:
             target_job_name, target_job_uid = next(iter(candidates))
+            capture_remaining = capture_deadline - time.monotonic()
+            if capture_remaining <= 0:
+                raise RuntimeError("sandbox Job UID capture deadline expired")
             target_job = kube_json(
                 "/apis/batch/v1/namespaces/"
                 + quote(namespace, safe="")
                 + "/jobs/"
-                + quote(target_job_name, safe="")
+                + quote(target_job_name, safe=""),
+                timeout_seconds=min(
+                    $kube_api_request_timeout_seconds,
+                    capture_remaining,
+                ),
             )
             metadata = target_job.get("metadata")
             labels = metadata.get("labels", {}) if isinstance(metadata, dict) else {}
@@ -4550,9 +4691,11 @@ try:
             raise RuntimeError("sandbox request completed before Job UID capture")
         if time.monotonic() >= capture_deadline:
             raise RuntimeError("sandbox Job UID capture deadline expired")
-        time.sleep(0.1)
+        time.sleep($job_capture_poll_interval_seconds)
 finally:
-    request_thread.join()
+    request_thread.join(timeout=$request_join_timeout_seconds)
+if request_thread.is_alive():
+    raise RuntimeError("authenticated sandbox request thread did not terminate")
 
 if "error" in response_state:
     raise RuntimeError("authenticated sandbox request failed inside cleanup probe")
@@ -4566,7 +4709,7 @@ while True:
     remaining = cleanup_deadline - time.monotonic()
     if remaining <= 0:
         raise RuntimeError("sandbox Job and owned Pod cleanup deadline expired")
-    observation_timeout = max(0.1, min(2.0, remaining))
+    observation_timeout = min($kube_api_request_timeout_seconds, remaining)
     target_job = kube_json(
         "/apis/batch/v1/namespaces/"
         + quote(namespace, safe="")
@@ -4582,7 +4725,9 @@ while True:
     remaining = cleanup_deadline - time.monotonic()
     if remaining <= 0:
         raise RuntimeError("sandbox Job and owned Pod cleanup deadline expired")
-    pods = pod_inventory(timeout_seconds=max(0.1, min(2.0, remaining)))
+    pods = pod_inventory(
+        timeout_seconds=min($kube_api_request_timeout_seconds, remaining)
+    )
     owned_pods = [
         pod
         for pod in pods
@@ -4601,7 +4746,7 @@ while True:
     remaining = cleanup_deadline - time.monotonic()
     if remaining <= 0:
         raise RuntimeError("sandbox Job and owned Pod cleanup deadline expired")
-    time.sleep(min(0.2, remaining))
+    time.sleep(min($cleanup_poll_interval_seconds, remaining))
 
 envelope = {
     "status": response_state["status"],
@@ -4617,6 +4762,70 @@ envelope = {
 }
 print(json.dumps(envelope, separators=(",", ":")))
 """
+)
+
+
+def _sandbox_cleanup_uid_probe_script(
+    command_count: int,
+    cleanup_grace_seconds: int,
+) -> str:
+    request_timeout_seconds = _sandbox_request_timeout_seconds(
+        command_count,
+        cleanup_grace_seconds,
+    )
+    return SANDBOX_CLEANUP_UID_PROBE_TEMPLATE.substitute(
+        cleanup_grace_min_seconds=SANDBOX_CLEANUP_GRACE_MIN_SECONDS,
+        cleanup_grace_max_seconds=SANDBOX_CLEANUP_GRACE_MAX_SECONDS,
+        request_timeout_seconds=request_timeout_seconds,
+        request_join_timeout_seconds=(
+            request_timeout_seconds + SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+        ),
+        kube_api_request_timeout_seconds=SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS,
+        initial_inventory_allowance_seconds=(
+            SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS
+        ),
+        job_capture_allowance_seconds=SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS,
+        job_capture_poll_interval_seconds=SANDBOX_JOB_CAPTURE_POLL_INTERVAL_SECONDS,
+        cleanup_poll_interval_seconds=SANDBOX_CLEANUP_POLL_INTERVAL_SECONDS,
+    )
+
+
+SANDBOX_CLEANUP_UID_PROBE_SCRIPT = _sandbox_cleanup_uid_probe_script(
+    1,
+    SANDBOX_CLEANUP_GRACE_SECONDS,
+)
+
+
+def _sandbox_cleanup_exec_timeout_seconds(
+    command_count: int,
+    cleanup_grace_seconds: int,
+) -> int:
+    """Outer `kubectl exec` timeout for the embedded cleanup probe.
+
+    Must never expire before the probe's own supported cleanup path can
+    finish: the initial Pod inventory, the Job-UID capture poll, the bounded
+    request-thread join, and the cleanup-grace convergence loop it runs
+    internally. A distinct positive outer margin guarantees that the
+    `kubectl exec` timeout strictly exceeds every substituted inner phase.
+    """
+    inner_budget_seconds = (
+        SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS
+        + SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
+        + _sandbox_request_exec_timeout_seconds(
+            command_count,
+            cleanup_grace_seconds,
+        )
+        + cleanup_grace_seconds
+    )
+    exec_timeout_seconds = (
+        inner_budget_seconds + SANDBOX_CLEANUP_OUTER_SAFETY_MARGIN_SECONDS
+    )
+    if exec_timeout_seconds <= inner_budget_seconds:
+        raise LiveKindHelmSmokeError(
+            "sandbox cleanup exec timeout must exceed the embedded probe's own "
+            "supported cleanup path"
+        )
+    return exec_timeout_seconds
 
 
 def _repo_checks_request_with_cleanup_evidence(
@@ -4629,14 +4838,8 @@ def _repo_checks_request_with_cleanup_evidence(
     expected_status: int,
     cleanup_grace_seconds: int = SANDBOX_CLEANUP_GRACE_SECONDS,
 ) -> tuple[Mapping[str, object], dict[str, object]]:
-    if (
-        isinstance(cleanup_grace_seconds, bool)
-        or not isinstance(cleanup_grace_seconds, int)
-        or not 1 <= cleanup_grace_seconds <= 120
-    ):
-        raise LiveKindHelmSmokeError(
-            "sandbox cleanup grace must be an integer between 1 and 120 seconds"
-        )
+    command_count = _sandbox_payload_command_count(payload)
+    _sandbox_supported_request_path_seconds(command_count, cleanup_grace_seconds)
     request_input = json.dumps(
         {
             "token": bearer_token,
@@ -4655,9 +4858,15 @@ def _repo_checks_request_with_cleanup_evidence(
             "--",
             "python",
             "-c",
-            SANDBOX_CLEANUP_UID_PROBE_SCRIPT,
+            _sandbox_cleanup_uid_probe_script(
+                command_count,
+                cleanup_grace_seconds,
+            ),
         ],
-        timeout_seconds=cleanup_grace_seconds + 65,
+        timeout_seconds=_sandbox_cleanup_exec_timeout_seconds(
+            command_count,
+            cleanup_grace_seconds,
+        ),
         input_text=request_input,
     )
     envelope = _decode_repo_checks_envelope(result.stdout, expected_status=expected_status)
