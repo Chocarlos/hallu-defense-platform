@@ -5034,11 +5034,9 @@ components:
           title: Schema
         risk_level:
           $ref: '#/components/schemas/RiskLevel'
-          default: medium
         approval_required:
           type: boolean
           title: Approval Required
-          default: false
         caller_context:
           additionalProperties: true
           type: object
@@ -5057,6 +5055,11 @@ components:
       type: object
       required:
       - tool_name
+      - input
+      - schema
+      - risk_level
+      - approval_required
+      - caller_context
       title: ToolCallEnvelope
       x-contract-version: '1.0'
     ToolValidationResponse:

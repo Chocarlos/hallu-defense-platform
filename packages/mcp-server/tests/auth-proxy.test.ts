@@ -218,6 +218,72 @@ describe("MCP API bearer proxy", () => {
     }
   });
 
+  it("forwards fail-closed output-schema blocks without exposing the original", async () => {
+    const original = "person@example.com";
+    const server = createServer((request, response) => {
+      const traceId = headerValue(request.headers["x-trace-id"]);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          trace_id: traceId,
+          allowed: false,
+          action: "block",
+          reason: "Sanitized tool output does not conform to its trusted JSON Schema.",
+          approval_required: false,
+          approval_id: null,
+          sanitized_output: null,
+          policy_version: null,
+          matched_rules: []
+        })
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("HTTP test server did not expose a port");
+      }
+      const handler = createToolHandler(
+        loadMcpRuntimeConfig({
+          HALLU_DEFENSE_API_BASE_URL: `http://127.0.0.1:${String(address.port)}`,
+          HALLU_DEFENSE_TENANT_ID: "tenant-auth"
+        })
+      );
+      const result = await handler("validate_tool_output", {
+        tool_name: "read_document",
+        input: { content: original },
+        schema: {
+          type: "object",
+          properties: { content: { type: "string" } },
+          required: ["content"],
+          additionalProperties: false
+        },
+        risk_level: "low",
+        approval_required: false,
+        caller_context: { tenant_id: "tenant-auth" }
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toEqual(
+        expect.objectContaining({
+          allowed: false,
+          action: "block",
+          sanitized_output: null,
+          trace_id: expect.stringMatching(/^tr_mcp_/u)
+        })
+      );
+      expect(JSON.stringify(result)).not.toContain(original);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error === undefined ? resolve() : reject(error)));
+      });
+    }
+  });
+
   it("rejects an empty upstream verdict set with a generic traced tool error", async () => {
     const server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });

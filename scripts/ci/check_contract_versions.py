@@ -215,7 +215,7 @@ def _validate_models(
                         f"OpenAPI {model_name} x-contract-version must be {expected_version}"
                     )
 
-            if group_name == "v2_models":
+            if "required" in spec:
                 expected_required = set(
                     _string_list(
                         spec.get("required"),

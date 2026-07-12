@@ -18,9 +18,17 @@ from hallu_defense.domain.models import (
     VerdictAction,
 )
 from hallu_defense.main import app
-from hallu_defense.services.approvals import ApprovalQueue
+from hallu_defense.services.approvals import ApprovalAuthorizationIssuer, ApprovalQueue
 from hallu_defense.services.audit import AuditLedger
+from hallu_defense.services.content_security import ContentSecurityScanner
+from hallu_defense.services.policy import PolicyEngine
+from hallu_defense.services.tool_definitions import TrustedToolRegistry
+from hallu_defense.services.tool_safety import ToolSafetyService
 from test_oidc_jwt import _jwt, _write_jwks
+
+DELETE_REPOSITORY_INPUT_SCHEMA = (
+    TrustedToolRegistry.default().resolve("delete_repository").input_schema
+)
 
 
 def test_oidc_jwt_route_uses_token_tenant_for_response_and_audit(
@@ -243,8 +251,9 @@ def test_oidc_tool_context_rejects_cross_tenant_before_safety_or_approval(
         json={
             "tool_name": "delete_repository",
             "input": {"repo": "core"},
-            "schema": {"type": "object"},
+            "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
             "risk_level": "high",
+            "approval_required": True,
             "caller_context": {"tenant_id": "tenant-b", "subject": "spoofed"},
         },
         headers=_oidc_headers(["tool_operator"], trace_id=trace_id),
@@ -275,6 +284,7 @@ def test_oidc_tool_output_rejects_cross_tenant_before_safety(
             "input": {"safe": "value"},
             "schema": {"type": "object"},
             "risk_level": "low",
+            "approval_required": False,
             "caller_context": {"tenant_id": "tenant-b", "subject": "spoofed"},
         },
         headers=_oidc_headers(
@@ -319,6 +329,7 @@ def test_oidc_tool_output_service_receives_canonical_identity(
             "input": {"safe": "value"},
             "schema": {"type": "object"},
             "risk_level": "low",
+            "approval_required": False,
             "caller_context": {
                 "tenant_id": "tenant-a",
                 "subject": "spoofed-output-subject",
@@ -341,20 +352,38 @@ def test_oidc_tool_requester_and_execution_fingerprint_use_canonical_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _middleware_ledger = _configure_oidc_route_test(tmp_path, monkeypatch)
-    queue = ApprovalQueue()
+    issuer = ApprovalAuthorizationIssuer()
+    registry = TrustedToolRegistry.default()
+    queue = ApprovalQueue(tool_registry=registry, authorization_issuer=issuer)
+    safety = ToolSafetyService(
+        policy_engine=PolicyEngine(
+            Settings(
+                environment="test",
+                policy_version="oidc-tool-test",
+                auth_required=False,
+                allowed_workspace=tmp_path,
+                max_command_seconds=5,
+                max_output_chars=1_000,
+            )
+        ),
+        content_scanner=ContentSecurityScanner(),
+        tool_registry=registry,
+        authorization_issuer=issuer,
+    )
 
     class AllowAllRateLimiter:
         def allow(self, **_kwargs: object) -> bool:
             return True
 
     monkeypatch.setattr(routes, "approval_queue", queue)
+    monkeypatch.setattr(routes, "tool_safety", safety)
     monkeypatch.setattr(routes, "tool_validation_rate_limiter", AllowAllRateLimiter())
     base_tool_call = {
         "tool_name": "delete_repository",
         "input": {"repo": "core"},
-        "schema": {"type": "object", "required": ["repo"]},
+        "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
         "risk_level": "high",
-        "approval_required": False,
+        "approval_required": True,
         "caller_context": {
             "tenant_id": "tenant-a",
             "subject": "spoofed-requester",

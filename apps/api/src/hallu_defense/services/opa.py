@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from typing import TYPE_CHECKING
 
 from hallu_defense.config import Settings, validate_opa_settings
 from hallu_defense.domain.models import (
@@ -14,6 +15,9 @@ from hallu_defense.domain.models import (
     PolicyEvaluationResponse,
     VerdictAction,
 )
+
+if TYPE_CHECKING:
+    from hallu_defense.services.policy import VerifiedPolicyContext
 
 OPA_DECISION_QUERY = "data.hallucination_defense.policy.decision"
 OPA_MAX_INPUT_BYTES = 256 * 1024
@@ -40,6 +44,8 @@ class OpaPolicyEvaluator:
         request: PolicyEvaluationRequest,
         trace_id: str,
         tenant_id: str,
+        *,
+        verified_context: VerifiedPolicyContext | None = None,
     ) -> PolicyEvaluationResponse | None:
         if not self._settings.opa_enabled:
             return None
@@ -48,7 +54,27 @@ class OpaPolicyEvaluator:
         if opa_path is None:
             raise OpaPolicyEvaluationError("OPA executable is unavailable.")
 
-        raw_decision = self._evaluate_with_opa(opa_path, self._build_input(request, tenant_id))
+        if verified_context is None:
+            # Direct internal callers receive the same restrictive conversion as
+            # the public policy endpoint. Authorization and command-evidence
+            # assertions in request.attributes are never forwarded to Rego.
+            from hallu_defense.services.policy import VerifiedPolicyContext
+
+            verified_context = VerifiedPolicyContext.from_public_request(
+                request,
+                tenant_id=tenant_id,
+                subject_id=None,
+            )
+        if not verified_context.matches_request(
+            request,
+            tenant_id=tenant_id,
+            subject_id=None,
+        ):
+            raise OpaPolicyEvaluationError("Verified policy context did not match the request.")
+        raw_decision = self._evaluate_with_opa(
+            opa_path,
+            self._build_input(verified_context),
+        )
         return self._to_response(raw_decision, trace_id)
 
     def _resolve_opa_path(self) -> str | None:
@@ -131,28 +157,9 @@ class OpaPolicyEvaluator:
 
     def _build_input(
         self,
-        request: PolicyEvaluationRequest,
-        tenant_id: str,
+        verified_context: VerifiedPolicyContext,
     ) -> dict[str, object]:
-        resource_tenant = self._string_attr(request, "resource_tenant_id") or tenant_id
-        payload: dict[str, object] = {
-            "tenant_id": tenant_id,
-            "subject": {
-                "id": request.subject,
-                "tenant_id": tenant_id,
-            },
-            "action": request.action.strip().lower(),
-            "resource": {
-                "id": request.resource,
-                "tenant_id": resource_tenant,
-            },
-            "risk_level": request.risk_level.value,
-            "attributes": request.attributes,
-        }
-        network_policy = self._string_attr(request, "network_policy")
-        if network_policy is not None:
-            payload["network_policy"] = network_policy
-        return payload
+        return verified_context.to_opa_input()
 
     def _extract_decision(self, stdout: str) -> dict[str, object]:
         try:
@@ -240,13 +247,6 @@ class OpaPolicyEvaluator:
             matched_rules=matched_rules,
             explanation=explanation,
         )
-
-    def _string_attr(self, request: PolicyEvaluationRequest, name: str) -> str | None:
-        value = request.attributes.get(name)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return None
-
 
 def _set_private_permissions(file_descriptor: int) -> None:
     if os.name == "nt":

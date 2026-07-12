@@ -48,6 +48,8 @@ from hallu_defense.services import (
     create_secret_manager,
     create_tool_validation_rate_limiter,
 )
+from hallu_defense.services.tool_definitions import TrustedToolRegistry
+from hallu_defense.services.approvals import ApprovalAuthorizationIssuer
 from hallu_defense.services.auth import (
     APPROVAL_REVIEWER_ROLE,
     AUDITOR_ROLE,
@@ -152,10 +154,14 @@ _needs_pg = (
 )
 _sql_provider = build_postgres_provider(settings) if _needs_pg else None
 audit_ledger = create_audit_ledger(settings, sql_provider=_sql_provider)
+trusted_tool_registry = TrustedToolRegistry.default()
+approval_authorization_issuer = ApprovalAuthorizationIssuer()
 approval_queue = create_approval_queue(
     settings,
     sql_provider=_sql_provider,
     secret_manager=secret_manager,
+    tool_registry=trusted_tool_registry,
+    authorization_issuer=approval_authorization_issuer,
 )
 eval_report_repository = create_eval_report_repository(settings, sql_provider=_sql_provider)
 ingestion_job_queue: PostgresIngestionJobQueue | None = (
@@ -183,6 +189,8 @@ policy_engine = PolicyEngine(settings, opa_evaluator=opa_policy_evaluator, metri
 tool_safety = ToolSafetyService(
     policy_engine=policy_engine,
     content_scanner=content_security_scanner,
+    tool_registry=trusted_tool_registry,
+    authorization_issuer=approval_authorization_issuer,
 )
 sandbox_execution_backend = build_sandbox_execution_backend(settings)
 sandbox_runner = SandboxRunner(settings, execution_backend=sandbox_execution_backend)

@@ -2,6 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hallu-defense.local/schemas/tool-call-envelope.schema.json",
   "title": "ToolCallEnvelope",
+  "description": "A public tool-validation envelope. Tool metadata is an assertion that the server compares with its trusted, versioned registry; it is never an authorization source.",
+  "$comment": "Callers cannot register tools or self-assert risk, approval, side effects, identity, policy action, or definition version through this contract.",
   "x-contract-version": "1.0",
   "type": "object",
   "required": [
@@ -13,17 +15,18 @@
     "caller_context"
   ],
   "properties": {
-    "tool_name": { "type": "string", "minLength": 1 },
-    "input": { "type": "object", "additionalProperties": true },
-    "schema": { "type": "object", "additionalProperties": true },
+    "tool_name": { "type": "string", "minLength": 1, "description": "Tool identifier asserted by the caller; unknown names fail closed." },
+    "input": { "type": "object", "additionalProperties": true, "description": "Arguments or output payload validated against the phase-specific trusted schema." },
+    "schema": { "type": "object", "additionalProperties": true, "description": "Caller assertion of the phase-specific schema; any difference from the registered schema fails closed." },
     "risk_level": {
       "type": "string",
-      "enum": ["low", "medium", "high", "critical"]
+      "enum": ["low", "medium", "high", "critical"],
+      "description": "Caller assertion compared exactly with the registered risk level; it cannot lower server-side risk."
     },
-    "approval_required": { "type": "boolean" },
-    "caller_context": { "type": "object", "additionalProperties": true },
-    "approval_id": { "type": ["string", "null"], "minLength": 1 },
-    "approval_execution_token": { "type": ["string", "null"], "minLength": 16 }
+    "approval_required": { "type": "boolean", "description": "Caller assertion compared with the registered definition; it does not grant approval." },
+    "caller_context": { "type": "object", "additionalProperties": true, "description": "Untrusted correlation context. Tenant, subject, approval, evidence, action, risk, and side-effect values are canonicalized, ignored, or checked server-side." },
+    "approval_id": { "type": ["string", "null"], "minLength": 1, "description": "Identifier for a server-created approval; not sufficient to authorize execution." },
+    "approval_execution_token": { "type": ["string", "null"], "minLength": 16, "description": "Opaque, single-use grant token accepted only with the exact bound tenant, subject, tool, action, argument hash, and definition version." }
   },
   "additionalProperties": false
 }

@@ -385,13 +385,21 @@ export interface VerificationReplayResponse {
 }
 
 export interface ToolCallEnvelope {
+  /** Caller assertion; unknown tools fail closed against the server registry. */
   readonly tool_name: string;
+  /** Arguments or output checked against the trusted phase-specific schema. */
   readonly input: Readonly<Record<string, unknown>>;
+  /** Untrusted assertion compared exactly with the trusted registered schema. */
   readonly schema: Readonly<Record<string, unknown>>;
+  /** Untrusted assertion that cannot lower the registered server-side risk. */
   readonly risk_level: RiskLevel;
+  /** Definition assertion only; this boolean never grants approval. */
   readonly approval_required: boolean;
+  /** Untrusted correlation data; never an identity, approval, or evidence source. */
   readonly caller_context: Readonly<Record<string, unknown>>;
+  /** Server-created approval identifier; insufficient without a matching grant. */
   readonly approval_id?: string | null;
+  /** Opaque single-use grant bound to identity, action, arguments, and definition. */
   readonly approval_execution_token?: string | null;
 }
 
@@ -466,10 +474,12 @@ export interface ResponseRepairResponse {
 }
 
 export interface PolicyEvaluationRequest {
+  /** Informational assertion; API authentication supplies the evaluated subject. */
   readonly subject?: string;
   readonly action: string;
   readonly resource?: string;
   readonly risk_level?: RiskLevel;
+  /** Restrictive observations only; cannot assert approval or command evidence. */
   readonly attributes?: Readonly<Record<string, unknown>>;
 }
 

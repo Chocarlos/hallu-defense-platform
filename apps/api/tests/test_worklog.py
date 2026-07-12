@@ -65,6 +65,10 @@ def test_worklog_validator_accepts_committed_document() -> None:
 
     assert len(entries) >= 80
     assert entries[-1].date == max(entry.date for entry in entries)
+    assert any(
+        entry.title == "Front B - Trusted tools, bound approvals, policy, and redaction"
+        for entry in entries
+    )
 
 
 def test_worklog_validator_rejects_malformed_heading() -> None:

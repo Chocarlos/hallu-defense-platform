@@ -6859,3 +6859,109 @@ Remaining risks:
   was not independently queried. If Docker is unavailable, cleanup returns
   within its timeout but cannot prove a tag was removed.
 - Multi-replica OIDC transaction/session CAS remains the integration dependency documented by the preserved first commit. No requirement is marked `accepted`, and this addendum does not claim global closure.
+
+## 2026-07-11 - Front B - Trusted tools, bound approvals, policy, and redaction
+
+Slice selected:
+
+- Completed Front B in the isolated worktree
+  `sixfront-b-tools-c0ca4c8` on branch
+  `codex/sixfront-b-trusted-tools`, preserving the dirty state from checkpoint
+  `c0ca4c8` until one final leader commit.
+- Scope was limited to trusted server-side tool definitions, tool input/output
+  safety, approval grants, verified policy context/Rego, recursive redaction,
+  telemetry minimization, related public contracts/SDK/MCP/adapter behavior,
+  tests, and documentation. `routes.py` received only the required identity and
+  capability wiring. No Helm, sandbox implementation, Docker, merge, push, or
+  Front F key-rotation work was performed.
+
+Implementation:
+
+- Added an immutable server registry that owns input/output schemas, risk,
+  approval requirement, policy action, side effects, version, and digest.
+  Unknown tools and any caller metadata mismatch fail closed; public
+  `ToolCallEnvelope` fields remain assertions rather than authority.
+- Added the domain-separated v3 approval binding over generated approval ID,
+  origin trace, tenant, subject, tool/action, canonical argument hash, and
+  trusted definition version/digest. Separate reviews now have different
+  commitments. JSONL/PostgreSQL validate binding before atomic single-use
+  consumption, and only an issuer-bound in-process capability can authorize
+  execution.
+- Replaced caller policy authority with a strictly typed, request/action/
+  subject-bound verified context. Python and Rego share block precedence;
+  direct Rego validates bounds, source/surface enums, sandbox facts, and a
+  nonempty ID for verified approvals.
+- Hardened one bounded recursive redactor for sensitive values and keys,
+  structured header descendants, complete/folded headers, URL query aliases,
+  Azure/Google/AWS/API credentials, compact labeled PII, and valid or malformed
+  serialized JSON. Unicode/case/separator normalization is shared, while safe
+  policy/preferences keys, safe X-Goog metadata, and required benign phrases
+  remain visible. Cycles, depth/node limits, decoder recursion, NaN/inf, and
+  invalid Unicode surrogates fail closed.
+- Tool output is validated against the trusted output schema before and after
+  redaction. A compatible marker may be returned as a rewrite; an incompatible
+  format/pattern/type/enum/const blocks with `sanitized_output=null` and never
+  falls back to the original. REST, MCP, SDK, and adapters preserve this
+  contract.
+- Made MCP test-process shutdown and temporary-directory cleanup bounded and
+  retry-safe on Windows after an `EPERM` teardown failure; assertions and
+  production behavior were unchanged.
+- Coordinated six read-only Codex auditors for PostgreSQL/binding, redaction,
+  policy/contracts, sanitized-schema behavior, credential fuzzing, and final
+  diff/scope review. The main leader was the only writer. One nested separator
+  fuzz agent was interrupted before usable output; all reported findings were
+  independently reproduced and fixed. Claude workflows used: 0; therefore no
+  Claude task, session, or model alias was reported or attributed.
+
+Validation:
+
+- With `PYTHONPATH=<worktree>/apps/api/src`, imports for `hallu_defense`,
+  `content_security`, `tool_safety`, `policy`, and `approvals` resolved to this
+  exact worktree.
+- `.venv\Scripts\python.exe -m pytest` over the 14 Front B approval,
+  ToolSafety, redaction, telemetry, OIDC, policy/OPA, core-flow, contract, and
+  OpenAPI modules: 396 passed.
+- The approval/PostgreSQL/OIDC subset: 109 passed, including Postgres
+  decide/grant/consume end-to-end, pre-consume tamper rejection, cross-record
+  substitution, replay, tenant/subject crossing, and single-use capability
+  tests.
+- Redaction/ToolSafety direct suites: 103 passed; independent adversarial
+  fuzzing passed 286 credential/PII/JSON/Unicode/false-positive cases. The
+  broader redaction/ToolSafety/telemetry/core-flow group passed 164 tests before
+  the final descendant-path regressions, which are included in the 396-test
+  final focused run.
+- Explicit OPA 1.7.1 `check --strict` passed and Rego tests passed 31/31. A
+  real-binary 16-case matrix matched Python exactly on allowed/action, primary
+  rule, and explanation.
+- Contract/OpenAPI pytest: 64 passed. JSON Schema gate validated 73 schemas,
+  73 valid examples, 73 invalid examples, and 72 TypeScript interfaces;
+  semantic version gate validated 17 legacy, 6 v1, and 5 v2 models; OpenAPI was
+  current.
+- `python -m ruff check apps/api/src apps/api/tests scripts evals`: all checks
+  passed. `python -m mypy apps/api/src`: no issues in 59 source files.
+- `npm run lint`, workspace typecheck, tests, and build passed: SDK 17,
+  adapters 11, MCP 41, console 67, and the optimized Next.js build. MCP used a
+  temporary Python fake for its already-existing sandbox contract fixture; it
+  did not invoke Docker.
+- The final proportional full API run reached 2015 passed and 24 skipped with 14
+  failures outside Front B. Thirteen are pre-existing integration drift in
+  audit SQL/config, corpus-grant config, migration inventory, the audit phase
+  of the live Postgres persistence fake, Vault secret inventory, and the
+  repository secret-scan fixture. One Keycloak redirect test failed only in
+  the full concurrent run and passed immediately in isolation.
+
+Remaining risks:
+
+- A deployed multi-worker PostgreSQL/Vault execution was not run; local tests
+  prove storage transaction shape, atomicity, binding checks, and race behavior
+  with injected providers. Registry provisioning/rollout remains an operator
+  responsibility.
+- The full API suite still contains unrelated checkpoint/integration drift
+  owned by other fronts; none was hidden or weakened here. Root should reconcile
+  those changes before a global green claim.
+- Pattern-based redaction remains a bounded deterministic defense rather than
+  a specialized DLP product; new jurisdiction/domain-specific identifiers
+  require calibrated additions.
+- Local OPA evidence used the installed 1.7.1 binary; integration must also run
+  the repository-pinned OPA version. No integration with Front F or global
+  completion is claimed, and no row is marked `accepted`.

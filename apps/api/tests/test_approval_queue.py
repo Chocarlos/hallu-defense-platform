@@ -22,6 +22,7 @@ from hallu_defense.domain.models import (
     ToolCallEnvelope,
 )
 from hallu_defense.services.approvals import (
+    APPROVAL_BINDING_STORAGE_KEY,
     REDACTED,
     TOOL_CALL_COMMITMENT_STORAGE_KEY,
     ApprovalAlreadyDecidedError,
@@ -43,6 +44,7 @@ from hallu_defense.services.postgres import (
     RecordingSqlProvider,
 )
 from hallu_defense.services.secrets import SecretNotFoundError, SecretValue
+from hallu_defense.services.tool_definitions import TrustedToolDefinition, TrustedToolRegistry
 
 
 class StaticCommitmentSecretManager:
@@ -165,6 +167,7 @@ def test_execution_grant_authorizes_matching_tool_call_once_after_reload(
             approval_id=approval.approval_id,
             execution_token=result.execution_grant.execution_token,
         ),
+        subject_id="system",
     )
 
     assert approved.approval_id == approval.approval_id
@@ -175,6 +178,7 @@ def test_execution_grant_authorizes_matching_tool_call_once_after_reload(
                 approval_id=approval.approval_id,
                 execution_token=result.execution_grant.execution_token,
             ),
+            subject_id="system",
         )
 
     reloaded_after_consumption = ApprovalQueue(storage_path=queue_path)
@@ -185,6 +189,7 @@ def test_execution_grant_authorizes_matching_tool_call_once_after_reload(
                 approval_id=approval.approval_id,
                 execution_token=result.execution_grant.execution_token,
             ),
+            subject_id="system",
         )
 
 
@@ -215,6 +220,7 @@ def test_execution_grant_rejects_mismatched_tool_call(tmp_path: Path) -> None:
                 execution_token=result.execution_grant.execution_token,
                 repo="other",
             ),
+            subject_id="system",
         )
 
 
@@ -224,7 +230,7 @@ def test_execution_grant_rejects_redacted_secret_substitution(
     substituted_key: str,
 ) -> None:
     queue_path = tmp_path / f"approval-{substituted_key}.jsonl"
-    queue = ApprovalQueue(storage_path=queue_path)
+    queue = ApprovalQueue(storage_path=queue_path, tool_registry=_sensitive_registry())
     original_values = {
         "api_key": "approved-api-key",
         "secret": "approved-secret",
@@ -258,6 +264,7 @@ def test_execution_grant_rejects_redacted_secret_substitution(
                 approval_id=approval.approval_id,
                 execution_token=result.execution_grant.execution_token,
             ),
+            subject_id="system",
         )
 
     # A mismatch does not consume the grant; the exact original still succeeds.
@@ -268,6 +275,7 @@ def test_execution_grant_rejects_redacted_secret_substitution(
             approval_id=approval.approval_id,
             execution_token=result.execution_grant.execution_token,
         ),
+        subject_id="system",
     )
     assert consumed.approval_id == approval.approval_id
     persisted = queue_path.read_text(encoding="utf-8")
@@ -281,7 +289,11 @@ def test_tool_call_commitment_supports_stable_hmac_key_without_public_exposure(
 ) -> None:
     queue_path = tmp_path / "approval-hmac.jsonl"
     commitment_key = b"k" * 32
-    queue = ApprovalQueue(storage_path=queue_path, commitment_key=commitment_key)
+    queue = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=commitment_key,
+        tool_registry=_sensitive_registry(),
+    )
     approval = queue.request_approval(
         tenant_id="tenant-a",
         trace_id="tr_hmac_commitment",
@@ -295,7 +307,11 @@ def test_tool_call_commitment_supports_stable_hmac_key_without_public_exposure(
     assert "hmac-sha256:" in persisted
     assert "approved-api-key" not in persisted
 
-    reloaded = ApprovalQueue(storage_path=queue_path, commitment_key=commitment_key)
+    reloaded = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=commitment_key,
+        tool_registry=_sensitive_registry(),
+    )
     result = reloaded.decide_with_grant(
         "tenant-a",
         ApprovalDecisionRequest(
@@ -311,6 +327,7 @@ def test_tool_call_commitment_supports_stable_hmac_key_without_public_exposure(
             approval_id=approval.approval_id,
             execution_token=result.execution_grant.execution_token,
         ),
+        subject_id="system",
     )
     assert consumed.approval_id == approval.approval_id
 
@@ -377,6 +394,7 @@ def test_execution_grant_expires(tmp_path: Path) -> None:
                 approval_id=approval.approval_id,
                 execution_token=result.execution_grant.execution_token,
             ),
+            subject_id="system",
         )
 
 
@@ -457,7 +475,7 @@ def test_jsonl_approval_queue_preserves_decided_state_after_reload(tmp_path: Pat
 
 def test_jsonl_approval_queue_redacts_sensitive_tool_payloads(tmp_path: Path) -> None:
     queue_path = tmp_path / "approval-queue.jsonl"
-    queue = ApprovalQueue(storage_path=queue_path)
+    queue = ApprovalQueue(storage_path=queue_path, tool_registry=_sensitive_registry())
 
     approval = queue.request_approval(
         tenant_id="tenant-a",
@@ -465,7 +483,7 @@ def test_jsonl_approval_queue_redacts_sensitive_tool_payloads(tmp_path: Path) ->
         tool_call=ToolCallEnvelope(
             tool_name="delete_repository",
             input={"repo": "core", "api_key": "short", "nested": {"password": "short"}},
-            tool_schema={"type": "object", "properties": {"token": {"const": "short"}}},
+            tool_schema=_sensitive_input_schema("delete_repository"),
             risk_level=RiskLevel.HIGH,
             approval_required=True,
             caller_context={"subject": "agent", "token": "short"},
@@ -478,7 +496,7 @@ def test_jsonl_approval_queue_redacts_sensitive_tool_payloads(tmp_path: Path) ->
     assert "short" not in raw_text
     assert approval.tool_call.input["api_key"] == REDACTED
     assert approval.tool_call.input["nested"] == {"password": REDACTED}
-    assert approval.tool_call.tool_schema["properties"] == {"token": REDACTED}
+    assert approval.tool_call.tool_schema["properties"]["api_key"] == REDACTED
     assert approval.tool_call.caller_context["token"] == REDACTED
     assert REDACTED in raw_text
 
@@ -635,11 +653,84 @@ def test_jsonl_approval_queue_fails_closed_on_invalid_payload(tmp_path: Path) ->
         ApprovalQueue(storage_path=queue_path)
 
 
+def _trusted_input_schema(tool_name: str) -> dict[str, object]:
+    return TrustedToolRegistry.default().resolve(tool_name).input_schema
+
+
+def _sensitive_registry() -> TrustedToolRegistry:
+    mutation_output: dict[str, object] = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
+        "additionalProperties": False,
+    }
+    delete_input: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "repo": {"type": "string"},
+            "api_key": {"type": "string"},
+            "nested": {
+                "type": "object",
+                "properties": {"password": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        "required": ["repo"],
+        "additionalProperties": False,
+    }
+    deploy_input: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "release": {"type": "string"},
+            "api_key": {"type": "string"},
+            "nested": {
+                "type": "object",
+                "properties": {
+                    "secret": {"type": "string"},
+                    "token": {"type": "string"},
+                    "password": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "required": ["release"],
+        "additionalProperties": False,
+    }
+    return TrustedToolRegistry(
+        (
+            TrustedToolDefinition(
+                name="delete_repository",
+                version="test-sensitive-v1",
+                policy_action="delete",
+                input_schema=delete_input,
+                output_schema=mutation_output,
+                risk_level=RiskLevel.HIGH,
+                approval_required=True,
+                side_effects=("filesystem_delete",),
+            ),
+            TrustedToolDefinition(
+                name="deploy_release",
+                version="test-sensitive-v1",
+                policy_action="deploy",
+                input_schema=deploy_input,
+                output_schema=mutation_output,
+                risk_level=RiskLevel.HIGH,
+                approval_required=True,
+                side_effects=("deployment_write",),
+            ),
+        )
+    )
+
+
+def _sensitive_input_schema(tool_name: str) -> dict[str, object]:
+    return _sensitive_registry().resolve(tool_name).input_schema
+
+
 def _tool_call() -> ToolCallEnvelope:
     return ToolCallEnvelope(
         tool_name="delete_repository",
         input={"repo": "core"},
-        tool_schema={"type": "object"},
+        tool_schema=_trusted_input_schema("delete_repository"),
         risk_level=RiskLevel.HIGH,
         approval_required=True,
         caller_context={"subject": "agent"},
@@ -655,7 +746,7 @@ def _tool_call_with_grant(
     return ToolCallEnvelope(
         tool_name="delete_repository",
         input={"repo": repo},
-        tool_schema={"type": "object"},
+        tool_schema=_trusted_input_schema("delete_repository"),
         risk_level=RiskLevel.HIGH,
         approval_required=True,
         caller_context={"subject": "agent"},
@@ -684,7 +775,7 @@ def _sensitive_tool_call(
                 "password": password,
             },
         },
-        tool_schema={"type": "object"},
+        tool_schema=_sensitive_input_schema("deploy_release"),
         risk_level=RiskLevel.HIGH,
         approval_required=True,
         caller_context={"subject": "agent"},
@@ -1144,6 +1235,7 @@ def test_postgres_queue_request_approval_redacts_and_uses_insert_sql(tmp_path: P
         _postgres_settings(tmp_path),
         sql_provider=provider,
         secret_manager=StaticCommitmentSecretManager(),
+        tool_registry=_sensitive_registry(),
     )
 
     approval = queue.request_approval(
@@ -1152,7 +1244,7 @@ def test_postgres_queue_request_approval_redacts_and_uses_insert_sql(tmp_path: P
         tool_call=ToolCallEnvelope(
             tool_name="delete_repository",
             input={"repo": "core", "api_key": "topsecret", "nested": {"password": "topsecret"}},
-            tool_schema={"type": "object", "properties": {"token": {"const": "topsecret"}}},
+            tool_schema=_sensitive_input_schema("delete_repository"),
             risk_level=RiskLevel.HIGH,
             approval_required=True,
             caller_context={"subject": "agent", "token": "topsecret"},
@@ -1169,12 +1261,33 @@ def test_postgres_queue_request_approval_redacts_and_uses_insert_sql(tmp_path: P
     assert approval.tool_call.caller_context["token"] == REDACTED
 
 
+def _bound_postgres_payload(record: ApprovalRecord) -> dict[str, object]:
+    payload = record.model_dump(mode="json")
+    payload["tool_call"]["caller_context"] = {
+        "tenant_id": record.tenant_id,
+        "subject": record.requested_by,
+    }
+    binding_queue = ApprovalQueue(
+        commitment_key=b"approval-commitment-key-material-32-bytes-minimum"
+    )
+    bound_call = binding_queue._bind_tool_call(record.tool_call)
+    binding = binding_queue._approval_binding(
+        approval_id=record.approval_id,
+        origin_trace_id=record.trace_id,
+        tenant_id=record.tenant_id,
+        subject_id=record.requested_by,
+        tool_call=bound_call,
+    )
+    payload[TOOL_CALL_COMMITMENT_STORAGE_KEY] = binding_queue._binding_commitment(
+        binding
+    )
+    payload[APPROVAL_BINDING_STORAGE_KEY] = binding.as_payload()
+    return payload
+
+
 def test_postgres_queue_decide_with_grant_issues_grant_end_to_end(tmp_path: Path) -> None:
     pending = _record()
-    pending_payload = pending.model_dump(mode="json")
-    pending_payload[TOOL_CALL_COMMITMENT_STORAGE_KEY] = ApprovalQueue(
-        commitment_key=b"approval-commitment-key-material-32-bytes-minimum"
-    )._tool_call_commitment(pending.tool_call)
+    pending_payload = _bound_postgres_payload(pending)
     provider = RecordingSqlProvider(
         fetch_all_rows=[{"payload": pending_payload}],
         returning_rows=[{"approval_id": pending.approval_id}],
@@ -1234,8 +1347,9 @@ def test_postgres_queue_never_falls_back_to_redacted_legacy_fingerprint(
 
 def test_postgres_queue_consume_execution_grant_succeeds_end_to_end(tmp_path: Path) -> None:
     approved = _record(status=ApprovalStatus.APPROVED, decided_by="reviewer")
+    approved_payload = _bound_postgres_payload(approved)
     provider = RecordingSqlProvider(
-        fetch_all_rows=[{"payload": approved.model_dump(mode="json")}],
+        fetch_all_rows=[{"payload": approved_payload}],
         returning_rows=[{"approval_id": approved.approval_id}],
     )
     queue = create_approval_queue(
@@ -1250,6 +1364,7 @@ def test_postgres_queue_consume_execution_grant_succeeds_end_to_end(tmp_path: Pa
             approval_id=approved.approval_id,
             execution_token="tok_" + "x" * 24,
         ),
+        subject_id="system",
     )
 
     assert record.approval_id == approved.approval_id
@@ -1259,6 +1374,37 @@ def test_postgres_queue_consume_execution_grant_succeeds_end_to_end(tmp_path: Pa
     # The raw execution token is hashed before it reaches the database.
     for _method, _statement, parameters in provider.calls:
         assert all("tok_" not in str(parameter) for parameter in parameters)
+
+
+def test_postgres_queue_rejects_tampered_binding_before_consuming_grant(
+    tmp_path: Path,
+) -> None:
+    approved = _record(status=ApprovalStatus.APPROVED, decided_by="reviewer")
+    approved_payload = _bound_postgres_payload(approved)
+    binding = approved_payload[APPROVAL_BINDING_STORAGE_KEY]
+    assert isinstance(binding, dict)
+    binding["origin_trace_id"] = "tr_substituted"
+    provider = RecordingSqlProvider(
+        fetch_all_rows=[{"payload": approved_payload}],
+        returning_rows=[{"approval_id": approved.approval_id}],
+    )
+    queue = create_approval_queue(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=StaticCommitmentSecretManager(),
+    )
+
+    with pytest.raises(ApprovalExecutionGrantError, match="does not match"):
+        queue.consume_execution_grant(
+            "tenant-a",
+            _tool_call_with_grant(
+                approval_id=approved.approval_id,
+                execution_token="tok_" + "x" * 24,
+            ),
+            subject_id="system",
+        )
+
+    assert [call[0] for call in provider.calls] == ["fetch_all"]
 
 
 def test_postgres_queue_decide_with_grant_rejects_unknown_approval(tmp_path: Path) -> None:

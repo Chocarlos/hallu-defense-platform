@@ -2,17 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hallu-defense.local/schemas/policy-evaluation-request.schema.json",
   "title": "PolicyEvaluationRequest",
+  "description": "A policy simulation request. Identity is canonicalized from authentication and attributes may add restrictive observations but cannot assert approvals or deterministic evidence.",
+  "$comment": "approval_status, approved, approval tokens, tenant identity, and deterministic-evidence flags in attributes are not authorization facts.",
   "type": "object",
   "required": ["action"],
   "properties": {
-    "subject": { "type": "string", "minLength": 1 },
+    "subject": { "type": "string", "minLength": 1, "description": "Informational caller assertion; the API substitutes the authenticated principal." },
     "action": { "type": "string", "minLength": 1 },
     "resource": { "type": "string" },
     "risk_level": {
       "type": "string",
       "enum": ["low", "medium", "high", "critical"]
     },
-    "attributes": { "type": "object", "additionalProperties": true }
+    "attributes": { "type": "object", "additionalProperties": true, "description": "Untrusted observations. Only a server-built verified context is evaluated by authorization policy." }
   },
   "additionalProperties": false
 }

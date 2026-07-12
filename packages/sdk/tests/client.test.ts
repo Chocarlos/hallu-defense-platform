@@ -640,9 +640,14 @@ describe("HalluDefenseClient", () => {
                 tool_call: {
                   tool_name: "delete_repository",
                   input: { repo: "core" },
-                  schema: { type: "object" },
+                  schema: {
+                    type: "object",
+                    properties: { repo: { type: "string", minLength: 1 } },
+                    required: ["repo"],
+                    additionalProperties: false
+                  },
                   risk_level: "high",
-                  approval_required: false,
+                  approval_required: true,
                   caller_context: {}
                 },
                 status: "pending",
@@ -668,9 +673,14 @@ describe("HalluDefenseClient", () => {
             tool_call: {
               tool_name: "delete_repository",
               input: { repo: "core" },
-              schema: { type: "object" },
+              schema: {
+                type: "object",
+                properties: { repo: { type: "string", minLength: 1 } },
+                required: ["repo"],
+                additionalProperties: false
+              },
               risk_level: "high",
-              approval_required: false,
+              approval_required: true,
               caller_context: {}
             },
             status: "approved",
