@@ -37,7 +37,8 @@ Runtime model:
   an exact destination allowlist and a valid approval grant. Regex checks are
   defense in depth; they are never the network isolation boundary.
 - Docker execution uses argv lists only and pins isolation flags:
-  `--rm`, `--network=none`, `--read-only`, `--tmpfs /tmp`,
+  `--rm`, `--network=none`, `--read-only`,
+  `--tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777`,
   `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit`,
   `--memory`, `--cpus`, `--user 10001`, a read-only source bind at
   `/hallu-source`, a distinct bounded temporary working copy at `/workspace`,
@@ -49,11 +50,63 @@ Runtime model:
   Normal build/test commands may change their disposable copy, but Git
   inspection is accepted only when source, pre, and post fingerprints are
   identical and no artifact was emitted. Repository-local executable Git
-  configuration (`include*`, filters, external diff commands, and textconv) is
-  rejected before `status` or `diff`; system/global config, hooks, replacement
-  objects, attributes overrides, submodule recursion, and file-mode noise are
-  disabled. Fingerprints and artifact signatures stream file contents instead
-  of materializing the bounded workspace in memory.
+  configuration (`include*`, filters, external diff commands, textconv,
+  color, no-prefix/mnemonic-prefix output, pagers, and other `diff.*`
+  directives) is rejected before `status` or `diff`. Index flags that can hide
+  changes (`assume-unchanged`, `skip-worktree`, or an `FSMN` fsmonitor
+  extension) and unmerged stages are rejected. The inspector uses a bounded
+  private copy of the index and reconstructs its entries through
+  `update-index --index-info`, leaving stat fields zero so a same-size change
+  with a restored mtime cannot be accepted as racy-clean. Git never refreshes
+  the source index, and repeated-inspection tests compare every source `.git`
+  byte and an aggregate hash. Repository and nested attributes are queried for every tracked path
+  from a NUL-delimited index inventory before any status/diff is trusted;
+  `-diff`, `binary`, diff drivers, filters, `ident`, legacy `crlf`, EOL or
+  encoding transforms, and equivalent specified attributes fail closed.
+  System/global config, hooks, replacement objects, command-line attributes
+  overrides, submodule recursion, and file-mode noise are disabled.
+- Git evidence is generated with a canonical patch contract:
+  `--no-color`, fixed `--src-prefix=a/` and `--dst-prefix=b/`, `--text`, no
+  external diff/textconv, `--full-index`, pinned case matching, and
+  NUL-delimited file inventories. Patch paths must
+  correspond exactly to that inventory, so spaces and header-like filenames
+  cannot reattribute changed ranges. The result records a bounded sorted
+  configuration-key inventory without values even when a repository guard
+  rejects the input, plus detected index flags and content fingerprints for both the workspace
+  and Git control files before and after inspection. Any inspector/guard error
+  or drift preserves diagnostics but empties all diff files, lines, ranges and
+  symbols, so downstream claim verification cannot consume tainted evidence.
+- Before the first Git subprocess, a bounded no-follow preflight rejects
+  gitlinks/submodules in either HEAD or the index, worktree or indexed
+  case-variant `.gitmodules`, missing-index HEAD hazards, `.git/modules`,
+  submodule config, nested `.git` directories or gitfiles anywhere in the
+  workspace (including ignored trees), alternate/http-alternate object stores,
+  effective `.git/info/exclude`, and `core.excludesFile` or
+  `core.attributesFile`. Static bounded config parsing also rejects BOM-prefixed
+  files and `include`/`includeIf` before Git can load them. The index is parsed directly under a byte/entry cap;
+  no status/diff command can run first and hide these control surfaces.
+- Workspace validation permits at most 50,000 regular files, 512 MiB of total
+  file content, 75,000 combined file/directory paths, 4,096 UTF-8 bytes in one
+  relative path, and 64 MiB of aggregate relative-path bytes. It accepts a
+  zero-byte file even when it appears exactly at the content boundary; exact
+  limits pass and the first byte/path beyond them fails. API-retained output is
+  capped at 100,000 characters per stream. Directory enumeration, copies,
+  fingerprints, artifact hashes, and subprocess output capture are bounded and
+  streaming; opened-file identity is checked around reads and copies. POSIX
+  mode bits are deliberately normalized across Windows host/Linux bind mounts,
+  while direct workspace executable paths are rejected by the command allowlist.
+  Windows path creation time is never compared with descriptor write/change
+  time across different APIs; size/mode/identity remain checked at open and
+  size/mode/mtime/ctime are compared only before/after on the same descriptor.
+- The Linux batch runner becomes a child subreaper and terminates/reaps bounded
+  process-tree descendants, including a grandchild that starts a new session,
+  before artifact capture and the post-execution fingerprint.
+- Host-side Docker and Git CLI capture starts each Windows process suspended,
+  assigns it to a kill-on-close Job Object, and only then resumes it. POSIX uses
+  a new process group. Success and timeout paths terminate descendants, join
+  bounded pipe-drain threads, capture thread read/close failures, write Git
+  stdin from a bounded cleanup-owned thread, and propagate assignment or
+  termination errors instead of accepting partial cleanup.
 - The sandbox image is `infra/docker/sandbox.Dockerfile`: digest-pinned Python
   3.12 Alpine and Node LTS stages, hash-locked Python wheels, a checksum- and
   integrity-verified npm archive, pinned Git, UID 10001 non-root, and immutable
@@ -69,6 +122,20 @@ Runtime model:
   objects. This residual is confined to the one-tenant sandbox namespace; the
   API identity has no workload RBAC in the application namespace. Object-level
   reduction would require a dedicated controller/result channel.
+- Kubernetes Job cleanup is tied to the UID returned by a validated managed
+  Job. Ambiguous transport, invalid-JSON and invalid-shape create responses are
+  reconciled with bounded polling before deletion; cleanup uses
+  `deleteOptions.preconditions.uid`, `propagationPolicy=Foreground`, and waits
+  for the old Job to return `404` and for Pods owned by that UID to disappear.
+  A same-name replacement is never deleted. Production tenant isolation still
+  requires one sandbox namespace, release, ServiceAccount, and PVC boundary per
+  tenant; names and labels are defense in depth, not cross-tenant authorization.
+  Foreground Job/owned-Pod reconciliation uses the Kubernetes-specific
+  `HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS`, default 20 seconds
+  and valid only from 15 through 30 seconds. Docker's default two-second
+  timeout grace remains the Pod termination setting and is not the cleanup
+  deadline. When execution and cleanup both fail, the primary exception is
+  preserved with a bounded cleanup type/message note.
 
 ## Consequences
 
@@ -83,4 +150,5 @@ Runtime model:
 - The kind/Helm smoke uses a digest-pinned Kubernetes 1.36.1 node with Kind's
   built-in kindnet provider, exercises the authenticated endpoint, proves ten
   admission rejections and real egress failure, and verifies timeout cleanup
-  with no residual Jobs.
+  with no residual Jobs. Front D must extend success and timeout assertions to
+  prove that no Pod owned by either sandbox Job UID remains.

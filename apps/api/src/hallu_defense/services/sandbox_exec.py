@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import re
+import signal
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -24,13 +30,19 @@ SANDBOX_RUNNER_PATH = "/opt/hallu-defense/sandbox_runner.py"
 SANDBOX_BATCH_RUNNER_PATH = "/opt/hallu-defense/sandbox_batch_runner.py"
 MAX_SANDBOX_WORKSPACE_FILES = 50_000
 MAX_SANDBOX_WORKSPACE_BYTES = 512 * 1024 * 1024
+MAX_SANDBOX_WORKSPACE_PATHS = 75_000
+MAX_SANDBOX_PATH_BYTES = 4_096
+MAX_SANDBOX_TOTAL_PATH_BYTES = 64 * 1024 * 1024
 MAX_SANDBOX_COMMANDS = 10
 MAX_SANDBOX_COMMAND_ARGUMENTS = 256
 MAX_SANDBOX_COMMAND_BYTES = 32 * 1024
+MAX_SANDBOX_OUTPUT_CHARS = 100_000
 MAX_SANDBOX_BATCH_CONTROL_CHARS = 1_048_576
 MAX_SANDBOX_ARTIFACTS = 10_000
+MAX_DOCKER_CLI_OUTPUT_BYTES = MAX_SANDBOX_BATCH_CONTROL_CHARS * 4 + 4
 SANDBOX_STREAM_RESULTS_ENV = "HALLU_DEFENSE_SANDBOX_STREAM_RESULTS"
 SANDBOX_SNAPSHOT_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+_WINDOWS_CREATE_SUSPENDED = 0x00000004
 
 _CONTAINER_ENV_DEFAULTS = {
     "CI": "true",
@@ -237,13 +249,9 @@ class DockerContainerBackend:
             output_caps=control_output_caps,
         )
         if completed.timed_out:
-            raise SandboxExecutionError(
-                "Docker sandbox batch exceeded its orchestration deadline."
-            )
+            raise SandboxExecutionError("Docker sandbox batch exceeded its orchestration deadline.")
         if completed.returncode != 0:
-            raise SandboxExecutionError(
-                "Docker sandbox batch orchestration failed."
-            )
+            raise SandboxExecutionError("Docker sandbox batch orchestration failed.")
         return decode_sandbox_execution_batch(
             completed.stdout,
             expected_count=len(normalized_commands),
@@ -282,7 +290,9 @@ class DockerContainerBackend:
                 return ExecutionResult(
                     returncode=DOCKER_TIMEOUT_RETURN_CODE,
                     stdout=bounded(_coerce_output(exc.stdout), output_caps),
-                    stderr=bounded("\n".join(part for part in stderr_parts if part) + "\n", output_caps),
+                    stderr=bounded(
+                        "\n".join(part for part in stderr_parts if part) + "\n", output_caps
+                    ),
                     timed_out=True,
                 )
 
@@ -308,9 +318,7 @@ class DockerContainerBackend:
             raise SandboxExecutionError(
                 "Docker backend owns the ephemeral working copy; cwd must be the source repository."
             )
-        source_mount = (
-            f"type=bind,source={resolved_source},target={DOCKER_SOURCE_DIR},readonly"
-        )
+        source_mount = f"type=bind,source={resolved_source},target={DOCKER_SOURCE_DIR},readonly"
         workspace_mount = (
             f"type=tmpfs,target={DOCKER_WORKDIR},"
             f"tmpfs-size={MAX_SANDBOX_WORKSPACE_BYTES},tmpfs-mode=1777"
@@ -322,7 +330,7 @@ class DockerContainerBackend:
             "--network=none",
             "--read-only",
             "--tmpfs",
-            "/tmp",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -390,12 +398,10 @@ def _validated_batch_commands(
     timeout: float,
     output_caps: int,
 ) -> list[list[str]]:
-    if timeout <= 0 or output_caps <= 0:
-        raise SandboxExecutionError("sandbox execution limits must be positive")
+    if timeout <= 0 or not 0 < output_caps <= MAX_SANDBOX_OUTPUT_CHARS:
+        raise SandboxExecutionError("sandbox execution limits must be positive and bounded")
     if not commands or len(commands) > MAX_SANDBOX_COMMANDS:
-        raise SandboxExecutionError(
-            "sandbox batch must contain between 1 and 10 commands"
-        )
+        raise SandboxExecutionError("sandbox batch must contain between 1 and 10 commands")
     normalized = [list(command) for command in commands]
     for command in normalized:
         if (
@@ -438,9 +444,7 @@ def decode_sandbox_execution_batch(
             not isinstance(fingerprint, str)
             or SANDBOX_SNAPSHOT_FINGERPRINT_RE.fullmatch(fingerprint) is None
         ):
-            raise SandboxExecutionError(
-                f"sandbox batch returned an invalid {field_name}"
-            )
+            raise SandboxExecutionError(f"sandbox batch returned an invalid {field_name}")
         fingerprints[field_name] = fingerprint
     raw_executions = payload.get("executions")
     if not isinstance(raw_executions, list) or len(raw_executions) != expected_count:
@@ -484,10 +488,15 @@ def decode_sandbox_execution_batch(
     ):
         raise SandboxExecutionError("sandbox batch returned an invalid artifact inventory")
     artifacts: list[str] = []
+    total_artifact_path_bytes = 0
     for artifact in cast(list[str], raw_artifacts):
         path = PurePosixPath(artifact)
+        path_bytes = len(artifact.encode("utf-8"))
+        total_artifact_path_bytes += path_bytes
         if (
             not artifact
+            or path_bytes > MAX_SANDBOX_PATH_BYTES
+            or total_artifact_path_bytes > MAX_SANDBOX_TOTAL_PATH_BYTES
             or artifact.startswith("/")
             or "\\" in artifact
             or "\x00" in artifact
@@ -497,9 +506,7 @@ def decode_sandbox_execution_batch(
             raise SandboxExecutionError("sandbox batch returned an unsafe artifact path")
         artifacts.append(artifact)
     if artifacts != sorted(set(artifacts)):
-        raise SandboxExecutionError(
-            "sandbox batch artifact inventory must be unique and sorted"
-        )
+        raise SandboxExecutionError("sandbox batch artifact inventory must be unique and sorted")
     return SandboxExecutionBatchResult(
         executions=tuple(executions),
         pre_snapshot_fingerprint=fingerprints["pre_snapshot_fingerprint"],
@@ -540,11 +547,7 @@ def sanitized_container_environment(env: Mapping[str, str]) -> dict[str, str]:
 
 
 def is_git_inspector_command(argv: Sequence[str]) -> bool:
-    return (
-        len(argv) >= 2
-        and argv[0] == "python"
-        and argv[1] == SANDBOX_GIT_INSPECTOR_PATH
-    )
+    return len(argv) >= 2 and argv[0] == "python" and argv[1] == SANDBOX_GIT_INSPECTOR_PATH
 
 
 def _run_docker(
@@ -552,13 +555,332 @@ def _run_docker(
     *,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(argv),
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    windows_job = _create_windows_kill_job()
+    process: subprocess.Popen[bytes] | None = None
+    pipe_threads: tuple[threading.Thread, ...] = ()
+    cleanup_complete = False
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            start_new_session=os.name != "nt",
+            creationflags=_WINDOWS_CREATE_SUSPENDED if os.name == "nt" else 0,
+        )
+        try:
+            _assign_process_to_windows_job(windows_job, process)
+            _resume_windows_process(process)
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        if process.stdout is None or process.stderr is None:
+            raise SandboxExecutionError("docker output pipes were unavailable")
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        stdout_errors: list[BaseException] = []
+        stderr_errors: list[BaseException] = []
+        stdout_thread = threading.Thread(
+            target=_drain_bounded_pipe_safely,
+            args=(
+                process.stdout,
+                stdout_chunks,
+                MAX_DOCKER_CLI_OUTPUT_BYTES,
+                stdout_errors,
+            ),
+            daemon=True,
+            name="sandbox-docker-stdout-drain",
+        )
+        stderr_thread = threading.Thread(
+            target=_drain_bounded_pipe_safely,
+            args=(
+                process.stderr,
+                stderr_chunks,
+                MAX_DOCKER_CLI_OUTPUT_BYTES,
+                stderr_errors,
+            ),
+            daemon=True,
+            name="sandbox-docker-stderr-drain",
+        )
+        stdout_thread.start()
+        pipe_threads = (stdout_thread,)
+        stderr_thread.start()
+        pipe_threads = (stdout_thread, stderr_thread)
+        timed_out = False
+        wait_timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = -1
+        cleanup_errors = _cleanup_docker_process_capture(
+            process,
+            windows_job,
+            pipe_threads,
+        )
+        cleanup_complete = True
+        windows_job = None
+        if cleanup_errors:
+            raise SandboxExecutionError("docker subprocess cleanup failed") from cleanup_errors[0]
+        if stdout_errors or stderr_errors:
+            raise SandboxExecutionError("docker output pipe capture failed") from (
+                stdout_errors + stderr_errors
+            )[0]
+        stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+        if timed_out:
+            if timeout is None:
+                raise RuntimeError("a Docker subprocess timed out without a timeout value")
+            raise subprocess.TimeoutExpired(
+                list(argv),
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            )
+        return subprocess.CompletedProcess(
+            args=list(argv),
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    finally:
+        if not cleanup_complete:
+            if process is None:
+                try:
+                    _close_windows_handle(windows_job)
+                except BaseException as cleanup_exc:
+                    active_error = sys.exc_info()[1]
+                    if active_error is None:
+                        raise SandboxExecutionError(
+                            "docker subprocess cleanup failed"
+                        ) from cleanup_exc
+                    active_error.add_note(
+                        f"Docker Job handle cleanup also failed ({type(cleanup_exc).__name__})."
+                    )
+            else:
+                cleanup_errors = _cleanup_docker_process_capture(
+                    process,
+                    windows_job,
+                    pipe_threads,
+                )
+                if cleanup_errors:
+                    active_error = sys.exc_info()[1]
+                    if active_error is None:
+                        raise SandboxExecutionError(
+                            "docker subprocess cleanup failed"
+                        ) from cleanup_errors[0]
+                    active_error.add_note(
+                        "Docker subprocess cleanup also failed "
+                        f"({type(cleanup_errors[0]).__name__})."
+                    )
+
+
+def _cleanup_docker_process_capture(
+    process: subprocess.Popen[bytes],
+    job_handle: int | None,
+    pipe_threads: Sequence[threading.Thread],
+) -> list[BaseException]:
+    errors: list[BaseException] = []
+    try:
+        _terminate_owned_process_tree(process, job_handle)
+    except BaseException as exc:
+        errors.append(exc)
+    try:
+        _close_windows_handle(job_handle)
+    except BaseException as exc:
+        errors.append(exc)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                process.wait(timeout=0.5)
+            except BaseException as exc:
+                errors.append(exc)
+    if not _join_pipe_threads_until(
+        pipe_threads,
+        deadline=time.monotonic() + 1.0,
+    ):
+        errors.append(RuntimeError("docker output pipes could not be closed"))
+    for index, stream in enumerate((process.stdout, process.stderr)):
+        pipe_thread = pipe_threads[index] if index < len(pipe_threads) else None
+        if (pipe_thread is None or not pipe_thread.is_alive()) and stream is not None:
+            try:
+                stream.close()
+            except OSError as exc:
+                errors.append(exc)
+    return errors
+
+
+def _drain_bounded_pipe_safely(
+    stream: object,
+    chunks: list[bytes],
+    limit: int,
+    errors: list[BaseException],
+) -> None:
+    try:
+        _drain_bounded_pipe(stream, chunks, limit)
+    except BaseException as exc:
+        errors.append(exc)
+    finally:
+        try:
+            getattr(stream, "close")()
+        except BaseException as exc:
+            errors.append(exc)
+
+
+def _join_pipe_threads_until(
+    threads: Sequence[threading.Thread],
+    *,
+    deadline: float | None,
+) -> bool:
+    for thread in threads:
+        if deadline is None:
+            thread.join()
+        else:
+            thread.join(max(0.0, deadline - time.monotonic()))
+    return not any(thread.is_alive() for thread in threads)
+
+
+class _JobObjectBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("per_process_user_time_limit", ctypes.c_longlong),
+        ("per_job_user_time_limit", ctypes.c_longlong),
+        ("limit_flags", ctypes.c_ulong),
+        ("minimum_working_set_size", ctypes.c_size_t),
+        ("maximum_working_set_size", ctypes.c_size_t),
+        ("active_process_limit", ctypes.c_ulong),
+        ("affinity", ctypes.c_size_t),
+        ("priority_class", ctypes.c_ulong),
+        ("scheduling_class", ctypes.c_ulong),
+    ]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [
+        ("read_operation_count", ctypes.c_ulonglong),
+        ("write_operation_count", ctypes.c_ulonglong),
+        ("other_operation_count", ctypes.c_ulonglong),
+        ("read_transfer_count", ctypes.c_ulonglong),
+        ("write_transfer_count", ctypes.c_ulonglong),
+        ("other_transfer_count", ctypes.c_ulonglong),
+    ]
+
+
+class _JobObjectExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("basic_limit_information", _JobObjectBasicLimitInformation),
+        ("io_info", _IoCounters),
+        ("process_memory_limit", ctypes.c_size_t),
+        ("job_memory_limit", ctypes.c_size_t),
+        ("peak_process_memory_used", ctypes.c_size_t),
+        ("peak_job_memory_used", ctypes.c_size_t),
+    ]
+
+
+def _create_windows_kill_job() -> int | None:
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_job = kernel32.CreateJobObjectW
+    create_job.restype = ctypes.c_void_p
+    handle = create_job(None, None)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    information = _JobObjectExtendedLimitInformation()
+    information.basic_limit_information.limit_flags = 0x00002000
+    set_information = kernel32.SetInformationJobObject
+    if not set_information(
+        ctypes.c_void_p(handle),
+        9,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        raise error
+    return int(handle)
+
+
+def _assign_process_to_windows_job(
+    job_handle: int | None,
+    process: subprocess.Popen[bytes],
+) -> None:
+    if job_handle is None:
+        return
+    process_handle = int(getattr(process, "_handle"))
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.AssignProcessToJobObject(
+        ctypes.c_void_p(job_handle),
+        ctypes.c_void_p(process_handle),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _resume_windows_process(process: subprocess.Popen[bytes]) -> None:
+    if os.name != "nt":
+        return
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    resume_process = ntdll.NtResumeProcess
+    resume_process.argtypes = [ctypes.c_void_p]
+    resume_process.restype = ctypes.c_long
+    status = int(resume_process(ctypes.c_void_p(int(getattr(process, "_handle")))))
+    if status < 0:
+        raise SandboxExecutionError(
+            f"could not resume the sandbox process (NTSTATUS 0x{status & 0xFFFFFFFF:08x})"
+        )
+
+
+def _terminate_owned_process_tree(
+    process: subprocess.Popen[bytes],
+    job_handle: int | None,
+) -> None:
+    if job_handle is not None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not kernel32.TerminateJobObject(ctypes.c_void_p(job_handle), 1):
+            error_number = ctypes.get_last_error()
+            raise ctypes.WinError(error_number or 1)
+        return
+    kill_process_group = getattr(os, "killpg", None)
+    kill_signal = getattr(signal, "SIGKILL", 9)
+    try:
+        if not callable(kill_process_group):
+            raise ProcessLookupError
+        kill_process_group(process.pid, kill_signal)
+    except ProcessLookupError:
+        return
+
+
+def _close_windows_handle(job_handle: int | None) -> None:
+    if job_handle is None:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.CloseHandle(ctypes.c_void_p(job_handle)):
+        raise ctypes.WinError(ctypes.get_last_error() or 1)
+
+
+def _drain_bounded_pipe(
+    stream: object,
+    chunks: list[bytes],
+    limit: int,
+) -> None:
+    read = getattr(stream, "read")
+    captured = 0
+    while True:
+        chunk = read(65_536)
+        if not chunk:
+            return
+        if not isinstance(chunk, bytes):
+            raise RuntimeError("docker output pipe was not opened in binary mode")
+        if captured < limit:
+            bounded_chunk = chunk[: limit - captured]
+            chunks.append(bounded_chunk)
+            captured += len(bounded_chunk)
 
 
 def _coerce_output(value: bytes | str | None) -> str:

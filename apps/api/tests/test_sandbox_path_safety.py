@@ -92,10 +92,7 @@ class LocalSnapshotTestBackend:
     @property
     def git_inspector_path(self) -> str:
         return str(
-            Path(__file__).resolve().parents[3]
-            / "infra"
-            / "docker"
-            / "sandbox_git_inspector.py"
+            Path(__file__).resolve().parents[3] / "infra" / "docker" / "sandbox_git_inspector.py"
         )
 
     @property
@@ -160,8 +157,7 @@ class MismatchedSnapshotBatchBackend:
         del cwd, source_cwd, env, timeout, output_caps
         return SandboxExecutionBatchResult(
             executions=tuple(
-                ExecutionResult(returncode=0, stdout="", stderr="")
-                for _command in commands
+                ExecutionResult(returncode=0, stdout="", stderr="") for _command in commands
             ),
             pre_snapshot_fingerprint="0" * 64,
             post_snapshot_fingerprint="0" * 64,
@@ -181,13 +177,10 @@ class PostMismatchedSnapshotBatchBackend:
     ) -> SandboxExecutionBatchResult:
         del source_cwd, env, timeout, output_caps
         pre_fingerprint = sandbox_module._workspace_fingerprint(cwd)
-        post_fingerprint = (
-            ("1" if pre_fingerprint[0] != "1" else "0") + pre_fingerprint[1:]
-        )
+        post_fingerprint = ("1" if pre_fingerprint[0] != "1" else "0") + pre_fingerprint[1:]
         return SandboxExecutionBatchResult(
             executions=tuple(
-                ExecutionResult(returncode=0, stdout="", stderr="")
-                for _command in commands
+                ExecutionResult(returncode=0, stdout="", stderr="") for _command in commands
             ),
             pre_snapshot_fingerprint=pre_fingerprint,
             post_snapshot_fingerprint=post_fingerprint,
@@ -225,16 +218,22 @@ def _valid_inspector_payload() -> dict[str, object]:
     return {
         "schema_version": SANDBOX_GIT_INSPECTION_SCHEMA,
         "is_repository": True,
+        "workspace_fingerprint_before": "0" * 64,
+        "workspace_fingerprint_after": "0" * 64,
+        "git_control_fingerprint_before": "1" * 64,
+        "git_control_fingerprint_after": "1" * 64,
+        "config_keys": [],
+        "index_flags": {
+            "assume_unchanged": [],
+            "skip_worktree": [],
+            "fsmonitor_valid": [],
+        },
         "status": [" M probe.py"],
         "unstaged_files": ["probe.py"],
         "staged_files": [],
         "unstaged_diff_stat": " probe.py | 1 +",
         "staged_diff_stat": "",
-        "unstaged_patch": (
-            "diff --git a/probe.py b/probe.py\n"
-            "@@ -1,0 +2 @@\n"
-            "+print('changed')\n"
-        ),
+        "unstaged_patch": ("diff --git a/probe.py b/probe.py\n@@ -1,0 +2 @@\n+print('changed')\n"),
         "staged_patch": "",
         "errors": [],
     }
@@ -319,6 +318,56 @@ def test_snapshot_fails_closed_when_workspace_byte_bound_is_exceeded(
     assert backend.calls == []
 
 
+def test_runner_rejects_script_change_during_command_policy_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    backend = RecordingBackend()
+    runner = SandboxRunner(_settings(tmp_path), execution_backend=backend)
+    original_parse = runner._parse_command
+
+    def parse_then_mutate(
+        command: str,
+        repo_path: Path,
+        network_policy: str,
+    ) -> list[str]:
+        parsed = original_parse(command, repo_path, network_policy)
+        (repo / "probe.py").write_text(
+            "import shutil\nshutil.rmtree('victim')\n",
+            encoding="utf-8",
+        )
+        return parsed
+
+    monkeypatch.setattr(runner, "_parse_command", parse_then_mutate)
+
+    with pytest.raises(SandboxError, match="changed during.*policy inspection"):
+        runner.run(_request())
+
+    assert backend.calls == []
+
+
+def test_runner_rejects_direct_workspace_executable_dispatch(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    script = repo / "probe.sh"
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    if os.name != "nt":
+        script.chmod(0o700)
+    backend = RecordingBackend()
+    runner = SandboxRunner(_settings(tmp_path), execution_backend=backend)
+
+    with pytest.raises(SandboxError, match="referenced by name|not allowlisted"):
+        runner.run(
+            RepoChecksRunRequest(
+                repo_ref="repo",
+                commands=["./probe.sh"],
+                network_policy="deny",
+            )
+        )
+
+    assert backend.calls == []
+
+
 def test_batch_evidence_rejects_a_snapshot_that_differs_from_api_source(
     tmp_path: Path,
 ) -> None:
@@ -355,12 +404,7 @@ def test_container_and_api_workspace_fingerprint_algorithms_match(tmp_path: Path
     nested.mkdir()
     (nested / "binary.bin").write_bytes(b"\x00\xffsnapshot\n")
     (repo / "empty").mkdir()
-    module_path = (
-        Path(__file__).resolve().parents[3]
-        / "infra"
-        / "docker"
-        / "sandbox_workspace.py"
-    )
+    module_path = Path(__file__).resolve().parents[3] / "infra" / "docker" / "sandbox_workspace.py"
     spec = importlib.util.spec_from_file_location("sandbox_workspace_test", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -737,7 +781,7 @@ def _malicious_git_helper(root: Path, marker: Path) -> Path:
     if os.name == "nt":
         helper = root / "malicious-git-config.cmd"
         helper.write_text(
-            f"@echo off\r\n>\"{marker}\" echo executed\r\nexit /b 0\r\n",
+            f'@echo off\r\n>"{marker}" echo executed\r\nexit /b 0\r\n',
             encoding="utf-8",
         )
     else:

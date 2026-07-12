@@ -6,11 +6,10 @@ import json
 import os
 import re
 import shlex
-import shutil
 import stat
 import tempfile
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -29,6 +28,9 @@ from hallu_defense.domain.models import (
 from hallu_defense.services.sandbox_exec import (
     MAX_SANDBOX_WORKSPACE_BYTES,
     MAX_SANDBOX_WORKSPACE_FILES,
+    MAX_SANDBOX_WORKSPACE_PATHS,
+    MAX_SANDBOX_PATH_BYTES,
+    MAX_SANDBOX_TOTAL_PATH_BYTES,
     SANDBOX_GIT_INSPECTOR_PATH,
     SandboxBatchExecutionBackend,
     SandboxExecutionBackend,
@@ -118,16 +120,14 @@ NETWORK_PATTERNS = [
     ]
 ]
 SENSITIVE_ENV_RE = re.compile(r"(api[_-]?key|secret|token|password)", re.I)
-DIFF_FILE_RE = re.compile(r"^diff --git a/(.+) b/(.+)$")
-DIFF_HUNK_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@")
+DIFF_HUNK_RE = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
+)
+GIT_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 JAVASCRIPT_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 JS_IDENTIFIER_RE = r"[A-Za-z_$][\w$]*"
-JS_CLASS_RE = re.compile(
-    rf"^\s*(?:export\s+default\s+|export\s+)?class\s+({JS_IDENTIFIER_RE})\b"
-)
-JS_FUNCTION_RE = re.compile(
-    rf"^\s*(?:export\s+)?(?:async\s+)?function\s+({JS_IDENTIFIER_RE})\s*\("
-)
+JS_CLASS_RE = re.compile(rf"^\s*(?:export\s+default\s+|export\s+)?class\s+({JS_IDENTIFIER_RE})\b")
+JS_FUNCTION_RE = re.compile(rf"^\s*(?:export\s+)?(?:async\s+)?function\s+({JS_IDENTIFIER_RE})\s*\(")
 JS_ARROW_RE = re.compile(
     rf"^\s*(?:export\s+)?(?:const|let|var)\s+({JS_IDENTIFIER_RE})\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|{JS_IDENTIFIER_RE})\s*=>"
 )
@@ -177,11 +177,13 @@ class SandboxRunner:
     def run(self, request: RepoChecksRunRequest) -> SandboxRun:
         repo_path = self._resolve_repo(request.repo_ref)
         self._require_supported_network_policy(request.network_policy)
+        source_fingerprint = _workspace_fingerprint(repo_path)
         parsed_commands = [
             self._parse_command(command, repo_path, request.network_policy)
             for command in request.commands
         ]
-        source_fingerprint = _workspace_fingerprint(repo_path)
+        if _workspace_fingerprint(repo_path) != source_fingerprint:
+            raise SandboxError("source workspace changed during sandbox command policy inspection")
 
         if isinstance(self._execution_backend, SandboxBatchExecutionBackend):
             inspection_report = self._batch_inspection_report(
@@ -200,9 +202,7 @@ class SandboxRunner:
             except SandboxExecutionError as exc:
                 raise SandboxError(str(exc)) from exc
             if len(batch.executions) != len(parsed_commands):
-                raise SandboxError(
-                    "sandbox batch backend returned an unexpected result count"
-                )
+                raise SandboxError("sandbox batch backend returned an unexpected result count")
             if batch.pre_snapshot_fingerprint != source_fingerprint:
                 raise SandboxError(
                     "sandbox execution snapshot does not match the requested source workspace"
@@ -234,18 +234,14 @@ class SandboxRunner:
                 artifacts = self._changed_artifacts(working_copy, before_artifacts)
 
         if _workspace_fingerprint(repo_path) != source_fingerprint:
-            raise SandboxError(
-                "source workspace changed during the isolated sandbox run"
-            )
+            raise SandboxError("source workspace changed during the isolated sandbox run")
 
         exit_codes = [item.returncode for item in completed_commands]
         stdout = [
-            bounded(item.stdout, self._settings.max_output_chars)
-            for item in completed_commands
+            bounded(item.stdout, self._settings.max_output_chars) for item in completed_commands
         ]
         stderr = [
-            bounded(item.stderr, self._settings.max_output_chars)
-            for item in completed_commands
+            bounded(item.stderr, self._settings.max_output_chars) for item in completed_commands
         ]
 
         git_report = inspection_report.get("git")
@@ -261,7 +257,9 @@ class SandboxRunner:
             stdout=stdout,
             stderr=stderr,
             artifacts=artifacts,
-            evidence=self._evidence_from_run(request, parsed_commands, exit_codes, stdout, stderr, inspection_report),
+            evidence=self._evidence_from_run(
+                request, parsed_commands, exit_codes, stdout, stderr, inspection_report
+            ),
             network_policy=request.network_policy,
             verdict=VerdictStatus.SUPPORTED
             if exit_codes and all(code == 0 for code in exit_codes) and not git_failed
@@ -352,16 +350,14 @@ class SandboxRunner:
                     raise SandboxError("command is blocked because sandbox network policy is deny")
 
     def _sandbox_env(self, network_policy: str) -> dict[str, str]:
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not SENSITIVE_ENV_RE.search(key)
-        }
+        env = {key: value for key, value in os.environ.items() if not SENSITIVE_ENV_RE.search(key)}
         env["HALLU_DEFENSE_NETWORK_POLICY"] = network_policy
         return env
 
     def _artifact_snapshot(self, repo_path: Path) -> dict[str, tuple[int, str]]:
         snapshot: dict[str, tuple[int, str]] = {}
+        total_bytes = 0
+        path_budget = [0, 0]
         for artifact_dir in ARTIFACT_DIRS:
             root = repo_path / artifact_dir
             try:
@@ -376,9 +372,13 @@ class SandboxRunner:
                 repo_path,
                 root,
                 reject_links=True,
+                path_budget=path_budget,
             ):
                 if len(snapshot) >= MAX_ARTIFACT_FILES:
                     raise SandboxError("sandbox artifact inventory exceeded its safety limit")
+                total_bytes += path_info.st_size
+                if total_bytes > MAX_SANDBOX_WORKSPACE_BYTES:
+                    raise SandboxError("sandbox artifact bytes exceeded their safety limit")
                 snapshot[path.relative_to(repo_path).as_posix()] = (
                     path_info.st_size,
                     _file_content_digest_no_follow(
@@ -396,11 +396,7 @@ class SandboxRunner:
         before: dict[str, tuple[int, str]],
     ) -> list[str]:
         after = self._artifact_snapshot(repo_path)
-        return sorted(
-            path
-            for path, signature in after.items()
-            if before.get(path) != signature
-        )
+        return sorted(path for path, signature in after.items() if before.get(path) != signature)
 
     def _inspection_report(
         self,
@@ -438,9 +434,7 @@ class SandboxRunner:
             except FileNotFoundError:
                 git_report = _no_git_inspection()
             else:
-                if _stat_is_link_or_reparse(git_info) or not stat.S_ISDIR(
-                    git_info.st_mode
-                ):
+                if _stat_is_link_or_reparse(git_info) or not stat.S_ISDIR(git_info.st_mode):
                     raise SandboxError(
                         "repository .git metadata must be a real in-repository directory"
                     )
@@ -605,7 +599,12 @@ class SandboxRunner:
         lowered = [arg.lower() for arg in args]
         skip_indexes = {0}
         executable = self._normalized_executable(args[0]) if args else ""
-        if executable == "python" and len(lowered) > 2 and lowered[1] == "-m" and lowered[2] in {"pytest", "unittest"}:
+        if (
+            executable == "python"
+            and len(lowered) > 2
+            and lowered[1] == "-m"
+            and lowered[2] in {"pytest", "unittest"}
+        ):
             skip_indexes.update({1, 2})
         if executable == "npm" and len(lowered) > 1:
             skip_indexes.add(1)
@@ -665,23 +664,66 @@ class SandboxRunner:
         static_report: dict[str, object],
         inspector: dict[str, object],
     ) -> dict[str, object]:
+        errors = cast(list[dict[str, str]], inspector["errors"])
+        diagnostics = {
+            "inspection_fingerprints": {
+                field_name: inspector[field_name]
+                for field_name in (
+                    "workspace_fingerprint_before",
+                    "workspace_fingerprint_after",
+                    "git_control_fingerprint_before",
+                    "git_control_fingerprint_after",
+                )
+            },
+            "config_keys": cast(list[str], inspector["config_keys"]),
+            "index_flags": cast(dict[str, list[str]], inspector["index_flags"]),
+            "errors": errors,
+        }
+        if errors:
+            return {
+                "is_repository": True,
+                "status": [],
+                "diff_files": [],
+                "diff_stat": "",
+                "changed_ranges": [],
+                "changed_lines": [],
+                "changed_symbols": [],
+                **diagnostics,
+            }
+
         status = "\n".join(cast(list[str], inspector["status"]))
-        unstaged_files = "\n".join(cast(list[str], inspector["unstaged_files"]))
-        staged_files = "\n".join(cast(list[str], inspector["staged_files"]))
+        unstaged_files = cast(list[str], inspector["unstaged_files"])
+        staged_files = cast(list[str], inspector["staged_files"])
         diff_stat = cast(str, inspector["unstaged_diff_stat"])
         cached_diff_stat = cast(str, inspector["staged_diff_stat"])
         unstaged_patch = cast(str, inspector["unstaged_patch"])
         staged_patch = cast(str, inspector["staged_patch"])
 
-        diff_files = sorted({*self._nonempty_lines(unstaged_files), *self._nonempty_lines(staged_files)})
+        diff_files = sorted({*unstaged_files, *staged_files})
         diff_stat_parts = [part for part in [diff_stat.strip(), cached_diff_stat.strip()] if part]
         changed_ranges = [
-            *self._changed_ranges_from_patch(unstaged_patch, "working_tree"),
-            *self._changed_ranges_from_patch(staged_patch, "index"),
+            *self._changed_ranges_from_patch(
+                unstaged_patch,
+                "working_tree",
+                expected_paths=set(unstaged_files),
+            ),
+            *self._changed_ranges_from_patch(
+                staged_patch,
+                "index",
+                expected_paths=set(staged_files),
+            ),
         ]
         changed_lines = [
-            *self._changed_lines_from_patch(unstaged_patch, "working_tree"),
-            *self._changed_lines_from_patch(staged_patch, "index"),
+            *self._changed_lines_from_patch(
+                unstaged_patch,
+                "working_tree",
+                expected_paths=set(unstaged_files),
+            ),
+            *self._changed_lines_from_patch(
+                staged_patch,
+                "index",
+                expected_paths=set(staged_files),
+            ),
         ]
 
         return {
@@ -692,7 +734,7 @@ class SandboxRunner:
             "changed_ranges": changed_ranges,
             "changed_lines": changed_lines,
             "changed_symbols": self._changed_symbols(static_report, changed_ranges),
-            "errors": cast(list[dict[str, str]], inspector["errors"]),
+            **diagnostics,
         }
 
     def _run_isolated_git_inspector(
@@ -735,9 +777,7 @@ class SandboxRunner:
             {},
         )
         if not isinstance(host_environment, dict) or any(
-            key not in HOST_GIT_INSPECTOR_ENV_KEYS
-            or not isinstance(value, str)
-            or "\x00" in value
+            key not in HOST_GIT_INSPECTOR_ENV_KEYS or not isinstance(value, str) or "\x00" in value
             for key, value in host_environment.items()
         ):
             raise SandboxError("isolated Git inspector environment is invalid")
@@ -754,9 +794,7 @@ class SandboxRunner:
                     self._execution_backend,
                     SandboxBatchExecutionBackend,
                 ):
-                    raise SandboxError(
-                        "snapshot-bound Git inspection requires a batch backend"
-                    )
+                    raise SandboxError("snapshot-bound Git inspection requires a batch backend")
                 batch = self._execution_backend.execute_batch(
                     [inspector_command],
                     cwd=repo_path,
@@ -825,7 +863,9 @@ class SandboxRunner:
                 break
             symbols.extend(visitor.symbols[:remaining])
 
-        for path in [item for item in inspectable_files if item.suffix.lower() in JAVASCRIPT_SUFFIXES]:
+        for path in [
+            item for item in inspectable_files if item.suffix.lower() in JAVASCRIPT_SUFFIXES
+        ]:
             remaining = MAX_INSPECTION_SYMBOLS - len(javascript_symbols)
             if remaining <= 0:
                 break
@@ -848,7 +888,10 @@ class SandboxRunner:
             javascript_symbols.extend(self._javascript_symbols(rel_path, content)[:remaining])
 
         return {
-            "files": [path.relative_to(repo_path).as_posix() for path in inspectable_files[:MAX_INSPECTION_FILES]],
+            "files": [
+                path.relative_to(repo_path).as_posix()
+                for path in inspectable_files[:MAX_INSPECTION_FILES]
+            ],
             "python_symbols": symbols,
             "javascript_symbols": javascript_symbols,
             "parse_errors": parse_errors,
@@ -858,7 +901,9 @@ class SandboxRunner:
         }
 
     def _javascript_symbols(self, rel_path: str, content: str) -> list[dict[str, object]]:
-        language = "typescript" if Path(rel_path).suffix.lower() in {".ts", ".tsx"} else "javascript"
+        language = (
+            "typescript" if Path(rel_path).suffix.lower() in {".ts", ".tsx"} else "javascript"
+        )
         symbols: list[dict[str, object]] = []
         brace_depth = 0
         current_class: str | None = None
@@ -945,19 +990,48 @@ class SandboxRunner:
     def _nonempty_lines(self, value: str) -> list[str]:
         return [line for line in value.splitlines() if line.strip()]
 
-    def _changed_ranges_from_patch(self, patch_text: str, source: str) -> list[dict[str, object]]:
+    def _changed_ranges_from_patch(
+        self,
+        patch_text: str,
+        source: str,
+        *,
+        expected_paths: set[str],
+    ) -> list[dict[str, object]]:
         ranges: list[dict[str, object]] = []
         current_path: str | None = None
+        old_path: str | None = None
+        in_hunk = False
+        self._require_canonical_patch_text(patch_text)
         for line in patch_text.splitlines():
-            file_match = DIFF_FILE_RE.match(line)
-            if file_match is not None:
-                current_path = file_match.group(2)
+            if line.startswith("diff --git "):
+                self._require_canonical_diff_header(line)
+                current_path = None
+                old_path = None
+                in_hunk = False
+                continue
+            if not in_hunk and line.startswith("--- "):
+                old_path = self._canonical_patch_path(
+                    line[4:],
+                    prefix="a/",
+                    expected_paths=expected_paths,
+                )
+                continue
+            if not in_hunk and line.startswith("+++ "):
+                new_path = self._canonical_patch_path(
+                    line[4:],
+                    prefix="b/",
+                    expected_paths=expected_paths,
+                )
+                current_path = new_path if new_path is not None else old_path
+                if current_path is None:
+                    raise SandboxError("canonical Git patch is missing a file path")
                 continue
             if current_path is None:
                 continue
             hunk_match = DIFF_HUNK_RE.match(line)
             if hunk_match is None:
                 continue
+            in_hunk = True
             old_lines = int(hunk_match.group("old_lines") or "1")
             new_lines = int(hunk_match.group("new_lines") or "1")
             ranges.append(
@@ -972,17 +1046,43 @@ class SandboxRunner:
             )
         return ranges
 
-    def _changed_lines_from_patch(self, patch_text: str, source: str) -> list[dict[str, object]]:
+    def _changed_lines_from_patch(
+        self,
+        patch_text: str,
+        source: str,
+        *,
+        expected_paths: set[str],
+    ) -> list[dict[str, object]]:
         lines: list[dict[str, object]] = []
         current_path: str | None = None
+        old_path: str | None = None
         old_lineno = 0
         new_lineno = 0
         in_hunk = False
+        self._require_canonical_patch_text(patch_text)
         for line in patch_text.splitlines():
-            file_match = DIFF_FILE_RE.match(line)
-            if file_match is not None:
-                current_path = file_match.group(2)
+            if line.startswith("diff --git "):
+                self._require_canonical_diff_header(line)
+                current_path = None
+                old_path = None
                 in_hunk = False
+                continue
+            if not in_hunk and line.startswith("--- "):
+                old_path = self._canonical_patch_path(
+                    line[4:],
+                    prefix="a/",
+                    expected_paths=expected_paths,
+                )
+                continue
+            if not in_hunk and line.startswith("+++ "):
+                new_path = self._canonical_patch_path(
+                    line[4:],
+                    prefix="b/",
+                    expected_paths=expected_paths,
+                )
+                current_path = new_path if new_path is not None else old_path
+                if current_path is None:
+                    raise SandboxError("canonical Git patch is missing a file path")
                 continue
             if current_path is None:
                 continue
@@ -1023,6 +1123,36 @@ class SandboxRunner:
                 break
         return lines
 
+    def _require_canonical_patch_text(self, patch_text: str) -> None:
+        if "\x1b" in patch_text or "\x00" in patch_text:
+            raise SandboxError("canonical Git patch contains control sequences")
+
+    def _require_canonical_diff_header(self, line: str) -> None:
+        if not line.startswith("diff --git a/") or " b/" not in line:
+            raise SandboxError("canonical Git patch has an invalid diff header")
+
+    def _canonical_patch_path(
+        self,
+        raw_path: str,
+        *,
+        prefix: str,
+        expected_paths: set[str],
+    ) -> str | None:
+        if "\t" in raw_path:
+            raw_path, suffix = raw_path.split("\t", 1)
+            if suffix:
+                raise SandboxError("canonical Git patch path contains an unexpected suffix")
+        if raw_path == "/dev/null":
+            return None
+        if not raw_path.startswith(prefix):
+            raise SandboxError("canonical Git patch has a non-canonical path prefix")
+        path = raw_path[len(prefix) :]
+        if path not in expected_paths:
+            raise SandboxError(
+                "canonical Git patch path does not match the NUL-delimited inventory"
+            )
+        return path
+
     def _changed_symbols(
         self,
         static_report: dict[str, object],
@@ -1051,7 +1181,11 @@ class SandboxRunner:
             path = changed_range.get("path")
             new_start = changed_range.get("new_start")
             new_lines = changed_range.get("new_lines")
-            if not isinstance(path, str) or not isinstance(new_start, int) or not isinstance(new_lines, int):
+            if (
+                not isinstance(path, str)
+                or not isinstance(new_start, int)
+                or not isinstance(new_lines, int)
+            ):
                 continue
             symbols = symbols_by_path.get(path, [])
             if not symbols:
@@ -1113,6 +1247,13 @@ def _no_git_inspection() -> dict[str, object]:
         "changed_ranges": [],
         "changed_lines": [],
         "changed_symbols": [],
+        "inspection_fingerprints": {},
+        "config_keys": [],
+        "index_flags": {
+            "assume_unchanged": [],
+            "skip_worktree": [],
+            "fsmonitor_valid": [],
+        },
         "errors": [],
     }
 
@@ -1126,6 +1267,13 @@ def _failed_git_inspection(error_type: str) -> dict[str, object]:
         "changed_ranges": [],
         "changed_lines": [],
         "changed_symbols": [],
+        "inspection_fingerprints": {},
+        "config_keys": [],
+        "index_flags": {
+            "assume_unchanged": [],
+            "skip_worktree": [],
+            "fsmonitor_valid": [],
+        },
         "errors": [
             {
                 "command": "isolated_git_inspector",
@@ -1141,6 +1289,12 @@ def _validate_git_inspection_payload(value: object) -> dict[str, object]:
     expected_keys = {
         "schema_version",
         "is_repository",
+        "workspace_fingerprint_before",
+        "workspace_fingerprint_after",
+        "git_control_fingerprint_before",
+        "git_control_fingerprint_after",
+        "config_keys",
+        "index_flags",
         "status",
         "unstaged_files",
         "staged_files",
@@ -1161,6 +1315,58 @@ def _validate_git_inspection_payload(value: object) -> dict[str, object]:
         "schema_version": SANDBOX_GIT_INSPECTION_SCHEMA,
         "is_repository": True,
     }
+    for field_name in (
+        "workspace_fingerprint_before",
+        "workspace_fingerprint_after",
+        "git_control_fingerprint_before",
+        "git_control_fingerprint_after",
+    ):
+        fingerprint = value.get(field_name)
+        if not isinstance(fingerprint, str) or GIT_FINGERPRINT_RE.fullmatch(fingerprint) is None:
+            raise SandboxError(f"isolated Git inspector returned invalid {field_name}")
+        normalized[field_name] = fingerprint
+
+    raw_config_keys = value.get("config_keys")
+    if (
+        not isinstance(raw_config_keys, list)
+        or len(raw_config_keys) > MAX_GIT_LIST_ENTRIES
+        or not all(
+            isinstance(item, str)
+            and item == item.strip().lower()
+            and 0 < len(item) <= 4_096
+            and "\x00" not in item
+            and "\r" not in item
+            and "\n" not in item
+            for item in raw_config_keys
+        )
+        or raw_config_keys != sorted(set(raw_config_keys))
+    ):
+        raise SandboxError("isolated Git inspector returned invalid config keys")
+    normalized["config_keys"] = list(raw_config_keys)
+
+    raw_index_flags = value.get("index_flags")
+    expected_index_flags = {
+        "assume_unchanged",
+        "skip_worktree",
+        "fsmonitor_valid",
+    }
+    if not isinstance(raw_index_flags, dict) or set(raw_index_flags) != expected_index_flags:
+        raise SandboxError("isolated Git inspector returned invalid index flags")
+    index_flags: dict[str, list[str]] = {}
+    for flag_name in sorted(expected_index_flags):
+        raw_paths = raw_index_flags.get(flag_name)
+        if (
+            not isinstance(raw_paths, list)
+            or len(raw_paths) > MAX_GIT_LIST_ENTRIES
+            or raw_paths != sorted(set(raw_paths))
+            or not all(
+                isinstance(path, str) and _valid_git_payload_path(path) for path in raw_paths
+            )
+        ):
+            raise SandboxError(f"isolated Git inspector returned invalid {flag_name} paths")
+        index_flags[flag_name] = list(raw_paths)
+    normalized["index_flags"] = index_flags
+
     for field_name in ("status", "unstaged_files", "staged_files"):
         raw_items = value.get(field_name)
         if (
@@ -1175,10 +1381,10 @@ def _validate_git_inspection_payload(value: object) -> dict[str, object]:
                 for item in raw_items
             )
         ):
-            raise SandboxError(
-                f"isolated Git inspector returned invalid {field_name} entries"
-            )
+            raise SandboxError(f"isolated Git inspector returned invalid {field_name} entries")
         normalized[field_name] = list(raw_items)
+        if field_name != "status" and not all(_valid_git_payload_path(item) for item in raw_items):
+            raise SandboxError(f"isolated Git inspector returned unsafe {field_name} paths")
 
     for field_name in (
         "unstaged_diff_stat",
@@ -1192,9 +1398,7 @@ def _validate_git_inspection_payload(value: object) -> dict[str, object]:
             or len(raw_text.encode("utf-8")) > 100_000
             or "\x00" in raw_text
         ):
-            raise SandboxError(
-                f"isolated Git inspector returned invalid {field_name} output"
-            )
+            raise SandboxError(f"isolated Git inspector returned invalid {field_name} output")
         normalized[field_name] = raw_text
 
     raw_errors = value.get("errors")
@@ -1219,7 +1423,27 @@ def _validate_git_inspection_payload(value: object) -> dict[str, object]:
             raise SandboxError("isolated Git inspector returned an invalid error record")
         errors.append({"command": command, "error": error})
     normalized["errors"] = errors
+    fingerprints_changed = (
+        normalized["workspace_fingerprint_before"] != normalized["workspace_fingerprint_after"]
+        or normalized["git_control_fingerprint_before"]
+        != normalized["git_control_fingerprint_after"]
+    )
+    if (fingerprints_changed or any(index_flags.values())) and not errors:
+        raise SandboxError("isolated Git inspector omitted a required repository guard error")
     return normalized
+
+
+def _valid_git_payload_path(path: str) -> bool:
+    return (
+        bool(path)
+        and path == path.strip()
+        and not path.startswith("/")
+        and "\\" not in path
+        and '"' not in path
+        and all(ord(character) >= 0x20 and ord(character) != 0x7F for character in path)
+        and all(part not in {"", ".", ".."} for part in path.split("/"))
+        and len(path.encode("utf-8")) <= 4_096
+    )
 
 
 def _stat_is_link_or_reparse(path_info: object) -> bool:
@@ -1301,18 +1525,31 @@ def _directory_entries_no_follow(
     root: Path,
     directory: Path,
 ) -> list[tuple[str, os.stat_result]]:
+    def bounded_entries(
+        entries: Iterable[os.DirEntry[str]],
+    ) -> list[tuple[str, os.stat_result]]:
+        result: list[tuple[str, os.stat_result]] = []
+        for entry in entries:
+            if len(result) >= MAX_SANDBOX_WORKSPACE_PATHS:
+                raise SandboxError("sandbox workspace path count exceeded its safety limit")
+            name = entry.name
+            if len(name.encode("utf-8")) > MAX_SANDBOX_PATH_BYTES:
+                raise SandboxError("sandbox path exceeded its safety limit")
+            result.append((name, entry.stat(follow_symlinks=False)))
+        return result
+
     relative = _relative_path_no_resolve(root, directory)
     if _supports_secure_directory_fds():
         descriptor = _open_directory_no_follow(root, relative)
         try:
             with os.scandir(descriptor) as entries:
-                return [(entry.name, entry.stat(follow_symlinks=False)) for entry in entries]
+                return bounded_entries(entries)
         finally:
             os.close(descriptor)
 
     before = _guard_existing_path(root, directory, expected="directory")
     with os.scandir(directory) as entries:
-        result = [(entry.name, entry.stat(follow_symlinks=False)) for entry in entries]
+        result = bounded_entries(entries)
     after = _guard_existing_path(root, directory, expected="directory")
     if not _same_file_identity(before, after):
         raise SandboxError("sandbox directory changed during inspection")
@@ -1325,15 +1562,26 @@ def _walk_regular_files_no_follow(
     *,
     reject_links: bool,
     skip_directories: set[str] | None = None,
-) -> list[tuple[Path, os.stat_result]]:
+    path_budget: list[int] | None = None,
+) -> Iterator[tuple[Path, os.stat_result]]:
     _guard_existing_path(root, start, expected="directory")
     skipped = skip_directories or set()
     directories = [start]
-    files: list[tuple[Path, os.stat_result]] = []
+    budget = path_budget if path_budget is not None else [0, 0]
+    if len(budget) != 2 or any(value < 0 for value in budget):
+        raise SandboxError("sandbox traversal path budget is invalid")
     while directories:
         directory = directories.pop()
         for name, path_info in _directory_entries_no_follow(root, directory):
             path = directory / name
+            relative = path.relative_to(root)
+            relative_bytes = _bounded_relative_path_bytes(relative)
+            budget[0] += 1
+            budget[1] += relative_bytes
+            if budget[0] > MAX_SANDBOX_WORKSPACE_PATHS:
+                raise SandboxError("sandbox tree path count exceeded its safety limit")
+            if budget[1] > MAX_SANDBOX_TOTAL_PATH_BYTES:
+                raise SandboxError("sandbox tree path byte size exceeded its safety limit")
             if _stat_is_link_or_reparse(path_info):
                 if reject_links:
                     raise SandboxError(
@@ -1345,8 +1593,18 @@ def _walk_regular_files_no_follow(
                 if name not in skipped:
                     directories.append(path)
             elif stat.S_ISREG(path_info.st_mode):
-                files.append((path, path_info))
-    return files
+                yield path, path_info
+            else:
+                raise SandboxError(f"sandbox tree contains a special file: {relative.as_posix()}")
+
+
+def _bounded_relative_path_bytes(relative: Path) -> int:
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise SandboxError("sandbox relative path is invalid")
+    encoded_length = len(relative.as_posix().encode("utf-8"))
+    if encoded_length > MAX_SANDBOX_PATH_BYTES:
+        raise SandboxError("sandbox path exceeded its safety limit")
+    return encoded_length
 
 
 def _read_text_no_follow(
@@ -1368,8 +1626,8 @@ def _read_bytes_no_follow(
     *,
     max_bytes: int,
 ) -> bytes:
-    if max_bytes <= 0:
-        raise ValueError("max_bytes must be positive")
+    if max_bytes < 0:
+        raise ValueError("max_bytes must not be negative")
     relative = _relative_path_no_resolve(root, path)
     if not relative.parts:
         raise SandboxError("sandbox file path must not be the repository root")
@@ -1381,9 +1639,7 @@ def _read_bytes_no_follow(
         try:
             descriptor = os.open(
                 relative.name,
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=parent_descriptor,
             )
         finally:
@@ -1416,6 +1672,9 @@ def _read_bytes_no_follow(
             total += len(chunk)
         if total > max_bytes:
             raise _SandboxFileTooLarge(str(path))
+        after_read = os.fstat(descriptor)
+        if not _same_descriptor_snapshot(path_info, after_read):
+            raise SandboxError("sandbox file changed during bounded read")
         return b"".join(chunks)
     finally:
         os.close(descriptor)
@@ -1429,26 +1688,31 @@ def _workspace_fingerprint(root: Path) -> str:
     directories = [root]
     file_count = 0
     total_bytes = 0
+    path_count = 0
+    total_path_bytes = 0
     while directories:
         directory = directories.pop()
         entries = sorted(_directory_entries_no_follow(root, directory), key=lambda item: item[0])
         for name, path_info in entries:
             path = directory / name
-            relative = path.relative_to(root).as_posix()
+            relative_path = path.relative_to(root)
+            relative = relative_path.as_posix()
+            path_count += 1
+            total_path_bytes += _bounded_relative_path_bytes(relative_path)
+            if path_count > MAX_SANDBOX_WORKSPACE_PATHS:
+                raise SandboxError("sandbox workspace path count exceeded its safety limit")
+            if total_path_bytes > MAX_SANDBOX_TOTAL_PATH_BYTES:
+                raise SandboxError("sandbox workspace path byte size exceeded its safety limit")
             if _stat_is_link_or_reparse(path_info):
                 raise SandboxError(
-                    "sandbox source workspace contains a symlink or reparse point: "
-                    f"{relative}"
+                    f"sandbox source workspace contains a symlink or reparse point: {relative}"
                 )
             if stat.S_ISDIR(path_info.st_mode):
                 directories.append(path)
                 digest.update(b"D\0" + relative.encode("utf-8") + b"\0")
                 continue
             if not stat.S_ISREG(path_info.st_mode):
-                raise SandboxError(
-                    "sandbox source workspace contains a special file: "
-                    f"{relative}"
-                )
+                raise SandboxError(f"sandbox source workspace contains a special file: {relative}")
             file_count += 1
             total_bytes += path_info.st_size
             if file_count > MAX_SANDBOX_WORKSPACE_FILES:
@@ -1462,7 +1726,7 @@ def _workspace_fingerprint(root: Path) -> str:
                 root,
                 path,
                 expected=path_info,
-                max_bytes=MAX_SANDBOX_WORKSPACE_BYTES - total_bytes + path_info.st_size,
+                max_bytes=(MAX_SANDBOX_WORKSPACE_BYTES - (total_bytes - path_info.st_size)),
             )
             digest.update(b"\0")
     return digest.hexdigest()
@@ -1495,16 +1759,14 @@ def _update_digest_from_file_no_follow(
     max_bytes: int,
 ) -> None:
     relative = _relative_path_no_resolve(root, path)
-    if not relative.parts or max_bytes <= 0:
+    if not relative.parts or max_bytes < 0:
         raise SandboxError("sandbox fingerprint path or limit is invalid")
     if _supports_secure_directory_fds():
         parent_descriptor = _open_directory_no_follow(root, relative.parent)
         try:
             descriptor = os.open(
                 relative.name,
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=parent_descriptor,
             )
         finally:
@@ -1543,11 +1805,7 @@ def _update_digest_from_file_no_follow(
         if os.read(descriptor, 1):
             raise SandboxError("sandbox file grew during fingerprinting")
         after = os.fstat(descriptor)
-        if (
-            after.st_size != before.st_size
-            or after.st_mtime_ns != before.st_mtime_ns
-            or after.st_ctime_ns != before.st_ctime_ns
-        ):
+        if not _same_descriptor_snapshot(before, after):
             raise SandboxError("sandbox file changed during fingerprinting")
     finally:
         os.close(descriptor)
@@ -1561,8 +1819,8 @@ def _ephemeral_working_copy(
     with tempfile.TemporaryDirectory(prefix="hallu-sandbox-run-") as temp_dir:
         working_copy = Path(temp_dir) / "workspace"
         try:
-            shutil.copytree(source, working_copy, symlinks=True)
-        except (OSError, shutil.Error) as exc:
+            _copy_workspace_tree_no_follow(source, working_copy)
+        except OSError as exc:
             raise SandboxError("sandbox source snapshot could not be created") from exc
         if _workspace_fingerprint(source) != source_fingerprint:
             raise SandboxError("source workspace changed while creating its sandbox snapshot")
@@ -1570,6 +1828,132 @@ def _ephemeral_working_copy(
             raise SandboxError("sandbox working copy does not match the source snapshot")
         _make_ephemeral_copy_writable(working_copy)
         yield working_copy
+
+
+def _copy_workspace_tree_no_follow(source: Path, destination: Path) -> None:
+    """Copy a bounded source tree without following mutable path components."""
+
+    _require_real_directory(source, label="sandbox source workspace")
+    destination.mkdir(mode=0o700)
+    directories = [source]
+    path_count = 0
+    total_path_bytes = 0
+    file_count = 0
+    total_file_bytes = 0
+    while directories:
+        directory = directories.pop()
+        for name, path_info in sorted(
+            _directory_entries_no_follow(source, directory),
+            key=lambda item: item[0],
+        ):
+            source_path = directory / name
+            relative = source_path.relative_to(source)
+            path_count += 1
+            total_path_bytes += _bounded_relative_path_bytes(relative)
+            if path_count > MAX_SANDBOX_WORKSPACE_PATHS:
+                raise SandboxError("sandbox workspace path count exceeded its safety limit")
+            if total_path_bytes > MAX_SANDBOX_TOTAL_PATH_BYTES:
+                raise SandboxError("sandbox workspace path byte size exceeded its safety limit")
+            if _stat_is_link_or_reparse(path_info):
+                raise SandboxError(
+                    "sandbox source workspace contains a symlink or reparse point: "
+                    f"{relative.as_posix()}"
+                )
+            destination_path = destination / relative
+            if stat.S_ISDIR(path_info.st_mode):
+                destination_path.mkdir(mode=stat.S_IMODE(path_info.st_mode) | 0o700)
+                directories.append(source_path)
+                continue
+            if not stat.S_ISREG(path_info.st_mode):
+                raise SandboxError(
+                    f"sandbox source workspace contains a special file: {relative.as_posix()}"
+                )
+            file_count += 1
+            total_file_bytes += path_info.st_size
+            if file_count > MAX_SANDBOX_WORKSPACE_FILES:
+                raise SandboxError("sandbox workspace file count exceeded its safety limit")
+            if total_file_bytes > MAX_SANDBOX_WORKSPACE_BYTES:
+                raise SandboxError("sandbox workspace byte size exceeded its safety limit")
+            _copy_regular_file_no_follow(
+                source,
+                source_path,
+                destination_path,
+                expected=path_info,
+            )
+
+
+def _copy_regular_file_no_follow(
+    root: Path,
+    source: Path,
+    destination: Path,
+    *,
+    expected: os.stat_result,
+) -> None:
+    relative = _relative_path_no_resolve(root, source)
+    if _supports_secure_directory_fds():
+        parent_descriptor = _open_directory_no_follow(root, relative.parent)
+        try:
+            source_descriptor = os.open(
+                relative.name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        finally:
+            os.close(parent_descriptor)
+    else:
+        before_path = _guard_existing_path(root, source, expected="file")
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(source_descriptor)
+        after_path = _guard_existing_path(root, source, expected="file")
+        if not _same_file_identity(before_path, opened) or not _same_file_identity(
+            opened,
+            after_path,
+        ):
+            os.close(source_descriptor)
+            raise SandboxError("sandbox file changed during no-follow copy open")
+
+    destination_descriptor: int | None = None
+    try:
+        before = os.fstat(source_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not _same_file_identity(expected, before)
+            or before.st_size != expected.st_size
+        ):
+            raise SandboxError("sandbox file changed before snapshot copy")
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            stat.S_IMODE(expected.st_mode) | 0o600,
+        )
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(source_descriptor, min(65_536, remaining))
+            if not chunk:
+                raise SandboxError("sandbox file changed during snapshot copy")
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_descriptor, view)
+                if written <= 0:
+                    raise SandboxError("sandbox snapshot copy could not make progress")
+                view = view[written:]
+            remaining -= len(chunk)
+        if os.read(source_descriptor, 1):
+            raise SandboxError("sandbox file grew during snapshot copy")
+        after = os.fstat(source_descriptor)
+        if not _same_descriptor_snapshot(before, after):
+            raise SandboxError("sandbox file changed during snapshot copy")
+    finally:
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+        os.close(source_descriptor)
 
 
 def _make_ephemeral_copy_writable(root: Path) -> None:
@@ -1586,14 +1970,26 @@ def _make_ephemeral_copy_writable(root: Path) -> None:
 
 
 def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    if (
+        stat.S_IFMT(first.st_mode) != stat.S_IFMT(second.st_mode)
+        or stat.S_IMODE(first.st_mode) != stat.S_IMODE(second.st_mode)
+        or first.st_size != second.st_size
+    ):
+        return False
     first_inode = (getattr(first, "st_dev", 0), getattr(first, "st_ino", 0))
     second_inode = (getattr(second, "st_dev", 0), getattr(second, "st_ino", 0))
     if first_inode != (0, 0) and second_inode != (0, 0):
         return first_inode == second_inode
+    return first.st_mtime_ns == second.st_mtime_ns
+
+
+def _same_descriptor_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
     return (
         stat.S_IFMT(first.st_mode) == stat.S_IFMT(second.st_mode)
+        and stat.S_IMODE(first.st_mode) == stat.S_IMODE(second.st_mode)
         and first.st_size == second.st_size
         and first.st_mtime_ns == second.st_mtime_ns
+        and first.st_ctime_ns == second.st_ctime_ns
     )
 
 

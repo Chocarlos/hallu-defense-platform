@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -72,7 +73,9 @@ def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
 
     var_dir = ROOT / "var"
     var_dir.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="hallu-live-docker-sandbox-", dir=var_dir) as temp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="hallu-live-docker-sandbox-", dir=var_dir
+    ) as temp_dir:
         workspace = Path(temp_dir)
         repo = workspace / "repo"
         repo.mkdir(parents=True)
@@ -115,7 +118,9 @@ def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
             )
         )
 
-        timeout_runner = SandboxRunner(_settings(config, workspace, max_command_seconds=1))
+        timeout_runner = SandboxRunner(
+            _settings(config, workspace, max_command_seconds=1)
+        )
         timeout_run = timeout_runner.run(
             RepoChecksRunRequest(
                 repo_ref="repo",
@@ -130,21 +135,34 @@ def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
             source=repo,
             scratch_root=workspace,
         )
+        git_preflight = _run_git_hazard_preflight(config, repo=repo)
         source_immutable = (
             repo / "protected-source.txt"
         ).read_bytes() == protected_before
 
-    _assert_run(network_run.exit_codes == [0], "outbound network probe did not fail closed")
-    _assert_run("network denied" in "".join(network_run.stdout), "network-deny evidence missing")
+    _assert_run(
+        network_run.exit_codes == [0], "outbound network probe did not fail closed"
+    )
+    _assert_run(
+        "network denied" in "".join(network_run.stdout), "network-deny evidence missing"
+    )
     _assert_run(mutation_run.exit_codes == [0, 0], "working-copy mutation probe failed")
     _assert_run(
         source_immutable,
         "source workspace changed during isolated execution",
     )
-    _assert_run(outside_write_run.exit_codes == [0], "outside-workspace write probe succeeded")
-    _assert_run("outside write denied" in "".join(outside_write_run.stdout), "outside-write evidence missing")
+    _assert_run(
+        outside_write_run.exit_codes == [0], "outside-workspace write probe succeeded"
+    )
+    _assert_run(
+        "outside write denied" in "".join(outside_write_run.stdout),
+        "outside-write evidence missing",
+    )
     _assert_run(artifact_run.exit_codes == [0], "artifact probe failed")
-    _assert_run("artifacts/live-smoke.txt" in artifact_run.artifacts, "artifact was not captured")
+    _assert_run(
+        "artifacts/live-smoke.txt" in artifact_run.artifacts,
+        "artifact was not captured",
+    )
     _assert_run(timeout_run.exit_codes == [124], "timeout path did not return 124")
     _assert_run(
         "timed out" in "".join(timeout_run.stderr),
@@ -162,6 +180,7 @@ def run_from_env(env: Mapping[str, str] | None = None) -> dict[str, object]:
         "timeout_mode": "in-container-process-group",
         "limits": limits,
         "kubernetes_batch_runner": kubernetes_batch,
+        "git_preflight": git_preflight,
     }
 
 
@@ -279,13 +298,34 @@ def _write_probe_scripts(repo: Path) -> None:
         encoding="utf-8",
     )
     (repo / "timeout_probe.py").write_text(
-        "import time\n"
-        "time.sleep(60)\n",
+        "import time\ntime.sleep(60)\n",
+        encoding="utf-8",
+    )
+    (repo / "detached_parent_probe.py").write_text(
+        "import subprocess, sys\n"
+        'child = "import pathlib,time; time.sleep(0.5); '
+        "pathlib.Path('detached-survived.txt').write_text('escaped', encoding='utf-8')\"\n"
+        "subprocess.Popen([sys.executable, '-c', child], stdin=subprocess.DEVNULL, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+        "start_new_session=True, close_fds=True)\n"
+        "print('detached child launched')\n",
+        encoding="utf-8",
+    )
+    (repo / "detached_assert_probe.py").write_text(
+        "from pathlib import Path\n"
+        "import sys, time\n"
+        "time.sleep(1)\n"
+        "if Path('detached-survived.txt').exists():\n"
+        "    print('detached child survived')\n"
+        "    sys.exit(1)\n"
+        "print('detached child reaped')\n",
         encoding="utf-8",
     )
 
 
-def _inspect_limits(config: LiveDockerSandboxSmokeConfig, repo: Path) -> dict[str, object]:
+def _inspect_limits(
+    config: LiveDockerSandboxSmokeConfig, repo: Path
+) -> dict[str, object]:
     backend = DockerContainerBackend(
         image=config.image,
         docker_path=config.docker_path,
@@ -304,10 +344,14 @@ def _inspect_limits(config: LiveDockerSandboxSmokeConfig, repo: Path) -> dict[st
     started = _run_checked(argv, timeout=10)
     container_id = started.stdout.strip()
     try:
-        inspected = _run_checked([config.docker_path, "inspect", container_id], timeout=10)
+        inspected = _run_checked(
+            [config.docker_path, "inspect", container_id], timeout=10
+        )
         payload = json.loads(inspected.stdout)
         if not isinstance(payload, list) or not payload:
-            raise LiveDockerSandboxSmokeError("docker inspect returned an empty payload")
+            raise LiveDockerSandboxSmokeError(
+                "docker inspect returned an empty payload"
+            )
         host_config = payload[0].get("HostConfig")
         if not isinstance(host_config, dict):
             raise LiveDockerSandboxSmokeError("docker inspect missing HostConfig")
@@ -321,14 +365,20 @@ def _inspect_limits(config: LiveDockerSandboxSmokeConfig, repo: Path) -> dict[st
             "security_opt": host_config.get("SecurityOpt"),
         }
         _assert_run(limits["network_mode"] == "none", "inspect NetworkMode is not none")
-        _assert_run(limits["readonly_rootfs"] is True, "inspect ReadonlyRootfs is not true")
-        _assert_run(limits["pids_limit"] == config.pids_limit, "inspect PidsLimit mismatch")
+        _assert_run(
+            limits["readonly_rootfs"] is True, "inspect ReadonlyRootfs is not true"
+        )
+        _assert_run(
+            limits["pids_limit"] == config.pids_limit, "inspect PidsLimit mismatch"
+        )
         _assert_run(
             limits["memory"] == config.memory_mb * 1024 * 1024,
             "inspect Memory limit mismatch",
         )
         expected_nano_cpus = int(config.cpus * 1_000_000_000)
-        _assert_run(limits["nano_cpus"] == expected_nano_cpus, "inspect NanoCpus mismatch")
+        _assert_run(
+            limits["nano_cpus"] == expected_nano_cpus, "inspect NanoCpus mismatch"
+        )
         _assert_run(limits["cap_drop"] == ["ALL"], "inspect CapDrop mismatch")
         security_opt = limits["security_opt"]
         _assert_run(
@@ -354,6 +404,8 @@ def _run_kubernetes_style_batch(
         [
             ["python", "source_mutation_probe.py"],
             ["node", "source_mutation_probe.js"],
+            ["python", "detached_parent_probe.py"],
+            ["python", "detached_assert_probe.py"],
         ],
         separators=(",", ":"),
     )
@@ -365,7 +417,7 @@ def _run_kubernetes_style_batch(
             "--network=none",
             "--read-only",
             "--tmpfs",
-            "/tmp",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -403,10 +455,14 @@ def _run_kubernetes_style_batch(
     if completed.returncode != 0:
         runner_stderr = ""
         if (results / "stderr").is_file():
-            runner_stderr = (results / "stderr").read_text(
-                encoding="utf-8",
-                errors="replace",
-            ).strip()
+            runner_stderr = (
+                (results / "stderr")
+                .read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                .strip()
+            )
         raise LiveDockerSandboxSmokeError(
             "Kubernetes-style runner failed: "
             f"{runner_stderr or completed.stderr.strip() or completed.returncode}"
@@ -429,7 +485,7 @@ def _run_kubernetes_style_batch(
         or len(payload["post_snapshot_fingerprint"]) != 64
         or payload["pre_snapshot_fingerprint"] == payload["post_snapshot_fingerprint"]
         or not isinstance(executions, list)
-        or [item.get("returncode") for item in executions] != [0, 0]
+        or [item.get("returncode") for item in executions] != [0, 0, 0, 0]
     ):
         raise LiveDockerSandboxSmokeError(
             "Kubernetes-style runner returned an invalid batch result"
@@ -441,10 +497,98 @@ def _run_kubernetes_style_batch(
         "command_returncodes": [item["returncode"] for item in executions],
         "source_read_only": True,
         "working_copy_discardable": True,
+        "detached_descendant_reaped": True,
     }
 
 
-def _run_checked(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+def _run_git_hazard_preflight(
+    config: LiveDockerSandboxSmokeConfig,
+    *,
+    repo: Path,
+) -> dict[str, object]:
+    git_path = shutil.which("git")
+    if git_path is None:
+        raise LiveDockerSandboxSmokeError(
+            "Git is required for the enabled Docker sandbox preflight smoke"
+        )
+    for args in (
+        ("init",),
+        ("config", "user.email", "sandbox-smoke@example.invalid"),
+        ("config", "user.name", "Sandbox Smoke"),
+        ("add", "."),
+        ("commit", "-m", "sandbox smoke baseline"),
+    ):
+        _run_checked([git_path, "-C", str(repo), *args], timeout=20)
+    (repo / ".gitmodules").write_text(
+        '[submodule "ignored/module"]\n\tpath = ignored/module\n',
+        encoding="utf-8",
+    )
+    index_path = repo / ".git" / "index"
+    index_before = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    completed = _run(
+        [
+            config.docker_path,
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            str(config.pids_limit),
+            "--memory",
+            f"{config.memory_mb}m",
+            "--cpus",
+            str(config.cpus),
+            "--user",
+            "10001",
+            "--mount",
+            f"type=bind,source={repo.resolve()},target=/workspace,readonly",
+            "--workdir",
+            "/workspace",
+            config.image,
+            "python",
+            "/opt/hallu-defense/sandbox_git_inspector.py",
+            "3",
+            "100000",
+        ],
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        raise LiveDockerSandboxSmokeError(
+            "Git hazard preflight container failed: "
+            f"{completed.stderr.strip() or completed.returncode}"
+        )
+    payload = json.loads(completed.stdout)
+    errors = payload.get("errors")
+    if (
+        not isinstance(errors, list)
+        or not errors
+        or errors[0].get("command") != "repository_guard"
+        or ".gitmodules" not in str(errors[0].get("error"))
+        or payload.get("status") != []
+        or payload.get("unstaged_files") != []
+        or payload.get("staged_files") != []
+    ):
+        raise LiveDockerSandboxSmokeError(
+            "Git hazard did not fail closed before diff evidence"
+        )
+    index_after = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    _assert_run(index_after == index_before, "Git inspector mutated the source index")
+    return {
+        "hazard": ".gitmodules",
+        "failed_before_diff": True,
+        "source_index_immutable": True,
+    }
+
+
+def _run_checked(
+    argv: Sequence[str], *, timeout: float
+) -> subprocess.CompletedProcess[str]:
     completed = _run(argv, timeout=timeout)
     if completed.returncode != 0:
         raise LiveDockerSandboxSmokeError(

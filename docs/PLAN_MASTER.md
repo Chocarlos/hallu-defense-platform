@@ -124,6 +124,10 @@ Every final decision must be explainable from claims, evidence, verdicts, policy
 - Artifact capture.
 - Git diff/static inspection.
 - Deterministic evidence for test/build/repo claims.
+- Sandbox v3 hardening: canonical Git/index/config/attribute evidence
+  (`SBOX-018`), bounded streaming workspace/output with race-aware
+  fingerprints and process cleanup (`SBOX-019`), and UID-preconditioned
+  foreground Kubernetes cleanup (`SBOX-020`).
 
 ### M5 Observability, Evals, And Enterprise Hardening
 

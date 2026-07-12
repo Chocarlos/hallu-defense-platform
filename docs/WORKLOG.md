@@ -6965,3 +6965,110 @@ Remaining risks:
 - Local OPA evidence used the installed 1.7.1 binary; integration must also run
   the repository-pinned OPA version. No integration with Front F or global
   completion is claimed, and no row is marked `accepted`.
+
+## 2026-07-11 - Sandbox v3 adversarial hardening
+
+Slice selected:
+
+- Closed Front C sandbox-v3 bypasses without changing Helm or persistent data:
+  canonical Git evidence, exact cumulative workspace/artifact bounds,
+  race-aware streaming copy/hash/fingerprints, bounded process-tree cleanup,
+  and UID-conditioned Kubernetes foreground cleanup.
+- Preserved the existing dirty worktree from checkpoint `c0ca4c8`; no reset,
+  merge, push, default-branch edit, or cross-worktree write was used.
+
+Implementation:
+
+- Added a bounded pre-Git filesystem/index/HEAD/config guard for gitlinks,
+  worktree/index/HEAD `.gitmodules` including case variants, nested ignored
+  `.git` directories/gitfiles, `.git/modules`, alternates/http-alternates,
+  info/exclude, submodule/include config, BOM config, `core.excludesFile`, and
+  `core.attributesFile`. Guard failures retain a sorted bounded key inventory
+  without values and expose no status/diff/source evidence.
+- Reconstructed only the private scratch index through `update-index
+  --index-info` so its stat cache is zeroed. Added deterministic regressions for
+  same-size/restored-mtime changes, unmerged stages, index-only deleted
+  `.gitmodules`, and byte/hash immutability of the entire source `.git` tree
+  across repeated inspection.
+- Bounded the pre-Git configuration inventory to 2,000 keys and 4,096
+  characters per canonical key with exact-boundary/+1 tests; pinned
+  `core.ignoreCase=false` and full-index patch output so repository config
+  cannot vary path matching or abbreviated hash lines.
+- Pinned canonical NUL status/path parsing and canonical `--no-color`, fixed
+  source/destination prefixes, `--text`, no external diff/textconv behavior;
+  retained assume-unchanged, skip-worktree, fsmonitor, attributes, replacement
+  object, config and fingerprint guards.
+- Enforced exact file/path/content/artifact aggregates including zero-byte and
+  exact-boundary behavior. No-follow copy/hash paths retain identity/mode/size
+  checks, while Windows path creation time is not compared to descriptor write
+  time; before/after mode/size/mtime/ctime checks remain on the same descriptor.
+- Bounded host Docker/Git pipes and descendants. Windows targets are created
+  suspended, assigned to a kill-on-close Job Object, then resumed; POSIX uses a
+  new process group, and the Linux batch runner uses subreaper/descendant
+  reconciliation. Success, timeout, assignment-error and termination-error
+  regressions fail closed and check wall time, markers and pipe-drain threads.
+  Drain/read errors are captured rather than lost in threads, persistent
+  termination failure closes the Job before pipe cleanup, and Git stdin uses a
+  bounded writer thread so a non-reading child cannot bypass the deadline.
+- Added a Kubernetes-specific cleanup grace default of 20 seconds, valid only
+  from 15 through 30 seconds, without reusing Docker's two-second termination
+  grace. Cleanup reconciles ambiguous creation, validates managed UID, deletes
+  with `preconditions.uid` plus `Foreground`, and waits for old-Job `404` and
+  absence of Pods owned by that UID while preserving bounded primary and
+  cleanup diagnostics.
+- Updated the sandbox checker, ADR, Kubernetes operations guide, plan and
+  traceability rows `SBOX-018` through `SBOX-020`. No Helm file changed; Front D
+  still owns rendered RBAC/admission and kind zero-residual-object evidence.
+- Extended the scratch-only Docker smoke with detached-descendant and
+  pre-Git `.gitmodules` probes, but did not execute it under the follow-up's
+  explicit no-live directive; only lint, type and static wiring were validated.
+
+Validation:
+
+- Every standalone Python command used
+  `PYTHONPATH=C:\Users\Estudiante-10\.codex\worktrees\sixfront-c-sandbox-c0ca4c8\apps\api\src`
+  and the interpreter at
+  `C:\Users\Estudiante-10\Documents\Sistema de defensa contra alucinaciones para LLMs y agentes\.venv\Scripts\python.exe`.
+- Verified standalone imports with `PYTHONPATH` set to this worktree;
+  `hallu_defense.services.sandbox.__file__` resolved under
+  `sixfront-c-sandbox-c0ca4c8/apps/api/src`.
+- `python -m pytest -q` over `test_sandbox_docker_backend.py`,
+  `test_sandbox_isolation_config.py`, `test_sandbox_kubernetes_backend.py`,
+  `test_sandbox_kubernetes_tenant_boundary.py`, `test_sandbox_path_safety.py`,
+  `test_sandbox_git_inspector.py`, and `test_sandbox_workspace_boundaries.py`:
+  `211 passed, 8 skipped` in 47.27 seconds. The final independent Git/process
+  reauditor also ran the complete Git/workspace pair: `86 passed, 2 skipped`,
+  and directly reproduced drain failure, persistent termination failure and a
+  1 MiB non-consuming stdin case with bounded return and zero residual threads.
+- `python -m ruff check apps scripts infra/docker`: all checks passed.
+  `python -m mypy apps/api/src`: no issues in 58 source files. The additional
+  Docker-helper/checker/smoke scope: no issues in 6 source files.
+- `check_sandbox_isolation_config.py` passed and
+  `check_traceability_matrix.py` validated 185 requirement rows.
+- `check_worklog.py` validated 106 entries; `python -m pytest -q
+  apps/api/tests/test_worklog.py apps/api/tests/test_traceability_matrix.py`
+  passed 14 tests.
+- `git diff --check` passed; its only output was expected Windows LF-to-CRLF
+  working-copy warnings.
+- A final proportional full API run was attempted: `1972 passed, 26 skipped,
+  13 failed`. All 13 failures are in unchanged audit-ledger,
+  corpus-grant/RAG persistence, Vault, and repository secret-scan surfaces and
+  are retained as integration evidence rather than hidden or repaired outside
+  Front C ownership.
+- Per the root follow-up, no Docker or Kubernetes live command was run.
+
+Remaining risks:
+
+- POSIX process-group/subreaper regressions are present and import/type-check
+  safely here, but their behavioral branches were skipped on this Windows host
+  and still require Linux CI execution.
+- The extended live Docker scratch probes were not executed by directive and
+  therefore carry no local runtime evidence in this handoff.
+- Packed Git object/index formats that cannot be safely parsed before Git fail
+  closed; this is deliberate availability loss rather than accepting ambiguous
+  evidence.
+- Real foreground garbage collection, zero residual Jobs/Pods, exact rendered
+  RBAC/admission, and tenant-scoped namespace/release/ServiceAccount/PVC
+  boundaries remain Front D kind/Helm evidence. No row is marked `accepted`.
+- The 13 unrelated full-suite failures listed above remain for root integration
+  triage; all Front C focused suites and static gates are green.

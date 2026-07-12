@@ -82,6 +82,27 @@ bounded `emptyDir`; the backend reads both logs independently and returns the
 runner exit code. No sensitive inherited environment value, Secret, ConfigMap,
 or ServiceAccount token is mounted.
 
+Creation and cleanup use object identity, not a reusable Job name. The backend
+accepts a create response only after validating the generated name, namespace,
+managed labels, process-limit annotation, and Kubernetes UID. If the create
+request has an ambiguous transport failure, invalid JSON, or a non-object
+response, it polls with a bounded deadline and reconciles only that same
+managed identity. Cleanup sends
+`deleteOptions.preconditions.uid` with `propagationPolicy: Foreground` and zero
+grace, then waits until GET returns `404` (or observes a same-name replacement)
+and until no listed Pods remain whose owner UID is the deleted Job UID. A
+missing or unvalidated UID prevents name-only deletion. Cleanup failure is
+reported without replacing the primary execution failure, and a bounded
+cleanup type/message is attached to the primary diagnostic.
+
+Foreground deletion and owned-Pod confirmation have a Kubernetes-specific
+budget: `HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS` defaults to 20
+seconds and accepts only 15 through 30 seconds. It is independent of
+`HALLU_DEFENSE_SANDBOX_DOCKER_TIMEOUT_GRACE_SECONDS` (default 2 seconds), which
+still controls the admitted Pod's termination grace rather than the complete
+Job/Pod cleanup lifecycle. Each individual API call remains capped by the
+Kubernetes API request timeout and the remaining cleanup deadline.
+
 Only the selected repository is mounted read-only at `/hallu-source` through a
 validated, non-empty PVC `subPath`; sibling repositories and the PVC root are
 never exposed. Before commands start, the immutable runner rejects links and
@@ -89,7 +110,22 @@ special files, enforces 50,000-file and 512 MiB bounds, and copies the source
 into a bounded `emptyDir` at `/workspace`. Deleting the Job discards that
 working copy. The
 Kubernetes backend rejects the configured workspace root itself because every
-admitted Job must target a child repository.
+admitted Job must target a child repository. Validation and copy permit at most
+50,000 regular files, 512 MiB of total content, 75,000 combined file/directory
+paths, 4,096 UTF-8 bytes per relative path, and 64 MiB of aggregate
+relative-path bytes. API-retained output is capped at 100,000 characters per
+stream. Directory enumeration, fingerprints, copies, artifacts, and output
+capture remain bounded, accept zero-byte files at an exact content boundary,
+and reject the first file, path, or byte beyond a configured limit. The Linux
+batch runner reaps even new-session descendants before its artifact snapshot.
+
+Tenant routing is checked before a Job is created and the source claim,
+namespace, release, ServiceAccount, and repository root remain dedicated to
+one canonical tenant. Job names and labels are not an authorization boundary.
+The chart/admission front must keep the existing exact RBAC verbs and, when it
+adopts a tenant marker, require a non-reversible canonical tenant-scope digest
+rather than a raw tenant identifier; that change must be made atomically with
+its ValidatingAdmissionPolicy and checker.
 
 The kind smoke uses the built-in kindnet native NetworkPolicy implementation
 with Kind 0.32.0 and leaves the default CNI enabled. It pins the Kubernetes
@@ -104,7 +140,9 @@ The authenticated live check calls `/repo/checks/run` with an ephemeral signed
 OIDC JWT and verifies two commands execute as one batch with ordered exit codes,
 distinct stdout/stderr, artifact capture,
 workspace escape rejection, timeout code and cleanup, a real failed TCP egress
-attempt, and zero residual sandbox Jobs. It also proves the API workspace mount
+attempt, and zero residual sandbox Jobs. Front D must extend the success and
+timeout probes to list Pods by sandbox labels, correlate owner UIDs, and require
+zero residual Pods owned by either Job UID. The current check also proves the API workspace mount
 rejects writes, impersonates the API ServiceAccount to verify application
 namespace denials and sandbox namespace grants, and proves admission rejects
 privileged/hostPath, Secret-env, writable-source/PVC-root mount, oversized-resource,

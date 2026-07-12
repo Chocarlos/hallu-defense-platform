@@ -69,9 +69,7 @@ def test_batch_v3_allows_normal_command_to_change_ephemeral_snapshot() -> None:
         "schema_version": "sandbox_execution_batch.v3",
         "pre_snapshot_fingerprint": "0" * 64,
         "post_snapshot_fingerprint": "1" * 64,
-        "executions": [
-            {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}
-        ],
+        "executions": [{"returncode": 0, "stdout": "", "stderr": "", "timed_out": False}],
         "artifacts": [],
     }
 
@@ -165,7 +163,7 @@ def test_docker_backend_builds_pinned_isolation_argv_without_shell(tmp_path: Pat
     assert "--network=none" in argv
     assert "--rm" in argv
     assert "--read-only" in argv
-    assert _option_value(argv, "--tmpfs") == "/tmp"
+    assert _option_value(argv, "--tmpfs") == ("/tmp:rw,nosuid,nodev,size=64m,mode=1777")
     assert _option_value(argv, "--cap-drop") == "ALL"
     assert _option_value(argv, "--security-opt") == "no-new-privileges"
     assert _option_value(argv, "--pids-limit") == "256"
@@ -177,9 +175,7 @@ def test_docker_backend_builds_pinned_isolation_argv_without_shell(tmp_path: Pat
     source_mount, workspace_mount = _option_values(argv, "--mount")
     assert source_mount.startswith("type=bind,source=")
     assert source_mount.endswith("target=/hallu-source,readonly")
-    assert workspace_mount == (
-        "type=tmpfs,target=/workspace,tmpfs-size=536870912,tmpfs-mode=1777"
-    )
+    assert workspace_mount == ("type=tmpfs,target=/workspace,tmpfs-size=536870912,tmpfs-mode=1777")
     assert "sandbox_runner.py" in "\n".join(argv)
     assert "sandbox_batch_runner.py" in "\n".join(argv)
     serialized = "\n".join(argv)
@@ -234,9 +230,7 @@ def test_docker_backend_mounts_git_source_read_only_and_copy_as_bounded_tmpfs(
 
     source_mount, workspace_mount = _option_values(argv, "--mount")
     assert source_mount.endswith("target=/hallu-source,readonly")
-    assert workspace_mount == (
-        "type=tmpfs,target=/workspace,tmpfs-size=536870912,tmpfs-mode=1777"
-    )
+    assert workspace_mount == ("type=tmpfs,target=/workspace,tmpfs-size=536870912,tmpfs-mode=1777")
 
 
 def test_docker_backend_rejects_caller_supplied_writable_working_copy(
