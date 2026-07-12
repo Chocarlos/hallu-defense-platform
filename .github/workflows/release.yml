@@ -225,7 +225,7 @@ jobs:
           set -euo pipefail
           python -m ruff check apps/api/src apps/api/tests scripts evals
           python -m mypy apps/api/src
-          python -m pytest apps/api/tests
+          python -m pytest apps/api/tests --suite-lane=auto
           npm run lint
           npm run typecheck
           npm run test

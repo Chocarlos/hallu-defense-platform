@@ -239,11 +239,8 @@ def _valid_inspector_payload() -> dict[str, object]:
     }
 
 
-def _symlink_or_skip(target: Path, link: Path, *, directory: bool) -> None:
-    try:
-        link.symlink_to(target, target_is_directory=directory)
-    except (NotImplementedError, OSError) as exc:
-        pytest.skip(f"symlink creation is unavailable: {type(exc).__name__}")
+def _symlink(target: Path, link: Path, *, directory: bool) -> None:
+    link.symlink_to(target, target_is_directory=directory)
 
 
 def test_reparse_attribute_is_rejected_without_platform_privileges() -> None:
@@ -259,9 +256,10 @@ def test_reparse_attribute_is_rejected_without_platform_privileges() -> None:
     assert _stat_is_link_or_reparse(fake_info) is True
 
 
+@pytest.mark.posix
 def test_runner_rejects_symlinked_repository_directory(tmp_path: Path) -> None:
     real_repo = _repo(tmp_path)
-    _symlink_or_skip(real_repo, tmp_path / "linked-repo", directory=True)
+    _symlink(real_repo, tmp_path / "linked-repo", directory=True)
     runner = SandboxRunner(_settings(tmp_path), execution_backend=RecordingBackend())
 
     with pytest.raises(SandboxError, match="symlink|reparse"):
@@ -413,12 +411,13 @@ def test_container_and_api_workspace_fingerprint_algorithms_match(tmp_path: Path
     assert module.workspace_fingerprint(repo) == sandbox_module._workspace_fingerprint(repo)
 
 
+@pytest.mark.posix
 def test_runner_rejects_symlinked_command_script(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "probe.py").unlink()
     outside = tmp_path / "outside.py"
     outside.write_text("print('outside')\n", encoding="utf-8")
-    _symlink_or_skip(outside, repo / "probe.py", directory=False)
+    _symlink(outside, repo / "probe.py", directory=False)
     backend = RecordingBackend()
     runner = SandboxRunner(_settings(tmp_path), execution_backend=backend)
 
@@ -428,13 +427,14 @@ def test_runner_rejects_symlinked_command_script(tmp_path: Path) -> None:
     assert backend.calls == []
 
 
+@pytest.mark.posix
 def test_runner_rejects_symlinked_reports_directory_without_external_write(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
     outside = tmp_path / "outside-reports"
     outside.mkdir()
-    _symlink_or_skip(outside, repo / "reports", directory=True)
+    _symlink(outside, repo / "reports", directory=True)
     backend = RecordingBackend()
     runner = SandboxRunner(_settings(tmp_path), execution_backend=backend)
 
@@ -445,6 +445,7 @@ def test_runner_rejects_symlinked_reports_directory_without_external_write(
     assert backend.calls == []
 
 
+@pytest.mark.posix
 def test_runner_rejects_symlinked_report_file_without_overwriting_target(
     tmp_path: Path,
 ) -> None:
@@ -453,7 +454,7 @@ def test_runner_rejects_symlinked_report_file_without_overwriting_target(
     reports.mkdir()
     victim = tmp_path / "victim.txt"
     victim.write_text("do-not-overwrite\n", encoding="utf-8")
-    _symlink_or_skip(victim, reports / "sandbox-inspection.json", directory=False)
+    _symlink(victim, reports / "sandbox-inspection.json", directory=False)
     runner = SandboxRunner(_settings(tmp_path), execution_backend=RecordingBackend())
 
     with pytest.raises(SandboxError, match="symlink|reparse"):
@@ -462,13 +463,14 @@ def test_runner_rejects_symlinked_report_file_without_overwriting_target(
     assert victim.read_text(encoding="utf-8") == "do-not-overwrite\n"
 
 
+@pytest.mark.posix
 def test_runner_rejects_symlink_inside_artifact_tree(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     artifacts = repo / "artifacts"
     artifacts.mkdir()
     outside = tmp_path / "outside-artifact.txt"
     outside.write_text("outside\n", encoding="utf-8")
-    _symlink_or_skip(outside, artifacts / "linked.txt", directory=False)
+    _symlink(outside, artifacts / "linked.txt", directory=False)
     runner = SandboxRunner(_settings(tmp_path), execution_backend=RecordingBackend())
 
     with pytest.raises(SandboxError, match="symlink|reparse"):
@@ -494,11 +496,12 @@ def test_artifact_inventory_detects_same_size_restored_mtime_change(
     assert target.read_text(encoding="utf-8") == "old"
 
 
+@pytest.mark.posix
 def test_snapshot_rejects_symlinked_source_file(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     outside = tmp_path / "outside_source.py"
     outside.write_text("def outside_secret_symbol():\n    pass\n", encoding="utf-8")
-    _symlink_or_skip(outside, repo / "linked_source.py", directory=False)
+    _symlink(outside, repo / "linked_source.py", directory=False)
     runner = SandboxRunner(_settings(tmp_path), execution_backend=RecordingBackend())
 
     with pytest.raises(SandboxError, match="symlink|reparse"):

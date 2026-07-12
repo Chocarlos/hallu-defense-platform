@@ -29,6 +29,60 @@ permissions:
   contents: read
 
 jobs:
+  minio-backup-restore-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      COMPOSE_PROJECT_NAME: hallu-minio-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+      - name: Install API
+        run: |
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/install_python_lock.py dev
+      - name: Start isolated MinIO-compatible store
+        run: docker compose up -d minio
+      - name: Wait for S3 endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            if curl --silent --output /dev/null --connect-timeout 1 http://127.0.0.1:9000/; then
+              echo "S3 endpoint is ready"
+              exit 0
+            fi
+            echo "waiting for S3 endpoint (attempt ${attempt})..."
+            sleep 2
+          done
+          echo "S3 endpoint did not become ready" >&2
+          docker compose logs minio
+          exit 1
+      - name: Exercise encrypted tenant-scoped backup and restore
+        env:
+          HALLU_DEFENSE_ENV: ci
+          HALLU_DEFENSE_MINIO_BACKUP_ENDPOINT: http://127.0.0.1:9000
+          HALLU_DEFENSE_MINIO_BACKUP_ACCESS_KEY: minioadmin
+          HALLU_DEFENSE_MINIO_BACKUP_SECRET_KEY: minioadmin
+          HALLU_DEFENSE_SECRET_BACKUP_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+        run: python -m pytest -q apps/api/tests/test_live_minio_backup_restore_drill.py --suite-lane=live
+      - name: Teardown exact scratch resources
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          failures=0
+          docker compose stop minio || failures=1
+          docker compose rm -f minio || failures=1
+          docker volume rm "${COMPOSE_PROJECT_NAME}_seaweedfs-data" || failures=1
+          docker network rm "${COMPOSE_PROJECT_NAME}_default" || failures=1
+          exit "${failures}"
+
   hybrid-rag-live:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

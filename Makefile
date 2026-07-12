@@ -17,7 +17,7 @@ typecheck:
 	npm run typecheck
 
 test:
-	$(PY) -m pytest apps/api/tests
+	$(PY) -m pytest apps/api/tests --suite-lane=auto
 	npm run test
 
 build:

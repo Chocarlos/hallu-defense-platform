@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -21,8 +20,6 @@ from scripts.ci.run_gitleaks import (
     run_gitleaks,
 )
 
-LIVE_TEST_ENV = "HALLU_DEFENSE_GITLEAKS_LIVE_TEST"
-
 LEAK_FIXTURES = {
     "aws-access-token": "AWS_ACCESS_KEY_ID=AKIAQWERTYUIOPASDFGH\n",
     "database-dsn": (
@@ -40,10 +37,6 @@ LEAK_FIXTURES = {
         "-----END " + "ENCRYPTED PRIVATE KEY-----\n"
     ),
 }
-
-
-def _live_enabled() -> bool:
-    return os.getenv(LIVE_TEST_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _write_manifest(
@@ -271,7 +264,7 @@ def test_gitleaks_config_rejects_toml_allowlists() -> None:
         )
 
 
-@pytest.mark.skipif(not _live_enabled(), reason="real Gitleaks fixture lane is opt-in")
+@pytest.mark.live
 @pytest.mark.parametrize(("fixture_name", "payload"), LEAK_FIXTURES.items())
 def test_real_gitleaks_detects_high_risk_fixture(
     tmp_path: Path,
@@ -285,7 +278,7 @@ def test_real_gitleaks_detects_high_risk_fixture(
     assert result.clean is False
 
 
-@pytest.mark.skipif(not _live_enabled(), reason="real Gitleaks fixture lane is opt-in")
+@pytest.mark.live
 def test_real_gitleaks_accepts_clean_placeholders(tmp_path: Path) -> None:
     (tmp_path / "clean.env.example").write_text(
         "DATABASE_URL=<set-at-runtime>\nAPI_TOKEN=<redacted>\n",

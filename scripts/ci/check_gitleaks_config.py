@@ -127,8 +127,7 @@ def validate_gitleaks_config(
         "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz",
         "sha256sum --check",
         "scripts/ci/run_gitleaks.py",
-        'HALLU_DEFENSE_GITLEAKS_LIVE_TEST: "true"',
-        "apps/api/tests/test_gitleaks_gate.py",
+        "apps/api/tests/test_gitleaks_gate.py --suite-lane=live",
         "fetch-depth: 0",
         'version)" = "${GITLEAKS_VERSION}"',
     ):

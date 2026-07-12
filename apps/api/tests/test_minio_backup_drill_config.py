@@ -67,6 +67,22 @@ def test_gate_requires_ci_and_security_workflow_wiring() -> None:
         gate.validate_sources(**values)
 
 
+def test_gate_requires_live_minio_lane_wiring() -> None:
+    values = _values()
+    values["live_workflow_text"] = "jobs: {}"
+
+    with pytest.raises(gate.MinioBackupDrillConfigError, match="live workflow"):
+        gate.validate_sources(**values)
+
+
+def test_gate_requires_live_minio_test() -> None:
+    values = _values()
+    values["live_test_text"] = ""
+
+    with pytest.raises(gate.MinioBackupDrillConfigError, match="MinIO live test"):
+        gate.validate_sources(**values)
+
+
 def _values() -> dict[str, object]:
     return {
         "core_text": gate.CORE_PATH.read_text(encoding="utf-8"),
@@ -77,4 +93,6 @@ def _values() -> dict[str, object]:
         "makefile_text": gate.MAKEFILE_PATH.read_text(encoding="utf-8"),
         "ci_text": gate.CI_PATH.read_text(encoding="utf-8"),
         "security_text": gate.SECURITY_PATH.read_text(encoding="utf-8"),
+        "live_workflow_text": gate.LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        "live_test_text": gate.LIVE_TEST_PATH.read_text(encoding="utf-8"),
     }

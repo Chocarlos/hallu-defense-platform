@@ -796,7 +796,7 @@ def test_git_subprocess_timeout_bounds_nonconsuming_stdin_writer(
     assert not any(thread.name.startswith("sandbox-git-") for thread in threading.enumerate())
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+@pytest.mark.windows
 def test_git_subprocess_fails_closed_on_job_assignment_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -826,7 +826,7 @@ def test_git_subprocess_fails_closed_on_job_assignment_error(
     assert not any(thread.name.startswith("sandbox-git-") for thread in threading.enumerate())
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+@pytest.mark.windows
 def test_git_subprocess_propagates_job_termination_error_after_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
