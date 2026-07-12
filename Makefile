@@ -27,6 +27,7 @@ console-check:
 	npm --workspace @hallu-defense/console run lint
 	npm --workspace @hallu-defense/console run typecheck
 	npm --workspace @hallu-defense/console run test
+	npm --workspace @hallu-defense/console run test:e2e-static
 	$(MAKE) console-build-check
 
 console-build-check:

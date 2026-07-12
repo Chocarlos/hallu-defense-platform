@@ -125,6 +125,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: setup-python
         with:
           python-version: "3.12.13"
           pip-version: "26.1.2"
@@ -146,9 +147,12 @@ jobs:
       - run: npm run build
       - name: Check Console production artifacts for fixture leakage
         run: npm --workspace @hallu-defense/console run check:build
+      - name: Test Console e2e runtime and cleanup contracts
+        run: npm --workspace @hallu-defense/console run test:e2e-static
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Run browser e2e
         run: npm run test:e2e
         env:
-          E2E_PYTHON_BIN: python
+          E2E_PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}
+          E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}

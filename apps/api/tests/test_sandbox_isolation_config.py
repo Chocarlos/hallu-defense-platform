@@ -162,10 +162,87 @@ def test_sandbox_isolation_config_rejects_missing_makefile_wiring() -> None:
 
 def test_sandbox_isolation_config_rejects_stale_playwright_sandbox_image() -> None:
     config = dict(load_current_config())
-    config["playwright_config_text"] = config["playwright_config_text"].replace(
-        'docker build -f "infra/docker/sandbox.Dockerfile" -t hallu-defense-sandbox:ci .',
-        "node apps/console/e2e/skip-sandbox-image-build.mjs",
+    config["playwright_webserver_text"] = config["playwright_webserver_text"].replace(
+        '"infra/docker/sandbox.Dockerfile"', '"infra/docker/not-sandbox.Dockerfile"'
     )
 
-    with pytest.raises(SandboxIsolationConfigError, match="Playwright sandbox E2E"):
+    with pytest.raises(SandboxIsolationConfigError, match="Playwright API wrapper"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_reintroduced_shared_sandbox_tag() -> None:
+    config = dict(load_current_config())
+    config["playwright_config_text"] = (
+        config["playwright_config_text"] + '\n// hallu-defense-sandbox:ci\n'
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="shared hallu-defense-sandbox:ci"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_missing_python_source_pythonpath() -> None:
+    config = dict(load_current_config())
+    config["playwright_config_text"] = config["playwright_config_text"].replace(
+        "PYTHONPATH: apiSourceRoot", "PYTHONPATH: undefined"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="PYTHONPATH: apiSourceRoot"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_global_setup_cleanup_order() -> None:
+    config = dict(load_current_config())
+    config["playwright_config_text"] += '\nglobalSetup: "./e2e/global-setup",\n'
+
+    with pytest.raises(SandboxIsolationConfigError, match="must not use globalSetup"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_missing_preflight_wrapper() -> None:
+    config = dict(load_current_config())
+    config["playwright_webserver_text"] = config["playwright_webserver_text"].replace(
+        "pythonSourcePreflightArgs(", "disabledPreflightArgs("
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="preflight imports"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_missing_final_teardown() -> None:
+    config = dict(load_current_config())
+    config["playwright_teardown_text"] = config["playwright_teardown_text"].replace(
+        "removeSandboxImageIfPresent", "leaveSandboxImageBehind"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="final teardown"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_missing_lifecycle_finally() -> None:
+    config = dict(load_current_config())
+    config["playwright_lifecycle_text"] = config["playwright_lifecycle_text"].replace(
+        "dependencies.finalCleanup();", "return;"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="guarantee final cleanup"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_unbounded_cleanup() -> None:
+    config = dict(load_current_config())
+    config["playwright_sandbox_helper_text"] = config[
+        "playwright_sandbox_helper_text"
+    ].replace("timeout: DOCKER_CLEANUP_TIMEOUT_MS", "timeout: undefined")
+
+    with pytest.raises(SandboxIsolationConfigError, match="time-bounded"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_outer_timeout_cleanup_margin() -> None:
+    config = dict(load_current_config())
+    config["playwright_config_text"] = config["playwright_config_text"].replace(
+        "API_WEB_SERVER_TIMEOUT_MS = 300_000", "API_WEB_SERVER_TIMEOUT_MS = 260_000"
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="at least 30 seconds"):
         validate_sandbox_isolation_config(**config)

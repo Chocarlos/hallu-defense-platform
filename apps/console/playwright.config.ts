@@ -1,8 +1,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
 
 import { defineConfig } from "@playwright/test";
+
+import {
+  resolveApiSourceRoot,
+  resolvePythonExecutable
+} from "./lib/e2e-python-runtime";
+import { resolveSandboxImageTag, resolveSandboxRunId } from "./lib/e2e-sandbox";
 
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(configDir, "../..");
@@ -11,11 +16,16 @@ const consolePort = Number(process.env.E2E_CONSOLE_PORT ?? "3100");
 const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
 const consoleBaseUrl = `http://127.0.0.1:${consolePort}`;
 const e2eStateDir = path.join(repoRoot, "var", "e2e");
-const defaultPythonBin =
-  process.platform === "win32"
-    ? path.join(repoRoot, ".venv", "Scripts", "python.exe")
-    : path.join(repoRoot, ".venv", "bin", "python");
-const pythonBin = process.env.E2E_PYTHON_BIN ?? (existsSync(defaultPythonBin) ? defaultPythonBin : "python");
+const API_WEB_SERVER_TIMEOUT_MS = 300_000;
+const apiSourceRoot = resolveApiSourceRoot(repoRoot);
+const pythonBin = resolvePythonExecutable({
+  env: process.env
+});
+const sandboxRunId = resolveSandboxRunId(process.env, process.pid);
+const sandboxImageTag = resolveSandboxImageTag(repoRoot, sandboxRunId);
+// Global teardown is loaded from the same Playwright process. Pin the fallback
+// pid-derived ID into the environment so every hook sees the exact same tag.
+process.env.E2E_RUN_ID = sandboxRunId;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -29,25 +39,27 @@ export default defineConfig({
     baseURL: consoleBaseUrl,
     trace: "retain-on-failure"
   },
+  globalTeardown: "./e2e/global-teardown",
   webServer: [
     {
-      // Reset the persistent e2e queue/ledger state, then boot the real API.
-      // The sandbox backend is intentionally Docker-only in local/test. Build
-      // the exact image used by this suite so a stale local tag cannot make
-      // the browser flow exercise an older sandbox control protocol.
-      command:
-        `docker build -f "infra/docker/sandbox.Dockerfile" -t hallu-defense-sandbox:ci . && ` +
-        `node "apps/console/e2e/clean-state.mjs" && ` +
-        `"${pythonBin}" -m uvicorn hallu_defense.main:app --host 127.0.0.1 --port ${apiPort}`,
+      // The committed wrapper verifies Python/import provenance before Docker,
+      // builds a unique scratch image, boots the API, and runs bounded cleanup
+      // on normal exit, signal, or startup failure.
+      command: "node --import tsx apps/console/scripts/run-e2e-api-webserver.ts",
       url: `${apiBaseUrl}/health`,
       cwd: repoRoot,
       reuseExistingServer: false,
-      timeout: 300_000,
+      timeout: API_WEB_SERVER_TIMEOUT_MS,
       env: {
+        E2E_RUN_ID: sandboxRunId,
+        E2E_API_PORT: String(apiPort),
+        E2E_REPO_ROOT: repoRoot,
+        E2E_PYTHON_BIN: pythonBin,
+        PYTHONPATH: apiSourceRoot,
         HALLU_DEFENSE_ENV: "local",
         HALLU_DEFENSE_ALLOWED_WORKSPACE: e2eStateDir,
         HALLU_DEFENSE_SANDBOX_BACKEND: "docker",
-        HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: "hallu-defense-sandbox:ci",
+        HALLU_DEFENSE_SANDBOX_DOCKER_IMAGE: sandboxImageTag,
         HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: "jsonl",
         HALLU_DEFENSE_APPROVAL_QUEUE_PATH: path.join(e2eStateDir, "approval-queue.jsonl"),
         HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: "jsonl",
