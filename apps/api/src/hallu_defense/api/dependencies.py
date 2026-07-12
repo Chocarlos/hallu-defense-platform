@@ -195,6 +195,7 @@ tool_safety = ToolSafetyService(
     content_scanner=content_security_scanner,
     tool_registry=trusted_tool_registry,
     authorization_issuer=approval_authorization_issuer,
+    environment=settings.environment,
 )
 sandbox_execution_backend = build_sandbox_execution_backend(settings)
 sandbox_runner = SandboxRunner(settings, execution_backend=sandbox_execution_backend)

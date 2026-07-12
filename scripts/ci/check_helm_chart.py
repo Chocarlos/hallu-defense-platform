@@ -1894,7 +1894,9 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "value: postgres",
         "HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND",
         "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME",
-        "approvals/tool-call-commitment-key",
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID",
+        ".Values.approvalCommitment.activeSecretName",
+        ".Values.approvalCommitment.activeKeyId",
         "HALLU_DEFENSE_EVAL_REPORTS_BACKEND",
         "HALLU_DEFENSE_PROVIDER_BACKEND",
         ".Values.provider.backend",
@@ -2259,7 +2261,10 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "HALLU_DEFENSE_OPENSEARCH_KIND_INSECURE_HTTP_ENABLED",
         "HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND",
         "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME",
-        "approvals/tool-call-commitment-key",
+        "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID",
+        ".Values.approvalCommitment.activeSecretName",
+        ".Values.approvalCommitment.activeKeyId",
+        "previousSecretName, previousKeyId, and previousValidUntil",
         "HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME",
         "audit/request-commitment-key",
         "HALLU_DEFENSE_POSTGRES_CA_CERT_PATH",
@@ -2403,7 +2408,7 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "HALLU_DEFENSE_KIND_METRICS_SECRET_NAME",
         "HALLU_DEFENSE_KIND_APPROVAL_COMMITMENT_SECRET_NAME",
         "HALLU_DEFENSE_KIND_AUDIT_REQUEST_COMMITMENT_SECRET_NAME",
-        "approvals/tool-call-commitment-key",
+        ".Values.approvalCommitment.activeSecretName",
         "audit/request-commitment-key",
         "root-token",
         "ca.crt",
@@ -4455,6 +4460,10 @@ def _validate_rendered_production_sandbox(rendered: str) -> None:
                     "approvals/tool-call-commitment-key",
                 ),
                 (
+                    "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID",
+                    "approval-active-v1",
+                ),
+                (
                     "HALLU_DEFENSE_POSTGRES_CA_CERT_PATH",
                     "/run/hallu-defense/postgres-ca.pem",
                 ),
@@ -4754,6 +4763,10 @@ def _validate_rendered_api_and_worker_env(
                 (
                     "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME",
                     "approvals/tool-call-commitment-key",
+                ),
+                (
+                    "HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID",
+                    "approval-active-v1",
                 ),
                 (
                     "HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME",

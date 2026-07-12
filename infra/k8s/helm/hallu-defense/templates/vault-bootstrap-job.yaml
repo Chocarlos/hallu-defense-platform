@@ -43,7 +43,7 @@ spec:
             - name: HALLU_DEFENSE_KIND_METRICS_SECRET_NAME
               value: observability/metrics-scrape-token
             - name: HALLU_DEFENSE_KIND_APPROVAL_COMMITMENT_SECRET_NAME
-              value: approvals/tool-call-commitment-key
+              value: {{ .Values.approvalCommitment.activeSecretName | quote }}
             - name: HALLU_DEFENSE_KIND_AUDIT_REQUEST_COMMITMENT_SECRET_NAME
               value: audit/request-commitment-key
             - name: HALLU_DEFENSE_KIND_VAULT_WAIT_SECONDS

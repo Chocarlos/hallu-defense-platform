@@ -96,6 +96,7 @@ from hallu_defense.services.approvals import (
     ApprovalAlreadyDecidedError,
     ApprovalExecutionGrantError,
     ApprovalNotFoundError,
+    ApprovalQueueStorageError,
 )
 from hallu_defense.services.audit import AuditLedgerError, ReplaySourceConflictError
 from hallu_defense.services.corpus_grants import (
@@ -795,6 +796,14 @@ def decide_approval(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ApprovalAlreadyDecidedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ApprovalQueueStorageError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Approval is incompatible with the current trust configuration; "
+                "request approval again."
+            ),
+        ) from exc
     metrics_collector.record_approval_decision(
         decision=reviewer_request.decision.value,
         status=result.approval.status.value,

@@ -15,6 +15,7 @@
     "opensearch",
     "postgres",
     "vault",
+    "approvalCommitment",
     "provider",
     "otel",
     "rateLimit",
@@ -129,6 +130,36 @@
         "caPath": { "type": "string", "const": "/run/hallu-defense/vault-ca.pem" },
         "caSecretName": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
         "caSecretKey": { "$ref": "#/definitions/secretKey" }
+      }
+    },
+    "approvalCommitment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeSecretName",
+        "activeKeyId",
+        "previousSecretName",
+        "previousKeyId",
+        "previousValidUntil"
+      ],
+      "properties": {
+        "activeSecretName": { "$ref": "#/definitions/logicalSecret" },
+        "activeKeyId": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$"
+        },
+        "previousSecretName": { "$ref": "#/definitions/logicalSecretOrEmpty" },
+        "previousKeyId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$"
+        },
+        "previousValidUntil": {
+          "type": "string",
+          "maxLength": 64
+        }
       }
     },
     "provider": {

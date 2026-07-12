@@ -4,7 +4,8 @@ import json
 import threading
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -53,9 +54,11 @@ class StaticCommitmentSecretManager:
         value: str = "approval-commitment-key-material-32-bytes-minimum",
         *,
         missing: bool = False,
+        values: Mapping[str, str] | None = None,
     ) -> None:
         self.value = value
         self.missing = missing
+        self.values = dict(values or {})
         self.names: list[str] = []
 
     def get_secret(self, name: str, *, field: str = "value") -> SecretValue:
@@ -63,7 +66,7 @@ class StaticCommitmentSecretManager:
         self.names.append(name)
         if self.missing:
             raise SecretNotFoundError("missing test secret")
-        return SecretValue(name=name, _value=self.value)
+        return SecretValue(name=name, _value=self.values.get(name, self.value))
 
 
 def test_jsonl_approval_queue_persists_and_reloads_pending_records_by_tenant(
@@ -366,6 +369,312 @@ def test_tool_call_commitment_rejects_short_hmac_key() -> None:
         ApprovalQueue(commitment_key=b"too-short")
 
 
+def test_v3_commitment_rotation_preserves_binding_during_bounded_overlap(
+    tmp_path: Path,
+) -> None:
+    queue_path = tmp_path / "approval-rotation.jsonl"
+    old_key = b"old-approval-commitment-key-material-0001"
+    new_key = b"new-approval-commitment-key-material-0002"
+    current = [datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)]
+    old_queue = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=old_key,
+        commitment_key_id="approval-old-2026-06",
+        commitment_environment="production",
+        clock=lambda: current[0],
+    )
+    approval = old_queue.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_rotation",
+        tool_call=_tool_call(),
+        reason="Coordinated key rotation.",
+        requested_by="agent",
+    )
+    decision = old_queue.decide_with_grant(
+        "tenant-a",
+        ApprovalDecisionRequest(
+            approval_id=approval.approval_id,
+            decision=ApprovalDecision.APPROVE,
+            decided_by="reviewer",
+        ),
+    )
+    assert decision.execution_grant is not None
+
+    rotated = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=new_key,
+        commitment_key_id="approval-active-2026-07",
+        previous_commitment_keys=(old_key,),
+        previous_commitment_key_ids=("approval-old-2026-06",),
+        previous_commitment_keys_valid_until=current[0] + timedelta(hours=1),
+        commitment_environment="production",
+        clock=lambda: current[0],
+    )
+    consumed = rotated.consume_execution_grant(
+        "tenant-a",
+        _tool_call_with_grant(
+            approval_id=approval.approval_id,
+            execution_token=decision.execution_grant.execution_token,
+        ),
+        subject_id="agent",
+    )
+    assert consumed.binding.commitment_key_id == "approval-old-2026-06"
+    assert consumed.binding.environment == "production"
+    new_approval = rotated.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_rotation_new",
+        tool_call=_tool_call(),
+        reason="New approval after rotation.",
+        requested_by="agent",
+    )
+    persisted = [
+        json.loads(line)
+        for line in queue_path.read_text(encoding="utf-8").splitlines()
+    ]
+    new_payload = next(
+        item["payload"]
+        for item in persisted
+        if item["record_type"] == "approval_record"
+        and item["payload"]["approval_id"] == new_approval.approval_id
+    )
+    assert (
+        new_payload[APPROVAL_BINDING_STORAGE_KEY]["commitment_key_id"]
+        == "approval-active-2026-07"
+    )
+
+
+def test_previous_key_cannot_issue_grant_beyond_rotation_overlap(
+    tmp_path: Path,
+) -> None:
+    queue_path = tmp_path / "approval-rotation-pending.jsonl"
+    old_key = b"old-approval-commitment-key-material-0001"
+    now = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+    old_queue = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=old_key,
+        commitment_key_id="approval-old-2026-06",
+        commitment_environment="production",
+        clock=lambda: now,
+    )
+    approval = old_queue.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_rotation_pending",
+        tool_call=_tool_call(),
+        reason="Pending approval from the old key.",
+        requested_by="agent",
+    )
+    rotated = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=b"new-approval-commitment-key-material-0002",
+        commitment_key_id="approval-active-2026-07",
+        previous_commitment_keys=(old_key,),
+        previous_commitment_key_ids=("approval-old-2026-06",),
+        previous_commitment_keys_valid_until=now + timedelta(minutes=10),
+        commitment_environment="production",
+        execution_grant_ttl_seconds=900,
+        clock=lambda: now,
+    )
+
+    with pytest.raises(ApprovalQueueStorageError, match="outlive"):
+        rotated.decide_with_grant(
+            "tenant-a",
+            ApprovalDecisionRequest(
+                approval_id=approval.approval_id,
+                decision=ApprovalDecision.APPROVE,
+                decided_by="reviewer",
+            ),
+        )
+    assert rotated.list_for_tenant("tenant-a", ApprovalListRequest())[0].status is (
+        ApprovalStatus.PENDING
+    )
+
+
+def test_expired_previous_key_rejects_without_burning_existing_grant(
+    tmp_path: Path,
+) -> None:
+    queue_path = tmp_path / "approval-rotation-expired.jsonl"
+    old_key = b"old-approval-commitment-key-material-0001"
+    new_key = b"new-approval-commitment-key-material-0002"
+    current = [datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)]
+    old_queue = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=old_key,
+        commitment_key_id="approval-old-2026-06",
+        commitment_environment="production",
+        execution_grant_ttl_seconds=4 * 60 * 60,
+        clock=lambda: current[0],
+    )
+    approval = old_queue.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_rotation_expired",
+        tool_call=_tool_call(),
+        reason="Previous key expiry test.",
+        requested_by="agent",
+    )
+    decision = old_queue.decide_with_grant(
+        "tenant-a",
+        ApprovalDecisionRequest(
+            approval_id=approval.approval_id,
+            decision=ApprovalDecision.APPROVE,
+            decided_by="reviewer",
+        ),
+    )
+    assert decision.execution_grant is not None
+    overlap_end = current[0] + timedelta(hours=1)
+    rotated = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=new_key,
+        commitment_key_id="approval-active-2026-07",
+        previous_commitment_keys=(old_key,),
+        previous_commitment_key_ids=("approval-old-2026-06",),
+        previous_commitment_keys_valid_until=overlap_end,
+        commitment_environment="production",
+        clock=lambda: current[0],
+    )
+    current[0] += timedelta(hours=2)
+
+    with pytest.raises(ApprovalExecutionGrantError, match="does not match"):
+        rotated.consume_execution_grant(
+            "tenant-a",
+            _tool_call_with_grant(
+                approval_id=approval.approval_id,
+                execution_token=decision.execution_grant.execution_token,
+            ),
+            subject_id="agent",
+        )
+
+    current[0] -= timedelta(hours=1, minutes=30)
+    restored = ApprovalQueue(
+        storage_path=queue_path,
+        commitment_key=new_key,
+        commitment_key_id="approval-active-2026-07",
+        previous_commitment_keys=(old_key,),
+        previous_commitment_key_ids=("approval-old-2026-06",),
+        previous_commitment_keys_valid_until=overlap_end,
+        commitment_environment="production",
+        clock=lambda: current[0],
+    )
+    assert restored.consume_execution_grant(
+        "tenant-a",
+        _tool_call_with_grant(
+            approval_id=approval.approval_id,
+            execution_token=decision.execution_grant.execution_token,
+        ),
+        subject_id="agent",
+    ).approval_id == approval.approval_id
+
+
+def test_commitment_rotation_requires_one_distinct_bounded_previous_key() -> None:
+    active = b"active-approval-commitment-key-material-0001"
+    previous = b"previous-approval-commitment-key-material-0002"
+    now = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(ApprovalQueueConfigurationError, match="active"):
+        ApprovalQueue(previous_commitment_keys=(previous,))
+    with pytest.raises(ApprovalQueueConfigurationError, match="valid-until"):
+        ApprovalQueue(
+            commitment_key=active,
+            commitment_key_id="active-test",
+            previous_commitment_keys=(previous,),
+            previous_commitment_key_ids=("previous-test",),
+        )
+    with pytest.raises(ApprovalQueueConfigurationError, match="timezone"):
+        ApprovalQueue(
+            commitment_key=active,
+            commitment_key_id="active-test",
+            previous_commitment_keys=(previous,),
+            previous_commitment_key_ids=("previous-test",),
+            previous_commitment_keys_valid_until=datetime(2026, 7, 13),
+        )
+    with pytest.raises(ApprovalQueueConfigurationError, match="seven days"):
+        ApprovalQueue(
+            commitment_key=active,
+            commitment_key_id="active-test",
+            previous_commitment_keys=(previous,),
+            previous_commitment_key_ids=("previous-test",),
+            previous_commitment_keys_valid_until=now + timedelta(days=8),
+            clock=lambda: now,
+        )
+    with pytest.raises(ApprovalQueueConfigurationError, match="already expired"):
+        ApprovalQueue(
+            commitment_key=active,
+            commitment_key_id="active-test",
+            previous_commitment_keys=(previous,),
+            previous_commitment_key_ids=("previous-test",),
+            previous_commitment_keys_valid_until=now,
+            clock=lambda: now,
+        )
+    with pytest.raises(ApprovalQueueConfigurationError, match="distinct"):
+        ApprovalQueue(
+            commitment_key=active,
+            commitment_key_id="active-test",
+            previous_commitment_keys=(active,),
+            previous_commitment_key_ids=("previous-test",),
+            previous_commitment_keys_valid_until=now + timedelta(hours=1),
+            clock=lambda: now,
+        )
+
+
+def test_production_constructor_requires_hmac_and_opaque_key_ids() -> None:
+    key = b"active-approval-commitment-key-material-0001"
+    with pytest.raises(ApprovalQueueConfigurationError, match="HMAC"):
+        ApprovalQueue(commitment_environment="production")
+    with pytest.raises(ApprovalQueueConfigurationError, match="explicit opaque"):
+        ApprovalQueue(commitment_key=key, commitment_environment="production")
+    with pytest.raises(ApprovalQueueConfigurationError, match="opaque"):
+        ApprovalQueue(
+            commitment_key=key,
+            commitment_key_id="bad id",
+            commitment_environment="production",
+        )
+
+
+def test_legacy_commitment_storage_keys_fail_closed_at_load(tmp_path: Path) -> None:
+    queue_path = tmp_path / "legacy-approval.jsonl"
+    queue = ApprovalQueue(storage_path=queue_path, commitment_key=b"k" * 32)
+    queue.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_legacy_storage",
+        tool_call=_tool_call(),
+        reason="Current v3 approval.",
+        requested_by="agent",
+    )
+    record = json.loads(queue_path.read_text(encoding="utf-8"))
+    payload = record["payload"]
+    payload["_hallu_tool_call_commitment_v2"] = payload.pop(
+        TOOL_CALL_COMMITMENT_STORAGE_KEY
+    )
+    queue_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovalQueueStorageError, match="unsupported"):
+        ApprovalQueue(storage_path=queue_path, commitment_key=b"k" * 32)
+
+
+def test_provisional_v3_binding_shape_fails_closed_at_load(tmp_path: Path) -> None:
+    queue_path = tmp_path / "provisional-v3-approval.jsonl"
+    queue = ApprovalQueue(storage_path=queue_path, commitment_key=b"k" * 32)
+    queue.request_approval(
+        tenant_id="tenant-a",
+        trace_id="tr_provisional_v3",
+        tool_call=_tool_call(),
+        reason="Current v3 approval.",
+        requested_by="agent",
+    )
+    record = json.loads(queue_path.read_text(encoding="utf-8"))
+    binding = record["payload"][APPROVAL_BINDING_STORAGE_KEY]
+    for key in (
+        "schema_version",
+        "environment",
+        "commitment_algorithm",
+        "commitment_key_id",
+    ):
+        binding.pop(key)
+    queue_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(ApprovalQueueStorageError, match="invalid fields"):
+        ApprovalQueue(storage_path=queue_path, commitment_key=b"k" * 32)
+
+
 def test_execution_grant_expires(tmp_path: Path) -> None:
     queue = ApprovalQueue(
         storage_path=tmp_path / "approval-queue.jsonl",
@@ -616,6 +925,92 @@ def test_production_queue_rejects_missing_or_short_secret_manager_key(
         )
 
 
+def test_production_factory_resolves_active_and_previous_rotation_keys(
+    tmp_path: Path,
+) -> None:
+    settings = replace(
+        _postgres_settings(tmp_path),
+        approval_tool_call_commitment_previous_secret_name=(
+            "approvals/tool-call-commitment-key-previous"
+        ),
+        approval_tool_call_commitment_previous_key_id="approval-previous-test",
+        approval_tool_call_commitment_previous_valid_until=(
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+    )
+    manager = StaticCommitmentSecretManager(
+        values={
+            "approvals/tool-call-commitment-key": (
+                "active-approval-commitment-key-material-0001"
+            ),
+            "approvals/tool-call-commitment-key-previous": (
+                "previous-approval-commitment-key-material-0002"
+            ),
+        }
+    )
+
+    queue = create_approval_queue(
+        settings,
+        sql_provider=RecordingSqlProvider(),
+        secret_manager=manager,
+    )
+
+    assert queue._active_commitment_key_id == "approval-active-test"
+    assert set(queue._commitment_keys_by_id) == {
+        "approval-active-test",
+        "approval-previous-test",
+    }
+    assert manager.names == [
+        "approvals/tool-call-commitment-key",
+        "approvals/tool-call-commitment-key-previous",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        (
+            "approval_tool_call_commitment_previous_secret_name",
+            "approvals/tool-call-commitment-key-previous",
+            "explicit opaque previous",
+        ),
+        (
+            "approval_tool_call_commitment_previous_key_id",
+            "approval-previous-test",
+            "keys and key identifiers must match",
+        ),
+        (
+            "approval_tool_call_commitment_previous_valid_until",
+            "2026-07-13T12:00:00Z",
+            "timestamp requires a previous commitment key",
+        ),
+    ],
+)
+def test_production_factory_rejects_partial_rotation_configuration(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    error: str,
+) -> None:
+    settings = replace(_postgres_settings(tmp_path), **{field: value})
+
+    with pytest.raises(ApprovalQueueConfigurationError, match=error):
+        create_approval_queue(
+            settings,
+            sql_provider=RecordingSqlProvider(),
+            secret_manager=StaticCommitmentSecretManager(
+                values={
+                    "approvals/tool-call-commitment-key": (
+                        "active-approval-commitment-key-material-0001"
+                    ),
+                    "approvals/tool-call-commitment-key-previous": (
+                        "previous-approval-commitment-key-material-0002"
+                    ),
+                }
+            ),
+        )
+
+
 def test_create_approval_queue_rejects_non_positive_execution_grant_ttl(tmp_path: Path) -> None:
     with pytest.raises(ApprovalQueueConfigurationError, match="TTL"):
         create_approval_queue(
@@ -824,6 +1219,7 @@ def _postgres_settings(tmp_path: Path) -> Settings:
         max_output_chars=1000,
         approval_queue_backend="postgres",
         approval_tool_call_commitment_secret_name=("approvals/tool-call-commitment-key"),
+        approval_tool_call_commitment_key_id="approval-active-test",
         secrets_backend="vault",
     )
 
@@ -1261,14 +1657,22 @@ def test_postgres_queue_request_approval_redacts_and_uses_insert_sql(tmp_path: P
     assert approval.tool_call.caller_context["token"] == REDACTED
 
 
-def _bound_postgres_payload(record: ApprovalRecord) -> dict[str, object]:
+def _bound_postgres_payload(
+    record: ApprovalRecord,
+    *,
+    commitment_key: bytes = b"approval-commitment-key-material-32-bytes-minimum",
+    commitment_key_id: str = "approval-active-test",
+    commitment_environment: str = "production",
+) -> dict[str, object]:
     payload = record.model_dump(mode="json")
     payload["tool_call"]["caller_context"] = {
         "tenant_id": record.tenant_id,
         "subject": record.requested_by,
     }
     binding_queue = ApprovalQueue(
-        commitment_key=b"approval-commitment-key-material-32-bytes-minimum"
+        commitment_key=commitment_key,
+        commitment_key_id=commitment_key_id,
+        commitment_environment=commitment_environment,
     )
     bound_call = binding_queue._bind_tool_call(record.tool_call)
     binding = binding_queue._approval_binding(
@@ -1374,6 +1778,57 @@ def test_postgres_queue_consume_execution_grant_succeeds_end_to_end(tmp_path: Pa
     # The raw execution token is hashed before it reaches the database.
     for _method, _statement, parameters in provider.calls:
         assert all("tok_" not in str(parameter) for parameter in parameters)
+
+
+def test_postgres_queue_consumes_previous_key_grant_during_rotation(
+    tmp_path: Path,
+) -> None:
+    old_key = b"previous-approval-commitment-key-material-0002"
+    approved = _record(status=ApprovalStatus.APPROVED, decided_by="reviewer")
+    approved_payload = _bound_postgres_payload(
+        approved,
+        commitment_key=old_key,
+        commitment_key_id="approval-previous-test",
+    )
+    provider = RecordingSqlProvider(
+        fetch_all_rows=[{"payload": approved_payload}],
+        returning_rows=[{"approval_id": approved.approval_id}],
+    )
+    settings = replace(
+        _postgres_settings(tmp_path),
+        approval_tool_call_commitment_previous_secret_name=(
+            "approvals/tool-call-commitment-key-previous"
+        ),
+        approval_tool_call_commitment_previous_key_id="approval-previous-test",
+        approval_tool_call_commitment_previous_valid_until=(
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+    )
+    queue = create_approval_queue(
+        settings,
+        sql_provider=provider,
+        secret_manager=StaticCommitmentSecretManager(
+            values={
+                "approvals/tool-call-commitment-key": (
+                    "active-approval-commitment-key-material-0001"
+                ),
+                "approvals/tool-call-commitment-key-previous": old_key.decode("utf-8"),
+            }
+        ),
+    )
+
+    authorization = queue.consume_execution_grant(
+        "tenant-a",
+        _tool_call_with_grant(
+            approval_id=approved.approval_id,
+            execution_token="tok_" + "x" * 24,
+        ),
+        subject_id="system",
+    )
+
+    assert authorization.binding.commitment_key_id == "approval-previous-test"
+    assert [call[0] for call in provider.calls] == ["fetch_all", "execute_returning"]
+    assert provider.calls[1][1] == _CONSUME_GRANT_ONCE_SQL
 
 
 def test_postgres_queue_rejects_tampered_binding_before_consuming_grant(

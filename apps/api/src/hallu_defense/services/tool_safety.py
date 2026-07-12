@@ -10,6 +10,7 @@ from typing import Protocol, TypedDict
 from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 from jsonschema.exceptions import SchemaError  # type: ignore[import-untyped]
 
+from hallu_defense.config import normalize_environment
 from hallu_defense.domain.models import (
     PolicyEvaluationRequest,
     PolicyEvaluationResponse,
@@ -70,12 +71,14 @@ class ToolSafetyService:
         tool_registry: TrustedToolRegistry | None = None,
         redactor: SensitiveDataRedactor | None = None,
         authorization_issuer: ApprovalAuthorizationIssuer | None = None,
+        environment: str = "local",
     ) -> None:
         self._policy_engine = policy_engine
         self._content_scanner = content_scanner
         self._tool_registry = tool_registry or TrustedToolRegistry.default()
         self._redactor = redactor or SensitiveDataRedactor()
         self._authorization_issuer = authorization_issuer or ApprovalAuthorizationIssuer()
+        self._environment = normalize_environment(environment)
 
     def validate_input(
         self,
@@ -371,6 +374,7 @@ class ToolSafetyService:
             and bool(envelope.approval_execution_token)
             and approved.tenant_id == tenant_id
             and approved.subject_id == subject_id
+            and approved.environment == self._environment
             and approved.tool_name == binding.tool_name
             and approved.policy_action == binding.policy_action
             and hmac.compare_digest(approved.arguments_hash, arguments_hash)

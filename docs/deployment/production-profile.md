@@ -43,6 +43,10 @@ It sets:
   random key material before startup. The raw key is never accepted through an
   environment variable; production and staging reject an absent, unreadable,
   or undersized SecretManager value instead of falling back to unkeyed SHA-256.
+  `HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_KEY_ID=approval-active-v1` is an
+  opaque non-secret label, never a digest of the key. Rotation requires the
+  previous secret name, previous key ID, and timezone-aware valid-until value
+  together; the runtime rejects partial input and overlap beyond seven days.
 - `HALLU_DEFENSE_PROVIDER_BACKEND=openai-compatible` with a required HTTPS
   gateway, model, and Vault secret name. Production never inherits the `mock`
   default.

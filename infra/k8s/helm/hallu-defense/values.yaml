@@ -48,6 +48,13 @@ vault:
   caSecretName: ""
   caSecretKey: ca.crt
 
+approvalCommitment:
+  activeSecretName: approvals/tool-call-commitment-key
+  activeKeyId: approval-active-v1
+  previousSecretName: ""
+  previousKeyId: ""
+  previousValidUntil: ""
+
 provider:
   backend: ""
   model: ""
