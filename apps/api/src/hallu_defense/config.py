@@ -209,6 +209,7 @@ class Settings:
     audit_ledger_backend: str = "memory"
     audit_ledger_path: Path = Path("var/audit/audit-ledger.jsonl")
     audit_export_max_records: int = 1000
+    audit_request_commitment_secret_name: str | None = None
     eval_reports_backend: str = "memory"
     eval_reports_path: Path = Path("var/evals/eval-reports.jsonl")
     approval_queue_backend: str = "memory"
@@ -472,6 +473,9 @@ def load_settings(*, expected_runtime_role: str | None = None) -> Settings:
             os.getenv("HALLU_DEFENSE_AUDIT_LEDGER_PATH", "var/audit/audit-ledger.jsonl")
         ).resolve(),
         audit_export_max_records=int(os.getenv("HALLU_DEFENSE_AUDIT_EXPORT_MAX_RECORDS", "1000")),
+        audit_request_commitment_secret_name=(
+            os.getenv("HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME") or None
+        ),
         eval_reports_backend=os.getenv("HALLU_DEFENSE_EVAL_REPORTS_BACKEND", "memory")
         .strip()
         .lower(),

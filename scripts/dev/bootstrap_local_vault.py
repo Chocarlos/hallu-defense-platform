@@ -34,6 +34,7 @@ ALLOW_NONLOCAL_ENV = "HALLU_DEFENSE_LOCAL_VAULT_ALLOW_NONLOCAL"
 
 LOCAL_VAULT_SECRET_NAMES: tuple[str, ...] = (
     "observability/metrics-scrape-token",
+    "audit/request-commitment-key",
     "approvals/tool-call-commitment-key",
     "auth/trusted-header-signing-key",
     "backup/encryption-key",

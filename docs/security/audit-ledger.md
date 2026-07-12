@@ -25,7 +25,12 @@ Production and staging use:
 ```text
 HALLU_DEFENSE_AUDIT_LEDGER_BACKEND=postgres
 HALLU_DEFENSE_POSTGRES_DSN=postgresql://user:pass@host:5432/hallu_defense
+HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME=audit/request-commitment-key
 ```
+
+The logical commitment secret resolves only through `SecretManager`; production
+and staging require Vault and at least 32 bytes of key material. Raw key bytes
+must never be placed in configuration or the audit payload.
 
 ## Postgres backend
 
@@ -103,27 +108,26 @@ failures return a generic `503` without exposing database data.
 
 ## Minimization
 
-Front A keeps deterministic typed pre-storage seams in
-`_redact_verification_run()` and `_redact_audit_event()` and proves that the
-persisted copies never replace or mutate successful public responses. Its current
-compatibility redactor replaces sensitive-looking keys, recognized secret values,
-and supported signed-query patterns with `[REDACTED]` before any backend write.
-Every persisted run and event, including replay provenance, crosses one of those
-two seams. The helpers preserve only validated structural `replay_of` and
-`source_trace_id` identities. The API keeps validated tenant and trace identifiers
-so exports remain useful for investigation.
+The typed `_redact_verification_run()` and `_redact_audit_event()` seams use the
+same bounded `SensitiveDataRedactor` as tool safety, approvals, and telemetry.
+Every persisted free-form run/event field is processed for structured sensitive
+keys, credentials, signed URLs, headers, supported PII, serialized JSON, Unicode,
+cycles, depth, size, non-finite numbers, and invalid surrogates. An incomplete
+redaction fails before any backend write. Safe phrases such as “password policy”
+are not erased merely for containing a keyword. Validated structural `replay_of`
+and `source_trace_id` identities are restored after redaction so provenance stays
+relationally useful. Persisted copies never replace or mutate public responses.
 
-Full bounded PII and signed-URL inspection across every persisted run/event field
-is a mandatory root-integration dependency on Front B; this branch does not copy
-that central redactor from another worktree. Integration must preserve the typed
-pre-storage boundary, tenant/trace/event envelope parity, deterministic bounded
-processing, and public-response fidelity.
-
-Idempotent conflict comparison currently operates on that minimized persisted
-projection. Distinct sensitive originals can therefore collide if the compatibility
-redactor maps both to the same value. Root integration must add a keyed, non-exported
-pre-redaction request commitment if those originals must remain distinguishable;
-this branch intentionally does not persist an unkeyed raw-input digest.
+Every new completion also stores `_hallu_audit_request_commitment_v1`, an
+HMAC-SHA256 commitment over the normalized **pre-redaction** run plus completion
+path. It is a Pydantic private attribute and is removed before public model
+validation/export; only the opaque commitment is stored. Retry validation uses
+`hmac.compare_digest`, so two different sensitive originals that minimize to the
+same `[REDACTED]` projection conflict without exposing an offline-guessable raw
+digest. Legacy records without the commitment are adopted only if their complete
+stored projection has no redaction marker; a minimized legacy record fails closed.
+Local/test instances use a process-only random key unless a stable logical secret
+is configured, while production/staging require the Vault-backed logical secret.
 
 ## Export bound
 

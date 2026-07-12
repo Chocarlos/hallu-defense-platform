@@ -24,6 +24,7 @@ x-hallu-api-production-environment: &hallu-api-production-environment
   HALLU_DEFENSE_POSTGRES_DSN_FILE: /run/secrets/hallu_defense_postgres_dsn
   HALLU_DEFENSE_POSTGRES_CA_CERT_PATH: /run/hallu-defense/postgres/ca.crt
   HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+  HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME: audit/request-commitment-key
   HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND: postgres
   HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME: approvals/tool-call-commitment-key
   HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
@@ -73,6 +74,7 @@ x-hallu-worker-production-environment: &hallu-worker-production-environment
   HALLU_DEFENSE_POSTGRES_DSN_FILE: /run/secrets/hallu_defense_postgres_dsn
   HALLU_DEFENSE_POSTGRES_CA_CERT_PATH: /run/hallu-defense/postgres/ca.crt
   HALLU_DEFENSE_AUDIT_LEDGER_BACKEND: postgres
+  HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME: audit/request-commitment-key
   HALLU_DEFENSE_CORPUS_GRANTS_BACKEND: postgres
   HALLU_DEFENSE_RAG_INDEX_BACKEND: hybrid
   HALLU_DEFENSE_OPENSEARCH_ENDPOINT: ${HALLU_DEFENSE_OPENSEARCH_ENDPOINT:?set the approved HTTPS OpenSearch endpoint}

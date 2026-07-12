@@ -41,6 +41,8 @@ TIMEOUT_ENV = "HALLU_DEFENSE_LIVE_VAULT_TIMEOUT_SECONDS"
 BACKUP_ENCRYPTION_SECRET_NAME = "backup/encryption-key"
 LOCAL_VAULT_SECRET_NAMES: tuple[str, ...] = (
     "observability/metrics-scrape-token",
+    "audit/request-commitment-key",
+    "approvals/tool-call-commitment-key",
     "auth/trusted-header-signing-key",
     BACKUP_ENCRYPTION_SECRET_NAME,
     "providers/openai/api-key",

@@ -46,6 +46,24 @@ def test_audit_ledger_config_requires_env_keys() -> None:
         )
 
 
+def test_audit_ledger_config_requires_request_commitment_boundary() -> None:
+    config = list(load_current_config())
+    config[2] = config[2].replace(
+        "AUDIT_REQUEST_COMMITMENT_DOMAIN",
+        "UNKEYED_REQUEST_DIGEST_DOMAIN",
+    )
+
+    with pytest.raises(AuditLedgerConfigError, match="AUDIT_REQUEST_COMMITMENT_DOMAIN"):
+        validate_audit_ledger_config(
+            env_example_text=config[0],
+            audit_doc_text=config[1],
+            audit_service_text=config[2],
+            makefile_text=config[3],
+            ci_workflow_text=config[4],
+            security_workflow_text=config[5],
+        )
+
+
 def test_audit_ledger_config_requires_production_postgres_rejection() -> None:
     config = list(load_current_config())
     config[2] = config[2].replace(

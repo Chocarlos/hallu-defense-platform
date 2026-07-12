@@ -153,7 +153,11 @@ _needs_pg = (
     or settings.ingestion_mode.strip().lower() == INGESTION_MODE_ASYNC
 )
 _sql_provider = build_postgres_provider(settings) if _needs_pg else None
-audit_ledger = create_audit_ledger(settings, sql_provider=_sql_provider)
+audit_ledger = create_audit_ledger(
+    settings,
+    sql_provider=_sql_provider,
+    secret_manager=secret_manager,
+)
 trusted_tool_registry = TrustedToolRegistry.default()
 approval_authorization_issuer = ApprovalAuthorizationIssuer()
 approval_queue = create_approval_queue(

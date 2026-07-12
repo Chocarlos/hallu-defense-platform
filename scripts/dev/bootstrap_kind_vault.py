@@ -23,6 +23,9 @@ METRICS_SECRET_NAME_ENV = "HALLU_DEFENSE_KIND_METRICS_SECRET_NAME"
 APPROVAL_COMMITMENT_SECRET_NAME_ENV = (
     "HALLU_DEFENSE_KIND_APPROVAL_COMMITMENT_SECRET_NAME"
 )
+AUDIT_REQUEST_COMMITMENT_SECRET_NAME_ENV = (
+    "HALLU_DEFENSE_KIND_AUDIT_REQUEST_COMMITMENT_SECRET_NAME"
+)
 SEED_CORE_CREDENTIALS_ENV = "HALLU_DEFENSE_KIND_VAULT_SEED_CORE_CREDENTIALS"
 REDIS_SECRET_NAME_ENV = "HALLU_DEFENSE_KIND_REDIS_SECRET_NAME"
 REDIS_URL_PATH_ENV = "HALLU_DEFENSE_KIND_REDIS_URL_PATH"
@@ -46,6 +49,7 @@ class KindVaultBootstrapConfig:
     provider_secret_name: str | None
     metrics_secret_name: str | None
     approval_commitment_secret_name: str | None
+    audit_request_commitment_secret_name: str | None
     seed_core_credentials: bool = True
     redis_secret_name: str | None = None
     redis_url_path: Path | None = None
@@ -84,6 +88,10 @@ def run_from_env(
         approval_commitment_secret_name=_optional(
             effective_env,
             APPROVAL_COMMITMENT_SECRET_NAME_ENV,
+        ),
+        audit_request_commitment_secret_name=_optional(
+            effective_env,
+            AUDIT_REQUEST_COMMITMENT_SECRET_NAME_ENV,
         ),
         seed_core_credentials=seed_core_credentials,
         redis_secret_name=_optional(effective_env, REDIS_SECRET_NAME_ENV),
@@ -144,6 +152,7 @@ def bootstrap_kind_vault(
         assert config.provider_secret_name is not None
         assert config.metrics_secret_name is not None
         assert config.approval_commitment_secret_name is not None
+        assert config.audit_request_commitment_secret_name is not None
         factory = credential_factory or (lambda: secret_generator.token_urlsafe(32))
         provider_credential = _generated_credential(factory())
         metrics_credential = _generated_credential(factory())
@@ -152,6 +161,13 @@ def bootstrap_kind_vault(
         approval_commitment_key = _generated_credential(factory())
         while approval_commitment_key in {provider_credential, metrics_credential}:
             approval_commitment_key = _generated_credential(factory())
+        audit_request_commitment_key = _generated_credential(factory())
+        while audit_request_commitment_key in {
+            provider_credential,
+            metrics_credential,
+            approval_commitment_key,
+        }:
+            audit_request_commitment_key = _generated_credential(factory())
         secrets_to_seed.extend(
             (
                 (config.provider_secret_name, provider_credential),
@@ -159,6 +175,10 @@ def bootstrap_kind_vault(
                 (
                     config.approval_commitment_secret_name,
                     approval_commitment_key,
+                ),
+                (
+                    config.audit_request_commitment_secret_name,
+                    audit_request_commitment_key,
                 ),
             )
         )
@@ -219,9 +239,10 @@ def _validate_config(config: KindVaultBootstrapConfig) -> None:
         config.provider_secret_name is None
         or config.metrics_secret_name is None
         or config.approval_commitment_secret_name is None
+        or config.audit_request_commitment_secret_name is None
     ):
         raise KindVaultBootstrapError(
-            "provider, metrics, and approval commitment secret names are required "
+            "provider, metrics, approval, and audit commitment secret names are required "
             "when core credential seeding is enabled"
         )
     if (config.redis_secret_name is None) != (config.redis_url_path is None):
@@ -234,6 +255,7 @@ def _validate_config(config: KindVaultBootstrapConfig) -> None:
         (config.provider_secret_name, "provider"),
         (config.metrics_secret_name, "metrics"),
         (config.approval_commitment_secret_name, "approval commitment"),
+        (config.audit_request_commitment_secret_name, "audit request commitment"),
         (config.redis_secret_name, "Redis"),
     )
     for name, label in named_targets:

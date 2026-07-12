@@ -51,6 +51,7 @@ def test_kind_vault_bootstrap_waits_and_seeds_generated_credentials(tmp_path: Pa
             "provider-generated-credential-value-0001",
             "metrics-generated-credential-value-00002",
             "approval-generated-commitment-key-000003",
+            "audit-generated-commitment-key-00000004",
         )
     )
 
@@ -69,8 +70,9 @@ def test_kind_vault_bootstrap_waits_and_seeds_generated_credentials(tmp_path: Pa
             "providers/openai/api-key",
             "observability/metrics-scrape-token",
             "approvals/tool-call-commitment-key",
+            "audit/request-commitment-key",
         ],
-        "seeded_count": 3,
+        "seeded_count": 4,
     }
     assert sleeps == [1.0, 1.0]
     assert [call["method"] for call in requester.calls] == [
@@ -80,8 +82,9 @@ def test_kind_vault_bootstrap_waits_and_seeds_generated_credentials(tmp_path: Pa
         "PUT",
         "PUT",
         "PUT",
+        "PUT",
     ]
-    provider_put, metrics_put, approval_put = requester.calls[-3:]
+    provider_put, metrics_put, approval_put, audit_put = requester.calls[-4:]
     assert provider_put["url"] == (
         "https://hallu-defense-vault:8200/v1/secret/data/providers/openai/api-key"
     )
@@ -102,10 +105,18 @@ def test_kind_vault_bootstrap_waits_and_seeds_generated_credentials(tmp_path: Pa
     assert approval_put["payload"] == {
         "data": {"value": "approval-generated-commitment-key-000003"}
     }
+    assert audit_put["url"] == (
+        "https://hallu-defense-vault:8200/v1/secret/data/"
+        "audit/request-commitment-key"
+    )
+    assert audit_put["payload"] == {
+        "data": {"value": "audit-generated-commitment-key-00000004"}
+    }
     assert "root-token-value" not in str(result)
     assert "provider-generated-credential-value-0001" not in str(result)
     assert "metrics-generated-credential-value-00002" not in str(result)
     assert "approval-generated-commitment-key-000003" not in str(result)
+    assert "audit-generated-commitment-key-00000004" not in str(result)
 
 
 def test_kind_vault_bootstrap_fails_closed_when_health_deadline_expires(
@@ -201,6 +212,7 @@ def _config(
         provider_secret_name=provider_secret_name,
         metrics_secret_name="observability/metrics-scrape-token",
         approval_commitment_secret_name="approvals/tool-call-commitment-key",
+        audit_request_commitment_secret_name="audit/request-commitment-key",
         wait_seconds=wait_seconds,
     )
 
@@ -228,6 +240,7 @@ def _redis_config(
         provider_secret_name=None,
         metrics_secret_name=None,
         approval_commitment_secret_name=None,
+        audit_request_commitment_secret_name=None,
         seed_core_credentials=False,
         redis_secret_name="quotas/tool-validation/redis-url",
         redis_url_path=redis_url_path,
