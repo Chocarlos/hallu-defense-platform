@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 
-from hallu_defense.api import dependencies
+from hallu_defense.api import dependencies, middleware, routes
 from hallu_defense.config import Settings
 from hallu_defense.domain.models import FinalDecision, VerificationRun
 from hallu_defense.main import app
+from hallu_defense.services.audit import AuditLedger, AuditLedgerStorageError
 
 SUPPORTED_MESSAGE = "Full-time employees receive 15 days of paid vacation per year."
 SUPPORTED_DOCUMENT = {
@@ -46,11 +49,14 @@ def _replay(
     tenant_id: str,
     trace_id: str,
     source_trace_id: str,
-) -> object:
-    return client.post(
-        "/verification/replay",
-        json={"trace_id": source_trace_id},
-        headers={"x-tenant-id": tenant_id, "x-trace-id": trace_id},
+) -> Response:
+    return cast(
+        Response,
+        client.post(
+            "/verification/replay",
+            json={"trace_id": source_trace_id},
+            headers={"x-tenant-id": tenant_id, "x-trace-id": trace_id},
+        ),
     )
 
 
@@ -77,11 +83,11 @@ def test_replay_reexecutes_pipeline_from_stored_snapshot() -> None:
     assert replayed["trace_id"] == "tr_replay_call_01"
     assert replayed["tenant_id"] == tenant_id
     assert replayed["input"]["replay_of"] == "tr_replay_source_01"
-    assert len(replayed["claims"]) == len(source["claims"])
-    assert len(replayed["verdicts"]) == len(source["claims"])
-    assert payload["decision_changed"] == (
-        replayed["final_decision"] != source["final_decision"]
-    )
+    source_claims = source["claims"]
+    assert isinstance(source_claims, list)
+    assert len(replayed["claims"]) == len(source_claims)
+    assert len(replayed["verdicts"]) == len(source_claims)
+    assert payload["decision_changed"] == (replayed["final_decision"] != source["final_decision"])
     # A stable supported run must replay to the same decision deterministically.
     assert replayed["final_decision"] == source["final_decision"]
     assert payload["decision_changed"] is False
@@ -292,7 +298,229 @@ def test_replay_appends_replayed_run_and_audit_event() -> None:
     replay_events = [
         event for event in payload["events"] if event["event_type"] == "verification_replay"
     ]
+    completion_events = [
+        event
+        for event in payload["events"]
+        if event["event_type"] == "verification_completed"
+        and event["path"] == "/verification/replay"
+    ]
     assert len(replay_events) == 1
+    assert len(completion_events) == 1
     assert replay_events[0]["tenant_id"] == tenant_id
     assert replay_events[0]["metadata"]["source_trace_id"] == "tr_replay_source_03"
     assert replay_events[0]["metadata"]["decision_changed"] is False
+
+
+def test_replay_retry_persists_one_atomic_run_completion_and_replay_event() -> None:
+    client = TestClient(app)
+    tenant_id = "tenant-replay-retry"
+    _run_verification(client, tenant_id=tenant_id, trace_id="tr_replay_retry_source")
+
+    first = _replay(
+        client,
+        tenant_id=tenant_id,
+        trace_id="tr_replay_retry_call",
+        source_trace_id="tr_replay_retry_source",
+    )
+    retried = _replay(
+        client,
+        tenant_id=tenant_id,
+        trace_id="tr_replay_retry_call",
+        source_trace_id="tr_replay_retry_source",
+    )
+
+    assert first.status_code == 200, first.text
+    assert retried.status_code == 200, retried.text
+    assert (
+        retried.json()["replayed_run"]["created_at"] == first.json()["replayed_run"]["created_at"]
+    )
+    export = client.post(
+        "/audit/export",
+        json={"trace_id": "tr_replay_retry_call", "include_events": True},
+        headers={"x-tenant-id": tenant_id, "x-trace-id": "tr_replay_retry_export"},
+    )
+    assert export.status_code == 200
+    payload = export.json()
+    assert len(payload["runs"]) == 1
+    assert (
+        len(
+            [
+                event
+                for event in payload["events"]
+                if event["event_type"] == "verification_completed"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len([event for event in payload["events"] if event["event_type"] == "verification_replay"])
+        == 1
+    )
+
+
+def test_replay_retry_finds_original_source_before_export_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = AuditLedger(export_max_records=1)
+    monkeypatch.setattr(routes, "audit_ledger", ledger)
+    client = TestClient(app)
+    tenant_id = "tenant-replay-cap"
+    trace_id = "tr_replay_cap_source"
+    _run_verification(client, tenant_id=tenant_id, trace_id=trace_id)
+
+    first = _replay(
+        client,
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        source_trace_id=trace_id,
+    )
+    retried = _replay(
+        client,
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        source_trace_id=trace_id,
+    )
+
+    assert first.status_code == 200, first.text
+    assert retried.status_code == 200, retried.text
+    assert (
+        retried.json()["replayed_run"]["created_at"] == first.json()["replayed_run"]["created_at"]
+    )
+    completion_events = ledger.page_events(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        event_type="verification_completed",
+        limit=10,
+    )
+    replay_events = ledger.page_events(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        event_type="verification_replay",
+        limit=10,
+    )
+    assert sorted(event.path for event in completion_events) == [
+        "/verification/replay",
+        "/verification/run",
+    ]
+    assert len(replay_events) == 1
+    assert ledger.find_replay_source(tenant_id=tenant_id, trace_id=trace_id) is not None
+
+
+@pytest.mark.parametrize("backend", ["memory", "jsonl"])
+def test_replay_rejects_ambiguous_exact_source_before_orchestrator_with_cap_one(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    ledger_path = tmp_path / "ambiguous-replay.jsonl" if backend == "jsonl" else None
+    ledger = AuditLedger(storage_path=ledger_path, export_max_records=1)
+    monkeypatch.setattr(routes, "audit_ledger", ledger)
+    client = TestClient(app)
+    tenant_id = "tenant-replay-ambiguous"
+    source_trace_id = "tr_replay_ambiguous_source"
+    source_payload = _run_verification(
+        client,
+        tenant_id=tenant_id,
+        trace_id=source_trace_id,
+    )
+    source = VerificationRun.model_validate(source_payload)
+    ledger.append_completed_run(source, path="/v2/verification/run")
+    if ledger_path is not None:
+        ledger = AuditLedger(storage_path=ledger_path, export_max_records=1)
+        monkeypatch.setattr(routes, "audit_ledger", ledger)
+
+    replay_calls = 0
+
+    def fail_if_replayed(_source: VerificationRun) -> VerificationRun:
+        nonlocal replay_calls
+        replay_calls += 1
+        raise AssertionError("ambiguous replay must not call the orchestrator")
+
+    monkeypatch.setattr(dependencies.orchestrator, "replay", fail_if_replayed)
+    response = _replay(
+        client,
+        tenant_id=tenant_id,
+        trace_id="tr_replay_ambiguous_call",
+        source_trace_id=source_trace_id,
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "trace_id": "tr_replay_ambiguous_call",
+        "error": "http_409",
+        "message": routes.VERIFICATION_REPLAY_SOURCE_CONFLICT_MESSAGE,
+        "details": {},
+    }
+    assert replay_calls == 0
+    assert (
+        ledger.export(
+            tenant_id=tenant_id,
+            trace_id="tr_replay_ambiguous_call",
+        )
+        == []
+    )
+
+
+def test_replay_fails_closed_without_partial_unit_when_atomic_persistence_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = AuditLedger()
+    monkeypatch.setattr(routes, "audit_ledger", ledger)
+    client = TestClient(app)
+    tenant_id = "tenant-replay-fail"
+    _run_verification(client, tenant_id=tenant_id, trace_id="tr_replay_fail_source")
+
+    def fail_replay(
+        _run: VerificationRun,
+        *,
+        source_trace_id: str,
+        source_final_decision: FinalDecision,
+    ) -> None:
+        del source_trace_id, source_final_decision
+        raise AuditLedgerStorageError("database-password-must-not-leak")
+
+    def fail_http_event(**_kwargs: object) -> None:
+        raise AuditLedgerStorageError("database-password-must-not-leak")
+
+    monkeypatch.setattr(ledger, "append_replayed_run", fail_replay)
+    monkeypatch.setattr(ledger, "append_event", fail_http_event)
+    monkeypatch.setattr(middleware, "audit_ledger", ledger)
+    response = _replay(
+        client,
+        tenant_id=tenant_id,
+        trace_id="tr_replay_fail_call",
+        source_trace_id="tr_replay_fail_source",
+    )
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "Verification persistence is unavailable."
+    assert "database-password-must-not-leak" not in response.text
+    assert ledger.export(tenant_id=tenant_id, trace_id="tr_replay_fail_call") == []
+    assert ledger.export_events(tenant_id=tenant_id, trace_id="tr_replay_fail_call") == []
+
+
+def test_replay_source_storage_failure_returns_generic_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = AuditLedger()
+
+    def fail_source_lookup(*_args: object, **_kwargs: object) -> None:
+        raise AuditLedgerStorageError("database-password-must-not-leak")
+
+    def fail_http_event(**_kwargs: object) -> None:
+        raise AuditLedgerStorageError("database-password-must-not-leak")
+
+    monkeypatch.setattr(ledger, "find_replay_source", fail_source_lookup)
+    monkeypatch.setattr(ledger, "append_event", fail_http_event)
+    monkeypatch.setattr(routes, "audit_ledger", ledger)
+    monkeypatch.setattr(middleware, "audit_ledger", ledger)
+    response = _replay(
+        TestClient(app),
+        tenant_id="tenant-replay-read-fail",
+        trace_id="tr_replay_read_fail",
+        source_trace_id="tr_replay_source_missing",
+    )
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "Verification persistence is unavailable."
+    assert "database-password-must-not-leak" not in response.text

@@ -5,7 +5,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE = ROOT / ".env.example"
 AUDIT_DOC = ROOT / "docs" / "security" / "audit-ledger.md"
-AUDIT_SERVICE = ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "audit.py"
+AUDIT_SERVICE = (
+    ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "audit.py"
+)
 MAKEFILE = ROOT / "Makefile"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
@@ -39,7 +41,10 @@ def validate_audit_ledger_config(
         {
             "jsonl",
             "append-only",
-            "Production and staging must not use `memory`",
+            "Production and staging require `postgres`",
+            "atomically",
+            "exactly once",
+            "REPEATABLE READ, READ ONLY",
             "[REDACTED]",
         },
         "docs/security/audit-ledger.md",
@@ -48,10 +53,25 @@ def validate_audit_ledger_config(
     _require(
         audit_service_text,
         {
-            "AuditLedger(storage_path",
-            "Production and staging must configure a persistent audit ledger backend",
+            "storage_path=settings.audit_ledger_path",
+            "Production and staging require the PostgreSQL persistent audit ledger backend.",
+            "append_completed_run",
+            "append_replayed_run",
+            "append_run_with_event",
+            "export_snapshot",
+            "limit=limit + 1",
+            "find_replay_source",
+            "load_replay_source_candidates",
+            "ORDER BY created_at DESC, id DESC LIMIT 2",
+            "ReplaySourceConflictError",
+            "payload #>> '{input,replay_of}' IS NULL",
+            "verification_completed and verification_replay must be persisted",
+            "related_events",
+            "ON CONFLICT DO NOTHING",
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
             "REDACTED",
-            "model_dump(mode=\"json\")",
+            'model_dump(mode="json")',
+            "model_copy(deep=True)",
         },
         "audit service",
         errors,

@@ -135,7 +135,9 @@ def _validate_exact_vector_migration(sql: str, errors: list[str]) -> None:
     if required not in sql:
         errors.append(f"009_drop_unsafe_ivfflat.sql missing `{required}`")
     if re.search(r"(?i)CREATE\s+INDEX.+(?:ivfflat|hnsw)", sql):
-        errors.append("009_drop_unsafe_ivfflat.sql must not create an approximate vector index")
+        errors.append(
+            "009_drop_unsafe_ivfflat.sql must not create an approximate vector index"
+        )
 
 
 def _validate_retrieved_at_migration(sql: str, errors: list[str]) -> None:
@@ -186,17 +188,139 @@ def _validate_rag_tenant_deletion_fence(sql: str, errors: list[str]) -> None:
 def _validate_audit_history_integrity(sql: str, errors: list[str]) -> None:
     normalized = re.sub(r"\s+", " ", sql).strip()
     for marker in (
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_audit_events_tenant_event_id",
+        "ADD COLUMN IF NOT EXISTS completion_path text",
+        "DO $audit_replay_backfill$",
+        "payload #>> '{input,replay_of}' = replay_row.source_trace_id",
+        "payload ->> 'final_decision' = replay_row.replay_final_decision",
+        "migrated_event_id := 'evt_migrated_completion_' || replay_row.id::text",
+        "'event_type', 'verification_completed'",
+        "audit replay legacy reconciliation found an orphaned or ambiguous triple",
+        "DO $audit_history_backfill$",
+        "run_count <> 1",
+        "event_count <> 1",
+        "UPDATE audit_runs AS legacy_run",
+        "SET completion_path = completion.completion_path",
+        "audit completion legacy backfill is orphaned, ambiguous",
+        "audit completion run/event parity validation failed",
+        "completed_run.final_decision IS DISTINCT FROM completion.final_decision",
+        "audit replay run/completion/provenance parity validation failed",
+        "replayed_run.source_trace_id IS DISTINCT FROM provenance.source_trace_id",
+        "IS DISTINCT FROM provenance.replay_final_decision",
+        "ALTER COLUMN checksum_sha256 SET NOT NULL",
+        "DROP CONSTRAINT IF EXISTS ck_schema_migrations_checksum_sha256",
+        "ADD CONSTRAINT ck_schema_migrations_checksum_sha256",
+        "checksum_sha256 ~ '^[0-9a-f]{64}$'",
+        "VALIDATE CONSTRAINT ck_schema_migrations_checksum_sha256",
+        "DROP CONSTRAINT IF EXISTS ck_audit_runs_payload_envelope",
+        "ADD CONSTRAINT ck_audit_runs_payload_envelope",
+        "tenant_id = payload ->> 'tenant_id'",
+        "trace_id = payload ->> 'trace_id'",
+        "created_at = (payload ->> 'created_at')::timestamptz",
+        "VALIDATE CONSTRAINT ck_audit_runs_payload_envelope",
+        "DROP CONSTRAINT IF EXISTS ck_audit_runs_completion_contract",
+        "ADD CONSTRAINT ck_audit_runs_completion_contract",
+        "tenant_id = btrim(tenant_id)",
+        "trace_id ~ '^tr_[A-Za-z0-9_-]{8,80}$'",
+        "jsonb_typeof(payload #> '{input,replay_of}') = 'string'",
+        "(payload #>> '{input,replay_of}') ~ '^tr_[A-Za-z0-9_-]{8,80}$'",
+        "VALIDATE CONSTRAINT ck_audit_runs_completion_contract",
+        "DROP CONSTRAINT IF EXISTS ck_audit_events_payload_envelope",
+        "ADD CONSTRAINT ck_audit_events_payload_envelope",
+        "event_id = payload ->> 'event_id'",
+        "event_id ~ '^evt_[A-Za-z0-9_-]+$'",
+        "VALIDATE CONSTRAINT ck_audit_events_payload_envelope",
+        "DROP CONSTRAINT IF EXISTS ck_audit_events_verification_completed",
+        "ADD CONSTRAINT ck_audit_events_verification_completed",
+        'payload @> \'{"method":"POST","status_code":200,"outcome":"success"}\'::jsonb',
+        "'/verification/run'",
+        "'/v2/verification/run'",
+        "'/verification/replay'",
+        "payload #>> '{metadata,final_decision}'",
+        "payload -> 'metadata' = jsonb_build_object( 'final_decision'",
+        "VALIDATE CONSTRAINT ck_audit_events_verification_completed",
+        "DROP CONSTRAINT IF EXISTS ck_audit_events_verification_replay",
+        "ADD CONSTRAINT ck_audit_events_verification_replay",
+        'payload @> \'{"method":"POST","path":"/verification/replay","status_code":200,"outcome":"success"}\'::jsonb',
+        "jsonb_typeof(payload #> '{metadata,source_trace_id}') = 'string'",
+        "(payload #>> '{metadata,source_trace_id}') ~ '^tr_[A-Za-z0-9_-]{8,80}$'",
+        "payload #>> '{metadata,source_final_decision}' IN (",
+        "jsonb_typeof(payload #> '{metadata,replay_final_decision}') = 'string'",
+        "payload #>> '{metadata,replay_final_decision}' IN (",
+        "jsonb_typeof(payload #> '{metadata,decision_changed}') = 'boolean'",
+        "payload #> '{metadata,decision_changed}' = CASE",
+        "WHEN (payload #>> '{metadata,source_final_decision}') <> (payload #>> '{metadata,replay_final_decision}')",
+        "THEN 'true'::jsonb ELSE 'false'::jsonb END",
+        "payload -> 'metadata' = jsonb_build_object( 'source_trace_id'",
+        "VALIDATE CONSTRAINT ck_audit_events_verification_replay",
+        "DROP INDEX IF EXISTS ix_audit_runs_tenant_created;",
+        "DROP INDEX IF EXISTS ix_audit_runs_tenant_trace;",
+        "DROP INDEX IF EXISTS ix_audit_events_tenant_created;",
+        "DROP INDEX IF EXISTS ix_audit_events_tenant_trace;",
+        "DROP INDEX IF EXISTS ux_audit_runs_tenant_trace_completion_path",
+        "CREATE UNIQUE INDEX ux_audit_runs_tenant_trace_completion_path",
+        "ON audit_runs (tenant_id, trace_id, completion_path)",
+        "WHERE completion_path IS NOT NULL",
+        "DROP INDEX IF EXISTS ux_audit_events_tenant_trace_completion_path",
+        "CREATE UNIQUE INDEX ux_audit_events_tenant_trace_completion_path",
+        "ON audit_events (tenant_id, trace_id, (payload ->> 'path'))",
+        "WHERE payload ->> 'event_type' = 'verification_completed'",
+        "DROP INDEX IF EXISTS ux_audit_events_tenant_trace_replay_path",
+        "CREATE UNIQUE INDEX ux_audit_events_tenant_trace_replay_path",
+        "WHERE payload ->> 'event_type' = 'verification_replay'",
+        "DROP INDEX IF EXISTS ux_audit_events_tenant_event_id",
+        "CREATE UNIQUE INDEX ux_audit_events_tenant_event_id",
         "ON audit_events (tenant_id, event_id)",
-        "CREATE INDEX IF NOT EXISTS ix_audit_events_tenant_type_created_event",
+        "DROP INDEX IF EXISTS ix_audit_runs_created_id",
+        "CREATE INDEX ix_audit_runs_created_id",
+        "ON audit_runs (created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_runs_trace_created_id",
+        "CREATE INDEX ix_audit_runs_trace_created_id",
+        "ON audit_runs (trace_id, created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_runs_tenant_created_id",
+        "CREATE INDEX ix_audit_runs_tenant_created_id",
+        "ON audit_runs (tenant_id, created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_runs_tenant_trace_created_id",
+        "CREATE INDEX ix_audit_runs_tenant_trace_created_id",
+        "ON audit_runs (tenant_id, trace_id, created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_events_created_id",
+        "CREATE INDEX ix_audit_events_created_id",
+        "ON audit_events (created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_events_trace_created_id",
+        "CREATE INDEX ix_audit_events_trace_created_id",
+        "ON audit_events (trace_id, created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_events_tenant_created_id",
+        "CREATE INDEX ix_audit_events_tenant_created_id",
+        "ON audit_events (tenant_id, created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_events_tenant_trace_created_id",
+        "CREATE INDEX ix_audit_events_tenant_trace_created_id",
+        "ON audit_events (tenant_id, trace_id, created_at DESC, id DESC)",
+        "DROP INDEX IF EXISTS ix_audit_events_tenant_type_created_event",
+        "CREATE INDEX ix_audit_events_tenant_type_created_event",
         "(payload ->> 'event_type')",
         "created_at DESC",
         "event_id DESC",
-        "CREATE INDEX IF NOT EXISTS ix_audit_events_tenant_type_trace_created_event",
+        "DROP INDEX IF EXISTS ix_audit_events_tenant_type_trace_created_event",
+        "CREATE INDEX ix_audit_events_tenant_type_trace_created_event",
         "trace_id",
     ):
         if marker not in normalized:
             errors.append(f"013_audit_history_integrity.sql missing `{marker}`")
+    for destructive in ("DROP TABLE", "DELETE FROM", "TRUNCATE"):
+        if destructive in normalized.upper():
+            errors.append(
+                "013_audit_history_integrity.sql must preserve audit data; found "
+                f"`{destructive}`"
+            )
+    if re.search(
+        r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+"
+        r"(?:ux|ix)_audit_",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        errors.append(
+            "013 audit indexes must use transactional DROP/CREATE so a raw rerun "
+            "repairs drifted definitions"
+        )
 
 
 def _validate_applier(applier_text: str, errors: list[str]) -> None:
@@ -209,7 +333,7 @@ def _validate_applier(applier_text: str, errors: list[str]) -> None:
         "transaction.execute(MIGRATION_LOCK_TIMEOUT_SQL)",
         "transaction.execute(MIGRATION_STATEMENT_TIMEOUT_SQL)",
         "SELECT pg_advisory_xact_lock(%s)",
-        "hashlib.sha256(statement.encode(\"utf-8\")).hexdigest()",
+        'hashlib.sha256(statement.encode("utf-8")).hexdigest()',
         "SELECT version, checksum_sha256 FROM schema_migrations",
         "recorded_checksum != checksum",
         "Database records migration versions missing from the repository",
@@ -219,11 +343,15 @@ def _validate_applier(applier_text: str, errors: list[str]) -> None:
         if marker not in applier_text:
             errors.append(f"migration applier missing `{marker}`")
 
-    transaction_adapter = applier_text.partition("class _PsycopgTransactionConnection:")[2]
+    transaction_adapter = applier_text.partition(
+        "class _PsycopgTransactionConnection:"
+    )[2]
     if not transaction_adapter:
         errors.append("migration applier missing _PsycopgTransactionConnection")
     else:
-        execute_body = transaction_adapter.partition("def execute(")[2].partition("def fetch_all(")[0]
+        execute_body = transaction_adapter.partition("def execute(")[2].partition(
+            "def fetch_all("
+        )[0]
         for marker in (
             "if parameters:",
             "cursor.execute(statement, parameters)",
@@ -244,7 +372,12 @@ def _validate_tests(tests_text: str, errors: list[str]) -> None:
         "test_committed_migration_set_is_exactly_000_through_013",
         "test_rag_lifecycle_outbox_has_leased_cross_store_state_machine",
         "test_rag_tenant_deletion_fence_blocks_reingestion_tables",
-        "test_audit_history_integrity_has_unique_and_keyset_indexes",
+        "test_audit_history_integrity_has_completion_constraints_and_exact_indexes",
+        "test_audit_history_integrity_fences_exactly_once_replay_event",
+        "test_audit_history_integrity_reconciles_only_exact_legacy_replay_triples",
+        "test_audit_history_integrity_backfills_only_unambiguous_legacy_pairs",
+        "test_audit_history_integrity_replaces_every_named_definition_on_raw_rerun",
+        "test_legacy_checksums_are_backfilled_before_013_enforces_not_null",
         "test_failure_raises_migration_error_and_leaves_version_unrecorded",
         "test_applied_migration_checksum_drift_fails_closed",
         "test_applied_bootstrap_drift_is_rejected_before_changed_file_executes",
@@ -276,6 +409,27 @@ def _validate_docs(docs_text: str, errors: list[str]) -> None:
         "011_rag_lifecycle_outbox.sql",
         "012_rag_tenant_deletion_fence.sql",
         "013_audit_history_integrity.sql",
+        "audit_runs.completion_path",
+        "exactly once",
+        "exactly one NULL-path run",
+        "retry of an upgraded legacy request",
+        "three-record atomic unit",
+        "input.replay_of",
+        "deterministically derived",
+        "Final bidirectional",
+        "verification_replay",
+        "source_trace_id",
+        "source_final_decision",
+        "replay_final_decision",
+        "decision_changed",
+        "true exactly when",
+        "^tr_[A-Za-z0-9_-]{8,80}$",
+        "NOT VALID",
+        "raw file again repairs",
+        "Migration 013 rollout and locks",
+        "CREATE INDEX CONCURRENTLY",
+        "activeDeadlineSeconds: 900",
+        "leader D",
         "lock_timeout",
         "statement_timeout",
         "14-minute",

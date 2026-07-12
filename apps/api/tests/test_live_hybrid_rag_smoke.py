@@ -136,9 +136,7 @@ def test_live_hybrid_rag_smoke_main_never_prints_admin_dsn_secret(
     exit_code = smoke.main(
         env={
             smoke.ENABLED_ENV: "true",
-            smoke.ADMIN_DSN_ENV: (
-                "postgresql://admin:admin-dsn-secret@localhost/postgres"
-            ),
+            smoke.ADMIN_DSN_ENV: ("postgresql://admin:admin-dsn-secret@localhost/postgres"),
             smoke.OPENSEARCH_ENDPOINT_ENV: "https://user:url-secret@search.example.test",
         }
     )
@@ -178,9 +176,7 @@ def test_live_hybrid_rag_smoke_scratch_dsn_replaces_database_and_adds_timeouts()
     assert isinstance(parameters, dict)
     assert parameters["dbname"] == "hallu_hybrid_smoke_unit"
     assert parameters["connect_timeout"] == 2
-    assert parameters["options"] == (
-        "-c lock_timeout=1250 -c statement_timeout=1250"
-    )
+    assert parameters["options"] == ("-c lock_timeout=1250 -c statement_timeout=1250")
 
 
 def test_live_hybrid_rag_smoke_admin_sql_is_exact_and_bounded() -> None:
@@ -204,9 +200,7 @@ def test_live_hybrid_rag_smoke_admin_sql_is_exact_and_bounded() -> None:
         "DROP DATABASE IF EXISTS hallu_hybrid_smoke_unit WITH (FORCE)",
     ]
     assert all(call["connect_timeout"] == 2 for call in connect.calls)
-    assert all(
-        call["options"] == "-c statement_timeout=1250" for call in connect.calls
-    )
+    assert all(call["options"] == "-c statement_timeout=1250" for call in connect.calls)
 
 
 @pytest.mark.parametrize("response", [{}, {"acknowledged": False}])
@@ -268,15 +262,13 @@ def test_live_hybrid_rag_smoke_database_collision_never_drops_existing_database(
         with provisioner.provision(run_id="collision"):
             pytest.fail("database collision must not enter the smoke body")
 
-    assert connect.cursor.statements == [
-        "CREATE DATABASE hallu_hybrid_smoke_collision"
-    ]
+    assert connect.cursor.statements == ["CREATE DATABASE hallu_hybrid_smoke_collision"]
 
 
 def test_live_hybrid_rag_smoke_migration_inventory_is_exact() -> None:
     migrations = tuple(sorted(smoke.MIGRATIONS_DIR.glob("*.sql")))
 
-    assert len(migrations) == smoke.EXPECTED_MIGRATION_COUNT == 13
+    assert len(migrations) == smoke.EXPECTED_MIGRATION_COUNT == 14
 
 
 def test_live_hybrid_rag_smoke_provisions_exact_schema_v3_template() -> None:
@@ -354,10 +346,7 @@ class RecordingHybridSmokeBackend:
             chunk
             for chunk in self.rows.values()
             if chunk.tenant_id == search_request.tenant_id
-            and (
-                not search_request.context_refs
-                or chunk.source_ref in search_request.context_refs
-            )
+            and (not search_request.context_refs or chunk.source_ref in search_request.context_refs)
             and all(
                 chunk.metadata.get(key) == value
                 for key, value in search_request.metadata_filter.items()

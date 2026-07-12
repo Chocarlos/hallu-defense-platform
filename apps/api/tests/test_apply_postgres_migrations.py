@@ -217,7 +217,9 @@ def test_second_run_over_same_connection_is_idempotent() -> None:
 def test_partial_state_applies_only_the_missing_migrations() -> None:
     connection = RecordingMigrationConnection()
     connection.applied_versions = {
-        version: migrations._migration_checksum((MIGRATIONS_DIR / version).read_text(encoding="utf-8"))
+        version: migrations._migration_checksum(
+            (MIGRATIONS_DIR / version).read_text(encoding="utf-8")
+        )
         for version in EXPECTED_ORDER[:3]
     }
 
@@ -270,9 +272,7 @@ def test_rag_lifecycle_outbox_has_leased_cross_store_state_machine() -> None:
 
 
 def test_rag_tenant_deletion_fence_blocks_reingestion_tables() -> None:
-    sql = (MIGRATIONS_DIR / "012_rag_tenant_deletion_fence.sql").read_text(
-        encoding="utf-8"
-    )
+    sql = (MIGRATIONS_DIR / "012_rag_tenant_deletion_fence.sql").read_text(encoding="utf-8")
 
     assert "CREATE TABLE IF NOT EXISTS rag_tenant_deletion_tombstones" in sql
     assert "operation_id text NOT NULL REFERENCES rag_lifecycle_operations" in sql
@@ -283,19 +283,203 @@ def test_rag_tenant_deletion_fence_blocks_reingestion_tables() -> None:
     assert "DROP TABLE" not in sql.upper()
 
 
-def test_audit_history_integrity_has_unique_and_keyset_indexes() -> None:
-    sql = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(
-        encoding="utf-8"
-    )
+def test_audit_history_integrity_has_completion_constraints_and_exact_indexes() -> None:
+    sql = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(encoding="utf-8")
 
-    assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_audit_events_tenant_event_id" in sql
+    assert "ADD COLUMN IF NOT EXISTS completion_path text" in sql
+    assert "DO $audit_replay_backfill$" in sql
+    assert "DO $audit_history_backfill$" in sql
+    assert "audit completion legacy backfill is orphaned, ambiguous" in sql
+    assert "audit completion run/event parity validation failed" in sql
+    assert "audit replay run/completion/provenance parity validation failed" in sql
+    assert "ALTER COLUMN checksum_sha256 SET NOT NULL" in sql
+    assert "checksum_sha256 ~ '^[0-9a-f]{64}$'" in sql
+    assert "ck_audit_runs_payload_envelope" in sql
+    assert "ck_audit_runs_completion_contract" in sql
+    assert "ck_audit_events_payload_envelope" in sql
+    assert "ck_audit_events_verification_completed" in sql
+    assert "ck_audit_events_verification_replay" in sql
+    assert "tenant_id = btrim(tenant_id)" in sql
+    assert "trace_id ~ '^tr_[A-Za-z0-9_-]{8,80}$'" in sql
+    assert "ADD CONSTRAINT ck_audit_events_verification_completed" in sql
+    assert "NOT VALID" in sql
+    assert "VALIDATE CONSTRAINT ck_audit_events_verification_completed" in sql
+    assert "CREATE UNIQUE INDEX ux_audit_runs_tenant_trace_completion_path" in sql
+    assert "ON audit_runs (tenant_id, trace_id, completion_path)" in sql
+    assert "WHERE completion_path IS NOT NULL" in sql
+    assert "CREATE UNIQUE INDEX ux_audit_events_tenant_trace_completion_path" in sql
+    assert "ON audit_events (tenant_id, trace_id, (payload ->> 'path'))" in sql
+    assert "WHERE payload ->> 'event_type' = 'verification_completed'" in sql
+    assert "CREATE UNIQUE INDEX ux_audit_events_tenant_trace_replay_path" in sql
+    assert "WHERE payload ->> 'event_type' = 'verification_replay'" in sql
+    assert "CREATE UNIQUE INDEX ux_audit_events_tenant_event_id" in sql
     assert "ON audit_events (tenant_id, event_id)" in sql
+    assert "ix_audit_runs_created_id" in sql
+    assert "ix_audit_runs_trace_created_id" in sql
+    assert "ix_audit_runs_tenant_created_id" in sql
+    assert "ix_audit_runs_tenant_trace_created_id" in sql
+    assert "ix_audit_events_tenant_created_id" in sql
+    assert "ix_audit_events_tenant_trace_created_id" in sql
+    assert "ix_audit_events_created_id" in sql
+    assert "ix_audit_events_trace_created_id" in sql
     assert "ix_audit_events_tenant_type_created_event" in sql
     assert "ix_audit_events_tenant_type_trace_created_event" in sql
+    for legacy_index in (
+        "ix_audit_runs_tenant_created",
+        "ix_audit_runs_tenant_trace",
+        "ix_audit_events_tenant_created",
+        "ix_audit_events_tenant_trace",
+    ):
+        assert f"DROP INDEX IF EXISTS {legacy_index};" in sql
     assert "(payload ->> 'event_type')" in sql
     assert "created_at DESC" in sql
     assert "event_id DESC" in sql
-    assert "DROP" not in sql.upper()
+    assert "DROP TABLE" not in sql.upper()
+    assert "DELETE FROM" not in sql.upper()
+    assert "TRUNCATE" not in sql.upper()
+
+
+def test_audit_history_integrity_fences_exactly_once_replay_event() -> None:
+    sql = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(encoding="utf-8")
+
+    assert "DROP CONSTRAINT IF EXISTS ck_audit_events_verification_replay" in sql
+    assert "ADD CONSTRAINT ck_audit_events_verification_replay" in sql
+    assert (
+        "payload @> "
+        '\'{"method":"POST","path":"/verification/replay",'
+        '"status_code":200,"outcome":"success"}\'::jsonb'
+    ) in sql
+    assert "jsonb_typeof(payload #> '{metadata,source_trace_id}') = 'string'" in sql
+    assert "(payload #>> '{metadata,source_trace_id}')" in sql
+    assert "~ '^tr_[A-Za-z0-9_-]{8,80}$'" in sql
+    assert "payload #>> '{metadata,source_final_decision}' IN" in sql
+    assert "jsonb_typeof(payload #> '{metadata,replay_final_decision}') = 'string'" in sql
+    assert "payload #>> '{metadata,replay_final_decision}' IN" in sql
+    assert "jsonb_typeof(payload #> '{metadata,decision_changed}') = 'boolean'" in sql
+    assert "payload #> '{metadata,decision_changed}' =" in sql
+    assert "<> (payload #>> '{metadata,replay_final_decision}')" in sql
+    assert "THEN 'true'::jsonb" in sql
+    assert "ELSE 'false'::jsonb" in sql
+    assert "payload -> 'metadata' = jsonb_build_object(" in sql
+    assert "VALIDATE CONSTRAINT ck_audit_events_verification_replay" in sql
+    assert "DROP INDEX IF EXISTS ux_audit_events_tenant_trace_replay_path" in sql
+    assert "CREATE UNIQUE INDEX ux_audit_events_tenant_trace_replay_path" in sql
+    assert "ON audit_events (tenant_id, trace_id, (payload ->> 'path'))" in sql
+    assert "WHERE payload ->> 'event_type' = 'verification_replay'" in sql
+
+
+def test_audit_history_integrity_reconciles_only_exact_legacy_replay_triples() -> None:
+    sql = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(encoding="utf-8")
+
+    replay_backfill = sql.partition("DO $audit_replay_backfill$")[2].partition(
+        "$audit_replay_backfill$;"
+    )[0]
+    assert "HAVING count(*) <> 1" in replay_backfill
+    assert "payload #>> '{input,replay_of}' = replay_row.source_trace_id" in replay_backfill
+    assert "payload ->> 'final_decision' = replay_row.replay_final_decision" in replay_backfill
+    assert "completed_run_count = 1" in replay_backfill
+    assert "legacy_run_count = 1" in replay_backfill
+    assert "completion_count IN (0, 1)" in replay_backfill
+    assert "SET completion_path = '/verification/replay'" in replay_backfill
+    assert "updated_run_count <> 1" in replay_backfill
+    assert "'evt_migrated_completion_' || replay_row.id::text" in replay_backfill
+    assert "'event_type', 'verification_completed'" in replay_backfill
+    assert "'final_decision', replay_row.replay_final_decision" in replay_backfill
+    assert "'created_at', to_jsonb(replay_row.created_at)" in replay_backfill
+    assert "orphaned or ambiguous triple" in replay_backfill
+
+    assert sql.index("DO $audit_replay_backfill$") < sql.index("DO $audit_history_backfill$")
+    assert "completed_run.final_decision IS DISTINCT FROM completion.final_decision" in sql
+    assert "replayed_run.source_trace_id IS DISTINCT FROM provenance.source_trace_id" in sql
+    assert "IS DISTINCT FROM provenance.replay_final_decision" in sql
+
+
+def test_audit_history_integrity_backfills_only_unambiguous_legacy_pairs() -> None:
+    sql = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(encoding="utf-8")
+
+    backfill_start = sql.index("DO $audit_history_backfill$")
+    backfill_end = sql.index("$audit_history_backfill$;", backfill_start)
+    first_constraint = sql.index("ALTER COLUMN checksum_sha256 SET NOT NULL")
+    first_index = sql.index("DROP INDEX IF EXISTS")
+    assert backfill_start < backfill_end < first_constraint < first_index
+    assert sql[backfill_end - 5 : backfill_end].strip() == "END;"
+
+    backfill = sql[backfill_start:backfill_end]
+    candidate_keys = backfill.partition("candidate_keys AS (")[2].partition(")")[0]
+    assert "SELECT DISTINCT tenant_id, trace_id" in candidate_keys
+    assert "FROM unmatched_events" in candidate_keys
+    assert "FROM audit_runs" not in candidate_keys
+    assert "UNION" not in candidate_keys
+    assert "completed_run.completion_path = audit_event.payload ->> 'path'" in backfill
+    assert "legacy_run.completion_path IS NULL" in backfill
+    assert "run_count <> 1" in backfill
+    assert "event_count <> 1" in backfill
+    assert "completion_path NOT IN" in backfill
+    assert "UPDATE audit_runs AS legacy_run" in backfill
+    assert "SET completion_path = completion.completion_path" in backfill
+    assert "completed_run.row_count IS DISTINCT FROM 1::bigint" in backfill
+    assert "completion.row_count IS DISTINCT FROM 1::bigint" in backfill
+    assert "created_at" not in backfill
+
+
+def test_audit_history_integrity_replaces_every_named_definition_on_raw_rerun() -> None:
+    sql = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(encoding="utf-8")
+
+    constraints = (
+        "ck_schema_migrations_checksum_sha256",
+        "ck_audit_runs_payload_envelope",
+        "ck_audit_runs_completion_contract",
+        "ck_audit_events_payload_envelope",
+        "ck_audit_events_verification_completed",
+        "ck_audit_events_verification_replay",
+    )
+    for constraint in constraints:
+        assert f"DROP CONSTRAINT IF EXISTS {constraint}" in sql
+        assert f"ADD CONSTRAINT {constraint}" in sql
+        assert f"VALIDATE CONSTRAINT {constraint}" in sql
+
+    indexes = (
+        "ux_audit_runs_tenant_trace_completion_path",
+        "ux_audit_events_tenant_trace_completion_path",
+        "ux_audit_events_tenant_trace_replay_path",
+        "ux_audit_events_tenant_event_id",
+        "ix_audit_runs_created_id",
+        "ix_audit_runs_trace_created_id",
+        "ix_audit_runs_tenant_created_id",
+        "ix_audit_runs_tenant_trace_created_id",
+        "ix_audit_events_created_id",
+        "ix_audit_events_trace_created_id",
+        "ix_audit_events_tenant_created_id",
+        "ix_audit_events_tenant_trace_created_id",
+        "ix_audit_events_tenant_type_created_event",
+        "ix_audit_events_tenant_type_trace_created_event",
+    )
+    for index in indexes:
+        assert f"DROP INDEX IF EXISTS {index}" in sql
+        assert f"CREATE UNIQUE INDEX {index}" in sql or f"CREATE INDEX {index}" in sql
+
+
+def test_legacy_checksums_are_backfilled_before_013_enforces_not_null() -> None:
+    connection = RecordingMigrationConnection()
+    connection.applied_versions = {version: None for version in EXPECTED_ORDER[:8]}
+
+    applied = migrations.apply_migrations(connection, migrations_dir=MIGRATIONS_DIR)
+
+    assert applied == EXPECTED_ORDER[8:]
+    migration_013 = (MIGRATIONS_DIR / "013_audit_history_integrity.sql").read_text(encoding="utf-8")
+    migration_013_position = next(
+        index
+        for index, (statement, _parameters) in enumerate(connection.executed)
+        if statement == migration_013
+    )
+    checksum_backfill_positions = [
+        index
+        for index, (statement, _parameters) in enumerate(connection.executed)
+        if statement.startswith("UPDATE schema_migrations SET checksum_sha256")
+    ]
+    assert len(checksum_backfill_positions) == 8
+    assert max(checksum_backfill_positions) < migration_013_position
+    assert all(connection.applied_versions[version] for version in EXPECTED_ORDER)
 
 
 def test_lock_timeout_failure_is_sanitized_and_records_no_version() -> None:

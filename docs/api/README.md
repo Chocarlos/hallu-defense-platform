@@ -20,3 +20,6 @@ Public contract versions and the additive v1-to-v2 migration are documented in
 ```powershell
 .venv\Scripts\python.exe scripts\ci\check_contract_versions.py
 ```
+
+The atomic completion boundary and tenant-scoped history endpoint are documented in
+[`verification-history.md`](verification-history.md).
