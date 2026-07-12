@@ -823,6 +823,11 @@ class VerificationRun(BaseModel):
         json_schema_extra={"x-contract-version": "1.0"},
     )
 
+    # Keyed pre-redaction identity used only by the audit persistence layer to
+    # distinguish idempotent retries whose public redacted projections match.
+    # It is never part of REST, OpenAPI, JSON Schema, or exported model dumps.
+    _audit_request_commitment: str | None = PrivateAttr(default=None)
+
     trace_id: str
     tenant_id: str
     input: dict[str, object]

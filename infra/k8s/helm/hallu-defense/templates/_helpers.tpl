@@ -390,6 +390,8 @@ capabilities:
 {{- end }}
 - name: HALLU_DEFENSE_AUDIT_LEDGER_BACKEND
   value: postgres
+- name: HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME
+  value: audit/request-commitment-key
 - name: HALLU_DEFENSE_APPROVAL_QUEUE_BACKEND
   value: postgres
 - name: HALLU_DEFENSE_APPROVAL_TOOL_CALL_COMMITMENT_SECRET_NAME
@@ -519,6 +521,8 @@ capabilities:
 {{- end }}
 - name: HALLU_DEFENSE_AUDIT_LEDGER_BACKEND
   value: postgres
+- name: HALLU_DEFENSE_AUDIT_REQUEST_COMMITMENT_SECRET_NAME
+  value: audit/request-commitment-key
 - name: HALLU_DEFENSE_CORPUS_GRANTS_BACKEND
   value: postgres
 - name: HALLU_DEFENSE_RAG_INDEX_BACKEND

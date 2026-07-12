@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -34,6 +35,7 @@ from hallu_defense.domain.models import (
 )
 from hallu_defense.main import app
 from hallu_defense.services.audit import (
+    AUDIT_REQUEST_COMMITMENT_STORAGE_KEY,
     REDACTED,
     AuditLedger,
     AuditLedgerConfigurationError,
@@ -47,8 +49,19 @@ from hallu_defense.services.audit import (
 )
 from hallu_defense.services.auth import AUDITOR_ROLE, Principal
 from hallu_defense.services.postgres import RecordingSqlProvider
+from hallu_defense.services.secrets import SecretValue
 
 TEST_RETRIEVED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class _AuditCommitmentSecretManager:
+    def __init__(self, value: str = "a" * 48) -> None:
+        self._value = value
+
+    def get_secret(self, name: str, *, field: str = "value") -> SecretValue:
+        assert name == "audit/request-commitment-key"
+        assert field == "value"
+        return SecretValue(name=name, _value=self._value)
 
 
 def test_jsonl_audit_ledger_persists_and_reloads_events_by_tenant(tmp_path: Path) -> None:
@@ -101,21 +114,22 @@ def test_jsonl_audit_ledger_persists_redacted_verification_runs(tmp_path: Path) 
     assert len(runs) == 1
     run = runs[0]
     assert run.input["token"] == REDACTED
-    assert run.claims[0].text == REDACTED
-    assert run.evidence[0].content == REDACTED
-    assert run.final_text == REDACTED
+    assert run.claims[0].text == "This claim mentions password handling."
+    assert run.evidence[0].content == "This evidence mentions token handling."
+    assert run.final_text == "The final text mentions secret handling."
 
 
 def test_jsonl_audit_ledger_redacts_nested_snapshot_fields(tmp_path: Path) -> None:
     ledger_path = tmp_path / "audit" / "ledger.jsonl"
     ledger = AuditLedger(storage_path=ledger_path)
+    bare_secret = "sk-" + "b" * 24
     run = _verification_run().model_copy(
         update={
             "claims": [
                 Claim(
                     claim_id="clm_secret",
                     text="This claim mentions password handling.",
-                    canonical_form="canonical api_key value short",
+                    canonical_form=f"canonical credential {bare_secret}",
                     metadata={"api_key": "short", "safe": "kept"},
                 )
             ],
@@ -139,7 +153,7 @@ def test_jsonl_audit_ledger_redacts_nested_snapshot_fields(tmp_path: Path) -> No
                     status=VerdictStatus.SUPPORTED,
                     confidence=0.9,
                     action=VerdictAction.ALLOW,
-                    reason="The password evidence supports the claim.",
+                    reason=f"The leaked credential {bare_secret} supports the claim.",
                     validator_trace={"secret": "short", "matched_rules": ["rule_ok"]},
                 )
             ],
@@ -149,13 +163,15 @@ def test_jsonl_audit_ledger_redacts_nested_snapshot_fields(tmp_path: Path) -> No
     ledger.append(run)
 
     stored = ledger.export(tenant_id="tenant-a", trace_id="tr_audit_run")[0]
-    assert stored.claims[0].canonical_form == REDACTED
+    assert stored.claims[0].canonical_form == f"canonical credential {REDACTED}"
     assert stored.claims[0].metadata == {"api_key": REDACTED, "safe": "kept"}
     assert stored.evidence[0].structured_content == {
         "token": REDACTED,
         "structure": {"secret": REDACTED},
     }
-    assert stored.verdicts[0].reason == REDACTED
+    assert stored.verdicts[0].reason == (
+        f"The leaked credential {REDACTED} supports the claim."
+    )
     assert stored.verdicts[0].validator_trace == {
         "secret": REDACTED,
         "matched_rules": ["rule_ok"],
@@ -194,7 +210,9 @@ def test_jsonl_audit_ledger_redacts_source_refs_and_bare_secret_values(tmp_path:
     assert bare_secret not in raw_text
     assert "abcdef1234567890" not in raw_text
     assert stored.input["message_text"] == f"Rotated value {REDACTED}."
-    assert stored.evidence[0].source_ref == f"https://storage.example/hr.pdf{REDACTED}"
+    assert stored.evidence[0].source_ref == (
+        f"https://storage.example/hr.pdf?sig={REDACTED}"
+    )
     assert stored.evidence[0].content == f"Stored value {REDACTED} was present."
 
 
@@ -233,6 +251,47 @@ def test_create_audit_ledger_rejects_memory_backend_in_production(tmp_path: Path
         )
 
 
+def test_create_audit_ledger_requires_vault_commitment_secret_in_production(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        environment="production",
+        policy_version="test",
+        auth_required=True,
+        allowed_workspace=tmp_path,
+        max_command_seconds=5,
+        max_output_chars=1000,
+        audit_ledger_backend="postgres",
+    )
+
+    with pytest.raises(AuditLedgerConfigurationError, match="commitment secret name"):
+        create_audit_ledger(settings, sql_provider=RecordingSqlProvider())
+
+
+def test_create_audit_ledger_resolves_production_commitment_through_vault(
+    tmp_path: Path,
+) -> None:
+    settings = _postgres_settings(tmp_path)
+    manager = _AuditCommitmentSecretManager()
+
+    ledger = create_audit_ledger(
+        settings,
+        sql_provider=RecordingSqlProvider(),
+        secret_manager=manager,
+    )
+
+    assert ledger._request_commitment_key == b"a" * 48
+
+
+def test_create_audit_ledger_rejects_short_vault_commitment_key(tmp_path: Path) -> None:
+    with pytest.raises(AuditLedgerConfigurationError, match="at least 32 bytes"):
+        create_audit_ledger(
+            _postgres_settings(tmp_path),
+            sql_provider=RecordingSqlProvider(),
+            secret_manager=_AuditCommitmentSecretManager("too-short"),
+        )
+
+
 @pytest.mark.parametrize("environment", ["production", "staging", " production "])
 def test_create_audit_ledger_rejects_jsonl_in_production_like_environments(
     tmp_path: Path,
@@ -265,7 +324,11 @@ def test_postgres_audit_ledger_appends_run_with_exact_insert_and_redaction(
     tmp_path: Path,
 ) -> None:
     provider = RecordingSqlProvider()
-    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+    ledger = create_audit_ledger(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=_AuditCommitmentSecretManager(),
+    )
 
     ledger.append(_verification_run())
 
@@ -291,7 +354,11 @@ def test_postgres_audit_ledger_appends_event_with_exact_insert_and_redaction(
     tmp_path: Path,
 ) -> None:
     provider = RecordingSqlProvider()
-    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+    ledger = create_audit_ledger(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=_AuditCommitmentSecretManager(),
+    )
 
     event = ledger.append_event(
         trace_id="tr_evt",
@@ -330,7 +397,11 @@ def test_postgres_audit_ledger_export_runs_uses_indexed_select_and_orders_chrono
     newer_row = _run_payload_row("tr_newer", row_id=2, created_at=newer_at)
     older_row = _run_payload_row("tr_older", row_id=1, created_at=older_at)
     provider = RecordingSqlProvider(fetch_all_rows=[newer_row, older_row])
-    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+    ledger = create_audit_ledger(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=_AuditCommitmentSecretManager(),
+    )
 
     runs = ledger.export(tenant_id="tenant-a")
 
@@ -354,7 +425,11 @@ def test_postgres_audit_ledger_export_events_tenant_only_filters_on_tenant(
     tmp_path: Path,
 ) -> None:
     provider = RecordingSqlProvider(fetch_all_rows=[])
-    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+    ledger = create_audit_ledger(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=_AuditCommitmentSecretManager(),
+    )
 
     ledger.export_events(tenant_id="tenant-a")
 
@@ -373,7 +448,11 @@ def test_postgres_audit_ledger_export_events_without_filters_uses_bare_select(
     tmp_path: Path,
 ) -> None:
     provider = RecordingSqlProvider(fetch_all_rows=[_event_payload_row("tr_evt")])
-    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+    ledger = create_audit_ledger(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=_AuditCommitmentSecretManager(),
+    )
 
     events = ledger.export_events()
 
@@ -395,7 +474,11 @@ def test_postgres_audit_event_page_filters_type_and_uses_keyset_before_limit(
     provider = RecordingSqlProvider(
         fetch_all_rows=[_event_payload_row("tr_completed", event_type="verification_completed")]
     )
-    ledger = create_audit_ledger(_postgres_settings(tmp_path), sql_provider=provider)
+    ledger = create_audit_ledger(
+        _postgres_settings(tmp_path),
+        sql_provider=provider,
+        secret_manager=_AuditCommitmentSecretManager(),
+    )
 
     events = ledger.page_events(
         tenant_id="tenant-a",
@@ -875,7 +958,10 @@ def test_postgres_export_snapshot_rejects_replay_provenance_drift() -> None:
 
 def test_create_audit_ledger_postgres_requires_sql_provider(tmp_path: Path) -> None:
     with pytest.raises(AuditLedgerConfigurationError, match="SqlConnectionProvider"):
-        create_audit_ledger(_postgres_settings(tmp_path))
+        create_audit_ledger(
+            _postgres_settings(tmp_path),
+            secret_manager=_AuditCommitmentSecretManager(),
+        )
 
 
 def test_audit_ledger_rejects_storage_path_and_storage_together(tmp_path: Path) -> None:
@@ -1063,6 +1149,98 @@ def test_jsonl_completed_run_is_one_composite_record_and_reloads_atomically(
     assert reloaded.export_events(tenant_id=run.tenant_id, trace_id=run.trace_id) == [first.event]
 
 
+def test_jsonl_completion_persists_keyed_private_request_commitment(tmp_path: Path) -> None:
+    storage_path = tmp_path / "audit" / "ledger.jsonl"
+    key = b"audit-test-key-32-bytes-minimum!!"
+    run = _verification_run().model_copy(
+        update={"input": {"token": "first-sensitive-original"}}
+    )
+
+    first = AuditLedger(
+        storage_path=storage_path,
+        request_commitment_key=key,
+    ).append_completed_run(run, path="/verification/run")
+
+    record = json.loads(storage_path.read_text(encoding="utf-8"))
+    stored_run = record["payload"]["run"]
+    commitment = stored_run[AUDIT_REQUEST_COMMITMENT_STORAGE_KEY]
+    assert commitment.startswith("hmac-sha256:")
+    assert len(commitment) == len("hmac-sha256:") + 64
+    assert AUDIT_REQUEST_COMMITMENT_STORAGE_KEY not in first.run.model_dump(mode="json")
+    assert "first-sensitive-original" not in storage_path.read_text(encoding="utf-8")
+
+    reloaded = AuditLedger(
+        storage_path=storage_path,
+        request_commitment_key=key,
+    )
+    retried = reloaded.append_completed_run(run, path="/verification/run")
+    assert retried.run.model_dump(mode="json") == first.run.model_dump(mode="json")
+    assert len(storage_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_completion_rejects_distinct_sensitive_originals_with_same_projection() -> None:
+    key = b"audit-test-key-32-bytes-minimum!!"
+    ledger = AuditLedger(request_commitment_key=key)
+    first = _verification_run().model_copy(
+        update={"input": {"token": "first-sensitive-original"}}
+    )
+    second = first.model_copy(
+        update={"input": {"token": "second-sensitive-original"}}
+    )
+
+    persisted = ledger.append_completed_run(first, path="/verification/run")
+    assert persisted.run.input == {"token": REDACTED}
+
+    with pytest.raises(AuditLedgerStorageError, match="original request commitment"):
+        ledger.append_completed_run(second, path="/verification/run")
+
+    assert len(ledger.export(tenant_id=first.tenant_id, trace_id=first.trace_id)) == 1
+
+
+def test_sensitive_legacy_completion_without_commitment_fails_closed(tmp_path: Path) -> None:
+    storage_path = tmp_path / "audit" / "ledger.jsonl"
+    key = b"audit-test-key-32-bytes-minimum!!"
+    run = _verification_run().model_copy(
+        update={"input": {"token": "legacy-sensitive-original"}}
+    )
+    canonical = AuditLedger(request_commitment_key=key).append_completed_run(
+        run,
+        path="/verification/run",
+    )
+    legacy_record = {
+        "record_type": "verification_completion",
+        "payload": {
+            "run": canonical.run.model_dump(mode="json"),
+            "event": canonical.event.model_dump(mode="json"),
+            "related_events": [],
+        },
+    }
+    storage_path.parent.mkdir(parents=True)
+    storage_path.write_text(json.dumps(legacy_record) + "\n", encoding="utf-8")
+
+    reloaded = AuditLedger(
+        storage_path=storage_path,
+        request_commitment_key=key,
+    )
+    with pytest.raises(AuditLedgerStorageError, match="missing its original"):
+        reloaded.append_completed_run(run, path="/verification/run")
+
+
+def test_audit_redaction_fails_closed_on_non_finite_payload_without_write(
+    tmp_path: Path,
+) -> None:
+    storage_path = tmp_path / "audit" / "ledger.jsonl"
+    run = _verification_run().model_copy(update={"input": {"score": math.nan}})
+
+    with pytest.raises(AuditLedgerStorageError, match="redacted completely"):
+        AuditLedger(storage_path=storage_path).append_completed_run(
+            run,
+            path="/verification/run",
+        )
+
+    assert not storage_path.exists()
+
+
 def test_jsonl_replay_triple_reloads_and_retries_without_new_records(tmp_path: Path) -> None:
     storage_path = tmp_path / "audit" / "ledger.jsonl"
     ledger = AuditLedger(storage_path=storage_path)
@@ -1158,7 +1336,9 @@ def test_jsonl_replay_retry_adopts_legacy_compound_and_separate_event(
         source_final_decision=run.final_decision,
     )
 
-    assert retried == canonical
+    assert retried.run.model_dump(mode="json") == canonical.run.model_dump(mode="json")
+    assert retried.event == canonical.event
+    assert retried.related_events == canonical.related_events
     assert len(storage_path.read_text(encoding="utf-8").splitlines()) == 2
 
 
@@ -1192,7 +1372,7 @@ def test_jsonl_replay_retry_adopts_legacy_run_and_provenance_without_completion(
         source_final_decision=run.final_decision,
     )
 
-    assert retried.run == canonical.run
+    assert retried.run.model_dump(mode="json") == canonical.run.model_dump(mode="json")
     assert retried.related_events == canonical.related_events
     assert retried.event.event_type == "verification_completed"
     assert retried.event.metadata == {"final_decision": run.final_decision.value}
@@ -2225,6 +2405,8 @@ def _postgres_settings(tmp_path: Path) -> Settings:
         max_command_seconds=5,
         max_output_chars=1000,
         audit_ledger_backend="postgres",
+        secrets_backend="vault",
+        audit_request_commitment_secret_name="audit/request-commitment-key",
     )
 
 

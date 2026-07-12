@@ -429,6 +429,7 @@ def build_worker_from_settings(settings: Settings | None = None) -> IngestionWor
     audit = create_audit_ledger(
         settings,
         sql_provider=sql_provider if _uses_postgres(settings.audit_ledger_backend) else None,
+        secret_manager=secret_manager,
     )
     metrics = PrometheusMetrics(
         service_name="hallu-defense-ingestion-worker",

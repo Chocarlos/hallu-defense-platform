@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
+import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,27 +17,22 @@ from pydantic import ValidationError
 
 from hallu_defense.config import Settings, normalize_environment
 from hallu_defense.domain.models import AuditEvent, FinalDecision, VerificationRun
+from hallu_defense.services.content_security import REDACTED_SECRET, SensitiveDataRedactor
 from hallu_defense.services.postgres import SqlConnectionProvider
+from hallu_defense.services.secrets import (
+    SecretAccessError,
+    SecretConfigurationError,
+    SecretManager,
+    SecretNotFoundError,
+)
 
-SENSITIVE_KEYWORDS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "credential",
-    "password",
-    "secret",
-    "token",
-)
-REDACTED = "[REDACTED]"
-SENSITIVE_VALUE_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b", re.IGNORECASE),
-    re.compile(r"(?i)([?&](?:sig|signature|token|access_token|x-amz-signature)=)[^&#\s]+"),
-)
+REDACTED = REDACTED_SECRET
+_AUDIT_REDACTOR = SensitiveDataRedactor()
+AUDIT_REQUEST_COMMITMENT_STORAGE_KEY = "_hallu_audit_request_commitment_v1"
+AUDIT_REQUEST_COMMITMENT_DOMAIN = b"hallu-defense:audit-request:v1\x00"
+AUDIT_REQUEST_COMMITMENT_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
+MIN_AUDIT_COMMITMENT_KEY_BYTES = 32
+_LOCAL_AUDIT_COMMITMENT_KEY = secrets.token_bytes(MIN_AUDIT_COMMITMENT_KEY_BYTES)
 
 # Default upper bound on records returned by export()/export_events() across all
 # backends. The real Settings field ``audit_export_max_records`` is added by the
@@ -717,12 +714,12 @@ class PostgresAuditLedgerStorage:
         row_number: int,
     ) -> VerificationRun:
         payload = self._payload_object(row, row_number)
-        try:
-            run = VerificationRun.model_validate(payload)
-        except ValidationError:
-            raise AuditLedgerStorageError(
+        run = _load_verification_run_payload(
+            payload,
+            invalid_message=(
                 f"Postgres audit ledger run row {row_number} payload is invalid"
-            ) from None
+            ),
+        )
         self._validate_envelope(row, run, row_number)
         return run
 
@@ -887,6 +884,7 @@ class AuditLedger:
         *,
         storage: AuditLedgerStorage | None = None,
         export_max_records: int = DEFAULT_EXPORT_MAX_RECORDS,
+        request_commitment_key: bytes | None = None,
     ) -> None:
         if storage_path is not None and storage is not None:
             raise AuditLedgerConfigurationError(
@@ -894,9 +892,18 @@ class AuditLedger:
             )
         if export_max_records < 1:
             raise AuditLedgerConfigurationError("Audit export max records must be at least 1.")
+        resolved_commitment_key = request_commitment_key or _LOCAL_AUDIT_COMMITMENT_KEY
+        if (
+            not isinstance(resolved_commitment_key, bytes)
+            or len(resolved_commitment_key) < MIN_AUDIT_COMMITMENT_KEY_BYTES
+        ):
+            raise AuditLedgerConfigurationError(
+                "Audit request commitment key must contain at least 32 bytes."
+            )
         self._storage_path = storage_path
         self._storage = storage
         self._export_max_records = export_max_records
+        self._request_commitment_key = resolved_commitment_key
         self._runs: list[VerificationRun] = []
         self._events: list[AuditEvent] = []
         self._completed_pairs: dict[tuple[str, str, str], CompletedVerificationRecord] = {}
@@ -995,6 +1002,14 @@ class AuditLedger:
             expected_related_events=related_events,
         )
         stored_run = _redact_verification_run(run)
+        _set_audit_request_commitment(
+            stored_run,
+            _build_audit_request_commitment(
+                run,
+                path=event.path,
+                key=self._request_commitment_key,
+            ),
+        )
         stored_event = _redact_audit_event(event)
         stored_related_events = tuple(
             _redact_audit_event(candidate) for candidate in related_events
@@ -1283,12 +1298,12 @@ class AuditLedger:
                         f"Audit ledger record {line_number} payload must be an object"
                     )
                 if record_type == "verification_run":
-                    try:
-                        run = VerificationRun.model_validate(payload)
-                    except ValidationError:
-                        raise AuditLedgerStorageError(
+                    run = _load_verification_run_payload(
+                        payload,
+                        invalid_message=(
                             f"Audit ledger record {line_number} run payload is invalid"
-                        ) from None
+                        ),
+                    )
                     runs.append(run)
                     legacy_runs.append(run)
                 elif record_type == "audit_event":
@@ -1318,7 +1333,12 @@ class AuditLedger:
                             f"Audit ledger record {line_number} completion payload is invalid"
                         )
                     try:
-                        run = VerificationRun.model_validate(run_payload)
+                        run = _load_verification_run_payload(
+                            run_payload,
+                            invalid_message=(
+                                f"Audit ledger record {line_number} completion payload is invalid"
+                            ),
+                        )
                         event = AuditEvent.model_validate(event_payload)
                         related_events = tuple(
                             AuditEvent.model_validate(candidate)
@@ -1500,9 +1520,21 @@ class AuditLedger:
         for record_type, payload in records:
             record = {
                 "record_type": record_type,
-                "payload": payload.model_dump(mode="json"),
+                "payload": (
+                    _run_storage_payload(payload)
+                    if isinstance(payload, VerificationRun)
+                    else payload.model_dump(mode="json")
+                ),
             }
-            lines.append(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+            lines.append(
+                json.dumps(
+                    record,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                + "\n"
+            )
         try:
             self._storage_path.parent.mkdir(parents=True, exist_ok=True)
             with self._storage_path.open("a", encoding="utf-8") as handle:
@@ -1521,14 +1553,22 @@ class AuditLedger:
         record = {
             "record_type": "verification_completion",
             "payload": {
-                "run": run.model_dump(mode="json"),
+                "run": _run_storage_payload(run),
                 "event": event.model_dump(mode="json"),
                 "related_events": [
                     candidate.model_dump(mode="json") for candidate in related_events
                 ],
             },
         }
-        line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        line = (
+            json.dumps(
+                record,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        )
         try:
             self._storage_path.parent.mkdir(parents=True, exist_ok=True)
             with self._storage_path.open("a", encoding="utf-8") as handle:
@@ -1541,6 +1581,8 @@ def create_audit_ledger(
     settings: Settings,
     *,
     sql_provider: SqlConnectionProvider | None = None,
+    secret_manager: SecretManager | None = None,
+    request_commitment_key: bytes | None = None,
 ) -> AuditLedger:
     backend = settings.audit_ledger_backend.strip().lower()
     environment = normalize_environment(settings.environment)
@@ -1554,11 +1596,21 @@ def create_audit_ledger(
         raise AuditLedgerConfigurationError(
             "Production and staging require the PostgreSQL persistent audit ledger backend."
         )
+    resolved_commitment_key = _resolve_audit_request_commitment_key(
+        settings,
+        secret_manager=secret_manager,
+        explicit_key=request_commitment_key,
+    )
     if backend == "memory":
-        return AuditLedger(export_max_records=export_max_records)
+        return AuditLedger(
+            export_max_records=export_max_records,
+            request_commitment_key=resolved_commitment_key,
+        )
     if backend == "jsonl":
         return AuditLedger(
-            storage_path=settings.audit_ledger_path, export_max_records=export_max_records
+            storage_path=settings.audit_ledger_path,
+            export_max_records=export_max_records,
+            request_commitment_key=resolved_commitment_key,
         )
     if backend in {"postgres", "postgresql"}:
         if sql_provider is None:
@@ -1568,10 +1620,56 @@ def create_audit_ledger(
         return AuditLedger(
             storage=PostgresAuditLedgerStorage(connection=sql_provider),
             export_max_records=export_max_records,
+            request_commitment_key=resolved_commitment_key,
         )
     raise AuditLedgerConfigurationError(
         f"Unsupported audit ledger backend: {settings.audit_ledger_backend}"
     )
+
+
+def _resolve_audit_request_commitment_key(
+    settings: Settings,
+    *,
+    secret_manager: SecretManager | None,
+    explicit_key: bytes | None,
+) -> bytes | None:
+    environment = normalize_environment(settings.environment)
+    production_like = environment in {"production", "staging"}
+    secret_name = settings.audit_request_commitment_secret_name
+    if production_like and explicit_key is not None:
+        raise AuditLedgerConfigurationError(
+            "Production audit commitments must resolve a logical SecretManager name."
+        )
+    if secret_name is None or not secret_name.strip():
+        if production_like:
+            raise AuditLedgerConfigurationError(
+                "Production and staging require an audit request commitment secret name."
+            )
+        return explicit_key
+    if explicit_key is not None:
+        raise AuditLedgerConfigurationError(
+            "Configure either a logical audit commitment secret or an explicit local key."
+        )
+    if production_like and settings.secrets_backend.strip().lower() != "vault":
+        raise AuditLedgerConfigurationError(
+            "Production audit commitments require the Vault SecretManager backend."
+        )
+    if secret_manager is None:
+        raise AuditLedgerConfigurationError(
+            "Audit request commitment secret resolution requires SecretManager."
+        )
+    try:
+        secret_value = secret_manager.get_secret(secret_name.strip()).reveal()
+    except (SecretAccessError, SecretConfigurationError, SecretNotFoundError):
+        raise AuditLedgerConfigurationError(
+            "Audit request commitment key could not be resolved from SecretManager."
+        ) from None
+    key = secret_value.encode("utf-8")
+    if len(key) < MIN_AUDIT_COMMITMENT_KEY_BYTES:
+        raise AuditLedgerConfigurationError(
+            "Audit request commitment key from SecretManager must contain at least 32 bytes."
+        )
+    return key
 
 
 def _apply_export_cap(records: list[_RecordT], limit: int) -> list[_RecordT]:
@@ -1582,6 +1680,57 @@ def _apply_export_cap(records: list[_RecordT], limit: int) -> list[_RecordT]:
 
 def _clone_verification_run(run: VerificationRun) -> VerificationRun:
     return run.model_copy(deep=True)
+
+
+def _set_audit_request_commitment(
+    run: VerificationRun,
+    commitment: object,
+) -> None:
+    if (
+        not isinstance(commitment, str)
+        or AUDIT_REQUEST_COMMITMENT_RE.fullmatch(commitment) is None
+    ):
+        raise AuditLedgerStorageError("Audit request commitment is invalid.")
+    run._audit_request_commitment = commitment
+
+
+def _audit_request_commitment(
+    run: VerificationRun,
+    *,
+    required: bool,
+) -> str | None:
+    commitment = run._audit_request_commitment
+    if commitment is None:
+        if required:
+            raise AuditLedgerStorageError("Audit request commitment is missing.")
+        return None
+    if AUDIT_REQUEST_COMMITMENT_RE.fullmatch(commitment) is None:
+        raise AuditLedgerStorageError("Audit request commitment is invalid.")
+    return commitment
+
+
+def _run_storage_payload(run: VerificationRun) -> dict[str, object]:
+    payload = run.model_dump(mode="json")
+    commitment = _audit_request_commitment(run, required=False)
+    if commitment is not None:
+        payload[AUDIT_REQUEST_COMMITMENT_STORAGE_KEY] = commitment
+    return payload
+
+
+def _load_verification_run_payload(
+    payload: Mapping[str, object],
+    *,
+    invalid_message: str,
+) -> VerificationRun:
+    stored_payload = dict(payload)
+    commitment = stored_payload.pop(AUDIT_REQUEST_COMMITMENT_STORAGE_KEY, None)
+    try:
+        run = VerificationRun.model_validate(stored_payload)
+    except ValidationError:
+        raise AuditLedgerStorageError(invalid_message) from None
+    if commitment is not None:
+        _set_audit_request_commitment(run, commitment)
+    return run
 
 
 def _clone_audit_event(event: AuditEvent) -> AuditEvent:
@@ -1629,6 +1778,26 @@ def _validate_completed_pair(
         )
     persisted_payload = _completion_comparison_payload(persisted_run)
     expected_payload = _completion_comparison_payload(expected_run)
+    persisted_commitment = _audit_request_commitment(persisted_run, required=False)
+    expected_commitment = _audit_request_commitment(expected_run, required=False)
+    if persisted_commitment is None and expected_commitment is None:
+        pass
+    elif persisted_commitment is None and expected_commitment is not None:
+        # Pre-v1 records can be adopted only when their stored projection has no
+        # redaction marker. Once sensitive originals were minimized, recovering
+        # a trustworthy pre-redaction identity is impossible; fail closed.
+        if _contains_redaction_marker(persisted_payload):
+            raise AuditLedgerStorageError(
+                "Legacy audit completion is missing its original request commitment."
+            )
+    elif (
+        persisted_commitment is None
+        or expected_commitment is None
+        or not hmac.compare_digest(persisted_commitment, expected_commitment)
+    ):
+        raise AuditLedgerStorageError(
+            "Audit completion retry conflicts with the original request commitment."
+        )
     if persisted_payload != expected_payload:
         raise AuditLedgerStorageError(
             "Audit completion retry conflicts with the persisted verification run."
@@ -1681,10 +1850,9 @@ def _validate_completed_pair(
 
 
 def _completion_comparison_payload(run: VerificationRun) -> dict[str, object]:
-    # This compares the typed persisted projection, never raw sensitive input.
-    # Root integration with Front B must add a keyed, non-exported pre-redaction
-    # request commitment if distinct originals that minimize to the same value
-    # must be rejected; an unkeyed raw-input digest is intentionally not stored.
+    # Public equality compares the typed persisted projection. A separate HMAC
+    # below binds the same normalized pre-redaction projection without exporting
+    # sensitive originals or an offline-guessable unkeyed digest.
     payload = run.model_dump(mode="json", exclude={"created_at"})
     evidence_rows = payload.get("evidence")
     if isinstance(evidence_rows, list):
@@ -1695,6 +1863,51 @@ def _completion_comparison_payload(run: VerificationRun) -> dict[str, object]:
             if isinstance(freshness, dict):
                 freshness.pop("retrieved_at", None)
     return payload
+
+
+def _contains_redaction_marker(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_redaction_marker(key) or _contains_redaction_marker(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_redaction_marker(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().casefold()
+    return normalized == "<redacted>" or (
+        normalized.startswith("[redacted") and normalized.endswith("]")
+    )
+
+
+def _build_audit_request_commitment(
+    run: VerificationRun,
+    *,
+    path: str,
+    key: bytes,
+) -> str:
+    try:
+        serialized = json.dumps(
+            {
+                "path": path,
+                "run": _completion_comparison_payload(run),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AuditLedgerStorageError(
+            "Audit request commitment payload is not canonical JSON."
+        ) from exc
+    digest = hmac.new(
+        key,
+        AUDIT_REQUEST_COMMITMENT_DOMAIN + serialized,
+        hashlib.sha256,
+    ).hexdigest()
+    return f"hmac-sha256:{digest}"
 
 
 def _completion_key(run: VerificationRun, path: str) -> tuple[str, str, str]:
@@ -1786,7 +1999,12 @@ def _validate_replay_event_contract(
 
 
 def _dump_payload(record: VerificationRun | AuditEvent) -> str:
-    return json.dumps(record.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    payload = (
+        _run_storage_payload(record)
+        if isinstance(record, VerificationRun)
+        else record.model_dump(mode="json")
+    )
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _redact_verification_run(run: VerificationRun) -> VerificationRun:
@@ -1855,30 +2073,20 @@ def _redact_audit_event(event: AuditEvent) -> AuditEvent:
 
 
 def _redact_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            str(key): REDACTED if _is_sensitive_key(str(key)) else _redact_value(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_value(item) for item in value]
-    if isinstance(value, str):
-        return _redact_text(value)
-    return value
+    result = _AUDIT_REDACTOR.redact(value)
+    if not result.complete:
+        details = ", ".join(result.violations) or "unknown redaction violation"
+        raise AuditLedgerStorageError(
+            f"Audit payload could not be redacted completely: {details}."
+        )
+    return result.value
 
 
 def _redact_text(value: str) -> str:
-    lowered = value.lower()
-    if any(keyword in lowered for keyword in SENSITIVE_KEYWORDS):
-        return REDACTED
-    redacted = value
-    for pattern in SENSITIVE_VALUE_PATTERNS:
-        redacted = pattern.sub(REDACTED, redacted)
-    return redacted
-
-
-def _is_sensitive_key(key: str) -> bool:
-    lowered = key.lower()
-    return any(keyword in lowered for keyword in SENSITIVE_KEYWORDS)
+    result = _AUDIT_REDACTOR.redact_text(value)
+    if not result.complete or not isinstance(result.value, str):
+        details = ", ".join(result.violations) or "invalid text redaction result"
+        raise AuditLedgerStorageError(
+            f"Audit text could not be redacted completely: {details}."
+        )
+    return result.value

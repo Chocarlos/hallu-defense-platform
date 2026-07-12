@@ -7072,3 +7072,46 @@ Remaining risks:
   boundaries remain Front D kind/Helm evidence. No row is marked `accepted`.
 - The 13 unrelated full-suite failures listed above remain for root integration
   triage; all Front C focused suites and static gates are green.
+
+## 2026-07-12 - Root integration: unified audit redaction and request identity
+
+Slice selected:
+
+- Reconciled Front A's atomic audit/history boundary with Front B's bounded
+  sensitive-data engine and removed the documented collision risk between
+  distinct sensitive originals that minimize to the same public projection.
+
+Implementation:
+
+- Routed every free-form verification run and audit-event field through the
+  central `SensitiveDataRedactor`; cycles, non-finite values, invalid Unicode,
+  traversal limits, and incomplete rewrites now fail before any backend write.
+- Added a Pydantic-private `_hallu_audit_request_commitment_v1` HMAC-SHA256
+  identity over the normalized pre-redaction run and completion path. It is
+  stored as an opaque value, omitted from model dumps/API exports, compared in
+  constant time, and prevents two different secrets from sharing an idempotent
+  retry identity. Sensitive legacy projections without a commitment fail closed.
+- Required a >=32-byte logical Vault secret for production/staging and wired it
+  through API/worker factories, Compose, Helm, local/kind Vault bootstrap, the
+  live Vault smoke, configuration gates, documentation, and traceability.
+
+Validation:
+
+- Final integrated audit/Vault/Helm/config/trace/worklog suite: `480 passed`.
+- Focused audit, kind-Vault and live-Vault suite after final corrections:
+  `114 passed`.
+- `scripts/ci/check_audit_ledger_config.py`: passed.
+- `scripts/ci/check_helm_chart.py`: static invariants, `helm lint`, and
+  `helm template` passed.
+- Production/local Compose, traceability, and worklog gates passed; the
+  validators reported 14 services, 4 volumes, 189 rows, and 113 entries.
+- Ruff passed; mypy reported no issues in 59 API and 5 changed script sources
+  (the script pass disabled only missing third-party stub diagnostics).
+
+Remaining risks:
+
+- Local/test ledgers use a process-only random key unless a stable logical
+  secret is configured; this is fail-closed across restarts and is not the
+  production configuration.
+- Live PostgreSQL/Vault restart and rotation evidence remains an opt-in
+  deployment gate; no persistent external data was touched by this slice.
