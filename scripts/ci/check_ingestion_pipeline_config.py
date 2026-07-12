@@ -1,11 +1,8 @@
-"""Initial storage-layer config gate for the durable ingestion outbox (Batch 6).
+"""Fail-closed configuration gate for the durable ingestion pipeline.
 
-Scope note: this gate only validates the PostgreSQL outbox storage slice --
-the `006_ingestion_outbox.sql` migration shape, the `ingestion_jobs.py`
-queue's atomic claim/complete/fail SQL, and Makefile/CI/security wiring for
-this script itself. Async ingestion mode, the `/documents/ingest/status`
-endpoint, the worker process, and backfill/reindex are separate slices with
-their own gates layered on top of this one.
+The gate validates the PostgreSQL outbox and lease-fencing migrations, atomic
+queue transitions, async runtime/worker/backfill invariants, the real
+crash/restart smoke contract, and exact CI/security/live-workflow wiring.
 """
 
 from __future__ import annotations
@@ -343,7 +340,7 @@ def main() -> None:
         live_workflow_text=live_workflow_text,
         live_smoke_doc_text=live_smoke_doc_text,
     )
-    print("Validated ingestion pipeline storage configuration.")
+    print("Validated durable ingestion pipeline and live recovery configuration.")
 
 
 if __name__ == "__main__":

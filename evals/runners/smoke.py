@@ -5,9 +5,10 @@ import sys
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi.testclient import TestClient
+from httpx import Response
 
 try:
     from evals.runners.thresholds import evaluate_thresholds, load_suite_thresholds
@@ -20,8 +21,19 @@ from hallu_defense.main import app
 ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_SET = ROOT / "evals" / "golden_sets" / "smoke.json"
 REPORT_PATH = ROOT / "evals" / "reports" / "smoke-metrics.json"
+EVAL_TENANT_ID = "eval-smoke"
 SUPPORTED_STATUSES = {"SUPPORTED"}
 ALLOW_DECISIONS = {"allow"}
+
+
+class _VerificationClient(Protocol):
+    def post(
+        self,
+        url: str,
+        *,
+        json: Any,
+        headers: dict[str, str],
+    ) -> Response: ...
 
 
 def main() -> None:
@@ -32,15 +44,7 @@ def main() -> None:
 
     for scenario in scenarios:
         started = time.perf_counter()
-        response = client.post(
-            "/verification/run",
-            json={
-                "tenant_id": "eval-smoke",
-                "message_text": scenario["message_text"],
-                "task_type": scenario["task_type"],
-                "documents": scenario["documents"],
-            },
-        )
+        response = _post_verification_scenario(client, scenario)
         latency_ms = (time.perf_counter() - started) * 1_000
         if response.status_code != 200:
             failures.append(f"{scenario['id']}: status {response.status_code}")
@@ -75,6 +79,22 @@ def main() -> None:
         f"Metrics report written to {REPORT_PATH}."
     )
     print(json.dumps(metrics, indent=2, sort_keys=True))
+
+
+def _post_verification_scenario(
+    client: _VerificationClient,
+    scenario: dict[str, Any],
+) -> Response:
+    return client.post(
+        "/verification/run",
+        json={
+            "tenant_id": EVAL_TENANT_ID,
+            "message_text": scenario["message_text"],
+            "task_type": scenario["task_type"],
+            "documents": scenario["documents"],
+        },
+        headers={"x-tenant-id": EVAL_TENANT_ID},
+    )
 
 
 def _scenario_result(

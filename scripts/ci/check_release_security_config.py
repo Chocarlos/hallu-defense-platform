@@ -29,6 +29,7 @@ FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SEMVER_RUNTIME_CHECK = "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
 CONTROL_REF_CONDITION = (
     "github.ref_protected && github.ref_type == 'branch' && "
+    "github.ref_name == github.event.repository.default_branch && "
     "(github.ref_name == 'main' || github.ref_name == 'master')"
 )
 BUILD_CONTROL_RUN = f"""set -euo pipefail
@@ -63,6 +64,17 @@ test "${{GITHUB_REF_PROTECTED}}" = "true"
 test "${{GITHUB_REF_TYPE}}" = "branch"
 test "${{GITHUB_REF_NAME}}" = "main" -o "${{GITHUB_REF_NAME}}" = "master"
 """
+FINAL_VERDICT_RUN = """set -euo pipefail
+if [[ "${VERIFY_TAG_RESULT}" != "success" ||
+      "${BUILD_RELEASE_RESULT}" != "success" ||
+      "${SCAN_RELEASE_RESULT}" != "success" ||
+      "${ATTEST_RELEASE_RESULT}" != "success" ]]; then
+  printf 'Release incomplete: verify-tag=%s build-release=%s scan-release=%s attest-release=%s\\n' \\
+    "${VERIFY_TAG_RESULT}" "${BUILD_RELEASE_RESULT}" \\
+    "${SCAN_RELEASE_RESULT}" "${ATTEST_RELEASE_RESULT}" >&2
+  exit 1
+fi
+"""
 EXPECTED_IMAGES = {
     "api": "infra/docker/api.Dockerfile",
     "console": "infra/docker/console.Dockerfile",
@@ -93,10 +105,10 @@ EXPECTED_GLOBAL_ENV = {
     ),
 }
 EXPECTED_VERIFY_SUBJECT_RUN_SHA256 = (
-    "0b0def2dd0400893ad83dea1bbe394bff96c507d587f729d7e08c4c417458c9f"
+    "572cd1fe3d7b2a2824097844b3d125bcefab05aefcd97e8124e0d0b441d9da52"
 )
 EXPECTED_VERIFY_TAG_RUN_SHA256 = (
-    "c62a64656e361c152a66339205c2496f275fb723150646fe0e19c7d67347d411"
+    "f0867e77920d104187672dc7ea296fe5804f4462a7a6ea3c0dad6f41c067313f"
 )
 EXPECTED_SCAN_FINALIZER_RUN_SHA256 = (
     "bd21136efaa9f31416229b52194c6aa814e9e7f5b443782b143e422f6a9ffd30"
@@ -186,21 +198,24 @@ def _validate_workflow_shape(
         "build-release",
         "scan-release",
         "attest-release",
+        "release-verdict",
     }:
         errors.append(
             "release workflow must contain exactly verify-tag, build-release, "
-            "scan-release, and attest-release jobs"
+            "scan-release, attest-release, and release-verdict jobs"
         )
         return
     verify_job = jobs.get("verify-tag")
     build_job = jobs.get("build-release")
     scan_job = jobs.get("scan-release")
     attest_job = jobs.get("attest-release")
+    verdict_job = jobs.get("release-verdict")
     if (
         not isinstance(verify_job, Mapping)
         or not isinstance(build_job, Mapping)
         or not isinstance(scan_job, Mapping)
         or not isinstance(attest_job, Mapping)
+        or not isinstance(verdict_job, Mapping)
     ):
         errors.append("release jobs must be mappings")
         return
@@ -208,6 +223,7 @@ def _validate_workflow_shape(
     _validate_build_job(build_job, errors)
     _validate_scan_job(scan_job, errors)
     _validate_attestation_job(attest_job, errors)
+    _validate_release_verdict_job(verdict_job, errors)
 
 
 def _validate_forbidden_workflow_text(text: str, errors: list[str]) -> None:
@@ -315,7 +331,7 @@ def _validate_verify_tag_job(job: Mapping[str, object], errors: list[str]) -> No
             "grep -Eq '^(sec|ssb):'",
             "--list-secret-keys",
             "git init --bare",
-            "--no-tags --depth=1",
+            '"${control_commit}:refs/release-control/dispatch"',
             'verify-tag "refs/tags/${RELEASE_TAG}"',
             '[[ "${tag_object}" =~ ^[0-9a-f]{40}$ ]]',
             '[[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]',
@@ -326,6 +342,12 @@ def _validate_verify_tag_job(job: Mapping[str, object], errors: list[str]) -> No
         },
         "verify-tag",
         errors,
+    )
+    _validate_immutable_control_ancestry(
+        run,
+        label="verify-tag",
+        source_variable="source_commit",
+        errors=errors,
     )
     for forbidden in (
         "git checkout",
@@ -986,7 +1008,7 @@ def _validate_attestation_job(job: Mapping[str, object], errors: list[str]) -> N
         verify_run,
         {
             "git init --bare",
-            "--no-tags --depth=1",
+            '"${control_commit}:refs/release-control/dispatch"',
             'git --git-dir="${bare_repo}" cat-file -e',
             'git --git-dir="${bare_repo}" verify-tag',
             "--with-colons --show-keys",
@@ -1048,6 +1070,12 @@ def _validate_attestation_job(job: Mapping[str, object], errors: list[str]) -> N
         "attest-release verification",
         errors,
     )
+    _validate_immutable_control_ancestry(
+        verify_run,
+        label="attest-release",
+        source_variable="expected_source_commit",
+        errors=errors,
+    )
     secret_guard = verify_run.find("if grep -Eq '^(sec|ssb):'")
     actual_import = verify_run.find('--import "${trust_bundle}"')
     if secret_guard < 0 or actual_import < 0 or secret_guard > actual_import:
@@ -1099,6 +1127,64 @@ def _validate_attestation_job(job: Mapping[str, object], errors: list[str]) -> N
             )
 
     _validate_attestation_inputs(steps, errors)
+
+
+def _validate_release_verdict_job(
+    job: Mapping[str, object], errors: list[str]
+) -> None:
+    if set(job) != {
+        "needs",
+        "if",
+        "runs-on",
+        "timeout-minutes",
+        "permissions",
+        "steps",
+    }:
+        errors.append("release-verdict job key inventory is not exact")
+    if job.get("needs") != [
+        "verify-tag",
+        "build-release",
+        "scan-release",
+        "attest-release",
+    ]:
+        errors.append("release-verdict must observe all four release stages directly")
+    if job.get("if") != "${{ always() }}":
+        errors.append("release-verdict must run with an exact always() condition")
+    if job.get("runs-on") != "ubuntu-24.04" or job.get("timeout-minutes") != 5:
+        errors.append("release-verdict must use the exact unprivileged runner limits")
+    if job.get("permissions") != {}:
+        errors.append("release-verdict must have no token permissions")
+    steps = _steps(job, "release-verdict", errors)
+    if steps is None:
+        return
+    _validate_ordered_step_inventory(
+        steps,
+        label="release-verdict",
+        expected=((None, "Fail unless every release stage completed", "run"),),
+        errors=errors,
+    )
+    _validate_exact_run_step(
+        steps,
+        label="release-verdict",
+        name="Fail unless every release stage completed",
+        expected=FINAL_VERDICT_RUN,
+        errors=errors,
+    )
+    _validate_step_metadata(
+        steps,
+        label="release-verdict",
+        expected_run_env={
+            "Fail unless every release stage completed": {
+                "VERIFY_TAG_RESULT": "${{ needs.verify-tag.result }}",
+                "BUILD_RELEASE_RESULT": "${{ needs.build-release.result }}",
+                "SCAN_RELEASE_RESULT": "${{ needs.scan-release.result }}",
+                "ATTEST_RELEASE_RESULT": "${{ needs.attest-release.result }}",
+            }
+        },
+        errors=errors,
+    )
+    if _action_names(steps):
+        errors.append("release-verdict must not invoke actions or subject code")
 
 
 def _validate_attestation_inputs(
@@ -1966,6 +2052,12 @@ def _validate_documentation(text: str, errors: list[str]) -> None:
             "signer-workflow",
             "compliance_asserted: false",
             "verify-tag -> build-release -> scan-release -> attest-release",
+            "immutable workflow-dispatch control commit",
+            "ancestor of that exact control commit",
+            "revalidates the same ancestry",
+            "release-verdict",
+            "`if: always()`",
+            "skipped, cancelled, or failed",
             "unprivileged build job",
             "fresh unprivileged scan job",
             "`permissions: {}`",
@@ -1986,6 +2078,65 @@ def _validate_documentation(text: str, errors: list[str]) -> None:
         "release process documentation",
         errors,
     )
+
+
+def _validate_immutable_control_ancestry(
+    run: str,
+    *,
+    label: str,
+    source_variable: str,
+    errors: list[str],
+) -> None:
+    assignment = 'control_commit="${GITHUB_SHA}"'
+    immutable_fetch = '"${control_commit}:refs/release-control/dispatch"'
+    fetched_binding = (
+        '"refs/release-control/dispatch^{commit}")" = "${control_commit}"'
+    )
+    type_check = 'cat-file -t "${control_commit}")" = commit'
+    signature_check = 'verify-tag "refs/tags/${RELEASE_TAG}"'
+    source_resolution = f'{source_variable}="$(git --git-dir="${{bare_repo}}" rev-parse '
+    ancestry_pattern = re.compile(
+        re.escape('git --git-dir="${bare_repo}" merge-base --is-ancestor ')
+        + r"\\\n\s+"
+        + re.escape(f'"${{{source_variable}}}" "${{control_commit}}"')
+    )
+    required = (
+        assignment,
+        immutable_fetch,
+        fetched_binding,
+        type_check,
+        signature_check,
+        source_resolution,
+    )
+    positions = [run.find(snippet) for snippet in required]
+    ancestry_matches = list(ancestry_pattern.finditer(run))
+    ancestry_position = ancestry_matches[0].start() if ancestry_matches else -1
+    positions.append(ancestry_position)
+    if any(position < 0 for position in positions):
+        errors.append(
+            f"{label} must bind signed-source ancestry to the immutable control commit"
+        )
+    elif positions != sorted(positions):
+        errors.append(
+            f"{label} must verify signature and immutable control ancestry in order"
+        )
+    if len(ancestry_matches) != 1:
+        errors.append(f"{label} must perform exactly one control ancestry decision")
+    for mutable_ref in (
+        "refs/heads/",
+        "refs/remotes/",
+        "origin/",
+        "git ls-remote",
+        '"${GITHUB_REF}:',
+        '"${GITHUB_REF_NAME}:',
+        "--depth",
+        "--shallow",
+    ):
+        if mutable_ref in run:
+            errors.append(
+                f"{label} control ancestry must not depend on mutable/shallow ref "
+                f"`{mutable_ref}`"
+            )
 
 
 def _require(text: str, snippets: set[str], label: str, errors: list[str]) -> None:

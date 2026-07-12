@@ -7222,3 +7222,68 @@ Remaining risks:
 - Docker/Kind/Trivy/Gitleaks-container live evidence is deferred to the final
   serial scratch-only phase; no persistent container, volume, cluster, Vault,
   database, or tenant data was touched in this integration step.
+
+## 2026-07-12 - Final pre-merge audit: eval tenant, protected release ancestry, and global gates
+
+Slice selected:
+
+- Closed the final independent-audit findings after all six fronts were
+  integrated, then reran proportional global gates before promoting the
+  integration branch to the protected default branch.
+
+Implementation:
+
+- Bound the eval smoke request body and `x-tenant-id` header to one canonical
+  `eval-smoke` tenant and added a regression test; the previously reproducible
+  403 is no longer possible through the runner path.
+- Required both release trust boundaries to fetch the exact workflow-dispatch
+  `GITHUB_SHA` and prove the peeled signed source is its ancestor. Added a
+  permission-empty `release-verdict` with `if: always()` so skipped, cancelled,
+  or failed release stages cannot leave a successful workflow conclusion.
+- Added exact checker mutations for reversed ancestry, mutable control refs,
+  non-default protected refs, forged job results, missing `always()`, and
+  verdict token permissions.
+- Declared patch-file whitespace semantics through `.gitattributes`, preserving
+  valid unified-diff context while making repository-wide `git diff --check`
+  deterministic.
+- Reconciled current traceability claims with the implemented 79-schema/72-TS,
+  14-service/4-volume, eight-image, OIDC, PostgreSQL, audit-commitment, durable
+  ingestion, and live-recovery boundaries. Updated the ingestion gate's stale
+  storage-only description to match its enforced runtime/live scope.
+
+Validation:
+
+- Final full API suite: `2697 passed, 28 skipped`; the only warning is the
+  existing FastAPI/Starlette TestClient deprecation notice.
+- Eval gates in an isolated Git snapshot: smoke `2/2`, scenarios `21/21`, no
+  false-positive blocking or critical pass-through; 83 focused tests passed and
+  no versioned report changed.
+- Release security checker and its focused suite passed (`99 passed`).
+- Exact Node `24.18.0` plus npm `11.16.0` passed lint, all workspace typechecks,
+  170 workspace tests, and all production builds; Console build inspection
+  scanned 181 artifacts. Console E2E static tests passed `35/35` and Playwright
+  discovery found 10 tests across four files.
+- Exact Python `3.12.13` with build `1.5.1`, setuptools `83.0.0`, and wheel
+  `0.47.0` produced byte-identical wheels with SHA-256
+  `fa7c49ba5a98065f6944818995106ab317a7cd73a7a51626095bc9906b185bfe`.
+- Gitleaks `8.30.1` ran natively over the Git snapshot and history after its
+  official archive and checksum manifest were SHA-256 verified; the scan
+  passed and the exact scratch directory was removed. The repository secret
+  scanner and 70-fingerprint fixture gate also passed.
+- All four exact Python lock sets and both npm dependency scopes reported no
+  known vulnerabilities at audit time. Ruff, standard 59-source mypy,
+  OpenAPI/contracts, 193-row traceability, worklog, Helm, policy (`164` Python
+  tests and `31/31` Rego), security/config, and `git diff --check` gates passed.
+
+Remaining risks:
+
+- Docker Desktop answered version/list operations but container creation hung
+  even for a no-network Alpine probe. The exact client processes were stopped,
+  zero running containers and zero temporary gate directories were verified,
+  and the shared daemon plus stopped project containers were left untouched.
+  Consequently this final pass does not claim fresh local Kind, Trivy-image, or
+  browser-live evidence; their pinned fail-closed workflows remain CI/live
+  evidence.
+- Linux lock recompilation, GitHub GPG/OIDC attestations, external replay CAS,
+  managed-service durability, and Console multi-replica session state remain
+  deployment/remote-run evidence. None is represented as locally completed.

@@ -113,13 +113,52 @@ def test_release_security_config_rejects_build_secret_exposure() -> None:
         _validate(config)
 
 
-def test_release_security_config_requires_four_exact_jobs() -> None:
+def test_release_security_config_requires_exact_jobs() -> None:
     config = _mutate_workflow(
         "jobs:\n  verify-tag:",
         "jobs:\n  hidden-privileged:\n    runs-on: ubuntu-24.04\n  verify-tag:",
     )
 
     with pytest.raises(ReleaseSecurityConfigError, match="exactly verify-tag"):
+        _validate(config)
+
+
+def test_release_security_config_requires_always_final_verdict() -> None:
+    config = _mutate_workflow(
+        "      - attest-release\n    if: ${{ always() }}",
+        "      - attest-release\n    if: ${{ success() }}",
+    )
+
+    with pytest.raises(
+        ReleaseSecurityConfigError,
+        match=r"release-verdict must run with an exact always\(\) condition",
+    ):
+        _validate(config)
+
+
+def test_release_security_config_verdict_observes_real_verify_tag_result() -> None:
+    config = _mutate_workflow(
+        "VERIFY_TAG_RESULT: ${{ needs.verify-tag.result }}",
+        'VERIFY_TAG_RESULT: "success"',
+    )
+
+    with pytest.raises(
+        ReleaseSecurityConfigError,
+        match="release-verdict.*environment is not exact",
+    ):
+        _validate(config)
+
+
+def test_release_security_config_verdict_has_no_token_permissions() -> None:
+    config = _mutate_workflow(
+        "    timeout-minutes: 5\n    permissions: {}",
+        "    timeout-minutes: 5\n    permissions:\n      contents: read",
+    )
+
+    with pytest.raises(
+        ReleaseSecurityConfigError,
+        match="release-verdict must have no token permissions",
+    ):
         _validate(config)
 
 
@@ -223,6 +262,66 @@ def test_release_security_config_rejects_verify_tag_secret_key_guard_after_impor
     with pytest.raises(
         ReleaseSecurityConfigError,
         match="verify-tag trusted verification run block changed",
+    ):
+        _validate(config)
+
+
+@pytest.mark.parametrize("occurrence", [0, 1, 2, 3])
+def test_release_security_config_requires_protected_default_branch(
+    occurrence: int,
+) -> None:
+    config = _mutate_workflow_occurrence(
+        "github.ref_name == github.event.repository.default_branch &&",
+        "github.ref_name == 'main' &&",
+        occurrence,
+    )
+
+    with pytest.raises(
+        ReleaseSecurityConfigError,
+        match="protected-ref condition is not exact|dependency/protected-ref condition is not exact",
+    ):
+        _validate(config)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "error"),
+    [
+        (
+            '            "${source_commit}" "${control_commit}"',
+            '            "${control_commit}" "${source_commit}"',
+            "verify-tag must bind signed-source ancestry",
+        ),
+        (
+            '            "${expected_source_commit}" "${control_commit}"',
+            '            "${control_commit}" "${expected_source_commit}"',
+            "attest-release must bind signed-source ancestry",
+        ),
+    ],
+)
+def test_release_security_config_rejects_reversed_control_ancestry(
+    old: str,
+    new: str,
+    error: str,
+) -> None:
+    config = _mutate_workflow(old, new)
+
+    with pytest.raises(ReleaseSecurityConfigError, match=error):
+        _validate(config)
+
+
+@pytest.mark.parametrize("occurrence", [0, 1])
+def test_release_security_config_rejects_mutable_control_ref_fetch(
+    occurrence: int,
+) -> None:
+    config = _mutate_workflow_occurrence(
+        '"${control_commit}:refs/release-control/dispatch"',
+        '"refs/heads/${GITHUB_REF_NAME}:refs/release-control/dispatch"',
+        occurrence,
+    )
+
+    with pytest.raises(
+        ReleaseSecurityConfigError,
+        match="must bind signed-source ancestry|must not depend on mutable/shallow ref",
     ):
         _validate(config)
 
