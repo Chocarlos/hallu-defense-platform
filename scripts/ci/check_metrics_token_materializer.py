@@ -3,8 +3,9 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TypedDict
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE_PATH = (
@@ -30,6 +31,16 @@ GATE_SCRIPT = "scripts/ci/check_metrics_token_materializer.py"
 
 class MetricsTokenMaterializerConfigError(ValueError):
     pass
+
+
+class MetricsTokenMaterializerConfig(TypedDict):
+    core_text: str
+    cli_text: str
+    prometheus: Mapping[str, object]
+    docs_text: str
+    makefile_text: str
+    ci_workflow_text: str
+    security_workflow_text: str
 
 
 def validate_metrics_token_materializer_config(
@@ -141,7 +152,9 @@ def _validate_single_secret_source(
                         f"to {name}"
                     )
     if get_secret_calls != 1:
-        errors.append("Metrics token runtime must have exactly one SecretManager.get_secret call")
+        errors.append(
+            "Metrics token runtime must have exactly one SecretManager.get_secret call"
+        )
     if create_manager_calls != 1:
         errors.append("Metrics token CLI must construct exactly one real SecretManager")
 
@@ -173,7 +186,9 @@ def _validate_prometheus(prometheus: Mapping[str, object], errors: list[str]) ->
         None,
     )
     if not isinstance(scrape, Mapping):
-        errors.append("prometheus.prod.yml must contain the hallu-defense-api scrape job")
+        errors.append(
+            "prometheus.prod.yml must contain the hallu-defense-api scrape job"
+        )
         return
     authorization = scrape.get("authorization")
     if not isinstance(authorization, Mapping):
@@ -201,6 +216,10 @@ def _validate_docs(docs_text: str, errors: list[str]) -> None:
             "--watch",
             "SIGTERM",
             "HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME",
+            "HALLU_DEFENSE_SECRETS_BACKEND=vault",
+            "HALLU_DEFENSE_VAULT_TOKEN_FILE=",
+            "HALLU_DEFENSE_VAULT_CA_CERT_PATH=",
+            "Do not add a token-value environment variable or CLI flag",
             EXPECTED_CREDENTIALS_FILE,
         },
         "metrics token materializer deployment documentation",
@@ -241,7 +260,7 @@ def _require(text: str, snippets: set[str], label: str, errors: list[str]) -> No
             errors.append(f"{label} missing `{snippet}`")
 
 
-def load_current_config() -> dict[str, object]:
+def load_current_config() -> MetricsTokenMaterializerConfig:
     prometheus = yaml.safe_load(PROMETHEUS_PATH.read_text(encoding="utf-8"))
     if not isinstance(prometheus, Mapping):
         raise MetricsTokenMaterializerConfigError(

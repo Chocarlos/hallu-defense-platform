@@ -1,10 +1,14 @@
 # Container Scanning
 
-The security workflow treats every runnable container as release input. It builds
-`hallu-defense-api:ci`, `hallu-defense-console:ci`, and
-`hallu-defense-sandbox:ci`, and `hallu-defense-pgvector:ci` from their
-repository Dockerfiles and scans those images before a change is accepted. The sandbox build comes from
-`infra/docker/sandbox.Dockerfile`.
+The security workflow treats every runnable container as release input. Its first-party
+matrix builds and scans the current `api`, `console`, `sandbox`, `pgvector`, `keycloak`,
+`grafana`, `opensearch`, and `seaweedfs` Dockerfiles before a change is accepted. The
+exact sandbox row binds `infra/docker/sandbox.Dockerfile` to
+`hallu-defense-sandbox:ci`; neither the name, Dockerfile nor scan tag is inferred from
+caller-controlled input. The
+matrix uses `fail-fast: false` and `max-parallel: 1`, so one vulnerable image does not
+prevent the remaining images from producing results while all Docker/Trivy work is
+serialized; each vulnerable matrix cell still fails.
 
 The workflow also scans every third-party runtime image declared in
 `requirements/container-images.json`. The inventory records the exact tag and
@@ -17,16 +21,26 @@ static gate.
 Required behavior:
 
 - Run Trivy 0.72.0 through the commit-pinned 0.36.0 action.
-- Scan OS and application/library packages in all four first-party images.
+- Scan OS and application/library packages in all eight first-party images.
 - Scan the immutable third-party image matrix from the maintained inventory.
 - Fail on every `HIGH` or `CRITICAL` finding; do not use `ignore-unfixed`,
   `continue-on-error`, or a severity waiver.
+- Create an exact empty Trivy config and ignore file under the runner's external
+  temporary directory before any build or scan, make both read-only, and pass their
+  absolute paths explicitly. Repository `.trivyignore`, `trivy.yaml`, environment
+  overrides, extra actions, matrix exclusions, conditional scans, and additional
+  suppression inputs are rejected by the config gate.
+- Preserve every finding, including vulnerabilities with no upstream fix. A network,
+  registry, scanner-database, build, or CVE failure is a failed/incomplete gate and must
+  be reported as such; it is never converted into a clean result.
 - Keep workflow permissions read-only, action refs commit-pinned, and every job
   bounded by an explicit timeout.
 - Use digest-pinned build bases, exact hashed Python locks, `npm ci`, and a
   checksum-and-integrity-verified npm archive for the sandbox runtime.
-- Run first-party images as non-root UID 10001 with application files owned by
-  root and read-only at runtime.
+- Run first-party images as non-root with an image-specific identity (`10001` for API,
+  sandbox, Keycloak, and SeaweedFS; the base-image `node` identity for Console;
+  `472:472` for Grafana; `1000` for OpenSearch; and `postgres` for pgvector), while
+  executable code/config remains root-owned and read-only at runtime.
 
 `scripts/ci/check_container_scan_config.py` enforces the workflow, inventory,
 Dockerfile, and source-discovery invariants. It parses the actual Compose and
@@ -36,9 +50,10 @@ scripts instead of trusting a hand-maintained summary.
 separately verifies the platform-explicit Python lock manifest, Node lock
 policy, sandbox npm archive, and CI toolchain pins.
 
-Static validation proves configuration shape. Acceptance still requires the
-Docker builds, read-only runtime smokes, and Trivy scans produced by CI (or by a
-recorded local run using the same pinned scanner and exact image tags).
+Static validation proves configuration shape. Acceptance still requires the Docker
+builds and Trivy scans produced by every matrix cell in CI (or by a recorded local run
+using the same pinned scanner and exact image tags). A partial matrix is partial
+evidence, not a passing scan.
 
 ## Kind CI substrate boundary
 

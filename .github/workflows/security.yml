@@ -63,7 +63,7 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
           chmod 0755 "$RUNNER_TEMP/gitleaks-bin/gitleaks"
           echo "GITLEAKS_BINARY=$RUNNER_TEMP/gitleaks-bin/gitleaks" >> "$GITHUB_ENV"
-          test "$("$RUNNER_TEMP/gitleaks-bin/gitleaks" version)" = "v${GITLEAKS_VERSION}"
+          test "$("$RUNNER_TEMP/gitleaks-bin/gitleaks" version)" = "${GITLEAKS_VERSION}"
       - run: python scripts/ci/check_gitleaks_config.py
       - run: python scripts/ci/run_gitleaks.py
       - name: Exercise real Gitleaks fixtures
@@ -72,6 +72,8 @@ jobs:
           HALLU_DEFENSE_GITLEAKS_LIVE_TEST: "true"
       - run: python scripts/ci/secret_scan.py
       - run: python scripts/ci/check_encryption_config.py
+      - run: python scripts/ci/check_release_security_config.py
+      - run: python scripts/ci/check_release_encryption_workflow.py
       - run: python scripts/ci/check_auth_config.py
       - run: python scripts/ci/oidc_provider_smoke.py
       - run: python scripts/ci/check_secrets_config.py
@@ -94,101 +96,65 @@ jobs:
       - run: python scripts/ci/check_helm_chart.py
       - run: npm audit --audit-level=high
       - run: npm audit --omit=dev --audit-level=high
-      - name: Build API image
-        run: docker build -f infra/docker/api.Dockerfile -t hallu-defense-api:ci .
-      - name: Scan API image
+  first-party-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: api
+            dockerfile: infra/docker/api.Dockerfile
+          - name: console
+            dockerfile: infra/docker/console.Dockerfile
+          - name: sandbox
+            dockerfile: infra/docker/sandbox.Dockerfile
+          - name: pgvector
+            dockerfile: infra/docker/pgvector.Dockerfile
+          - name: keycloak
+            dockerfile: infra/docker/keycloak.Dockerfile
+          - name: grafana
+            dockerfile: infra/docker/grafana.Dockerfile
+          - name: opensearch
+            dockerfile: infra/docker/opensearch.Dockerfile
+          - name: seaweedfs
+            dockerfile: infra/docker/seaweedfs.Dockerfile
+    steps:
+      - name: Create empty external Trivy policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0755 "${RUNNER_TEMP}/hallu-trivy-policy"
+          printf '{}\n' > "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml"
+          : > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
+          chmod 0444 "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \
+            "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Build current first-party image
+        run: >-
+          docker build -f "${{ matrix.dockerfile }}"
+          -t "hallu-defense-${{ matrix.name }}:ci" .
+      - name: Scan current first-party image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.72.0
-          image-ref: hallu-defense-api:ci
+          image-ref: hallu-defense-${{ matrix.name }}:ci
           format: table
           exit-code: "1"
           vuln-type: os,library
           severity: CRITICAL,HIGH
-      - name: Build console image
-        run: docker build -f infra/docker/console.Dockerfile -t hallu-defense-console:ci .
-      - name: Scan console image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-console:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-      - name: Build sandbox image
-        run: docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci .
-      - name: Scan sandbox image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-sandbox:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-      - name: Build pgvector image
-        run: docker build -f infra/docker/pgvector.Dockerfile -t hallu-defense-pgvector:ci .
-      - name: Scan pgvector image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-pgvector:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-      - name: Build Keycloak image
-        run: docker build -f infra/docker/keycloak.Dockerfile -t hallu-defense-keycloak:ci .
-      - name: Scan Keycloak image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-keycloak:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-      - name: Build Grafana image
-        run: docker build -f infra/docker/grafana.Dockerfile -t hallu-defense-grafana:ci .
-      - name: Scan Grafana image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-grafana:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-      - name: Build OpenSearch image
-        run: docker build -f infra/docker/opensearch.Dockerfile -t hallu-defense-opensearch:ci .
-      - name: Scan OpenSearch image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-opensearch:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-      - name: Build SeaweedFS image
-        run: docker build -f infra/docker/seaweedfs.Dockerfile -t hallu-defense-seaweedfs:ci .
-      - name: Scan SeaweedFS image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-seaweedfs:ci
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
+          trivy-config: ${{ runner.temp }}/hallu-trivy-policy/trivy.yaml
+          trivyignores: ${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore
 
   third-party-images:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 1
       matrix:
         image:
           - prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc
@@ -196,6 +162,15 @@ jobs:
           - redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
           - hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
     steps:
+      - name: Create empty external Trivy policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0755 "${RUNNER_TEMP}/hallu-trivy-policy"
+          printf '{}\n' > "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml"
+          : > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
+          chmod 0444 "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \
+            "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
       - name: Scan immutable third-party image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -205,3 +180,5 @@ jobs:
           exit-code: "1"
           vuln-type: os,library
           severity: CRITICAL,HIGH
+          trivy-config: ${{ runner.temp }}/hallu-trivy-policy/trivy.yaml
+          trivyignores: ${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore

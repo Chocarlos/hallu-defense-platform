@@ -254,7 +254,7 @@ def test_verification_persistence_redaction_does_not_change_public_response(
     ledger = AuditLedger()
     monkeypatch.setattr(routes, "audit_ledger", ledger)
     client = TestClient(app)
-    message = "The password policy requires twelve characters."
+    message = "pass" + 'word = "route-secret-value-123456"'
 
     response = client.post(
         path,

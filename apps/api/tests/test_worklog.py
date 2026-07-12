@@ -64,6 +64,7 @@ def test_worklog_validator_accepts_committed_document() -> None:
     entries = validate_worklog(WORKLOG_PATH.read_text(encoding="utf-8"))
 
     assert len(entries) >= 80
+    assert entries[-1].title
     assert entries[-1].date == max(entry.date for entry in entries)
     assert any(
         entry.title == "Front B - Trusted tools, bound approvals, policy, and redaction"

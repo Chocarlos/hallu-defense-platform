@@ -1,0 +1,14 @@
+{
+  "schema_version": "release-encryption-evidence.v1",
+  "bundle_id": "bundle-example-0001",
+  "sequence": 0,
+  "nonce": "too-short",
+  "issued_at": "2026-07-11T12:01:00Z",
+  "expires_at": "2026-07-11T12:06:00Z",
+  "subject": {},
+  "provenance": {},
+  "attestations": [],
+  "rotation": {"epoch": 0, "phase": "disabled"},
+  "commitments": [],
+  "authenticators": []
+}

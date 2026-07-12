@@ -1,0 +1,16 @@
+{
+  "schema_version": "release-encryption-verification-report.v1",
+  "verified_at": "2026-07-11T12:02:00Z",
+  "bundle_sha256": null,
+  "bundle_id": null,
+  "replay_state_previous_sha256": null,
+  "replay_state_next_sha256": null,
+  "anchor_update_required": false,
+  "anchor_finalized": false,
+  "report_authenticator": null,
+  "compliance_asserted": false,
+  "checks": {
+    "schema_valid": false
+  },
+  "failure_codes": []
+}

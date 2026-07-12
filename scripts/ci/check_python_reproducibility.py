@@ -41,6 +41,8 @@ WORKFLOW_PATHS = (
     ROOT / ".github" / "workflows" / "security.yml",
     ROOT / ".github" / "workflows" / "evals.yml",
     ROOT / ".github" / "workflows" / "live.yml",
+    ROOT / ".github" / "workflows" / "release.yml",
+    ROOT / ".github" / "workflows" / "verify-release-encryption.yml",
 )
 LOCK_ENTRY_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)\s*\\$")
 HASH_RE = re.compile(r"^--hash=sha256:([0-9a-f]{64})(?:\s*\\)?$")
@@ -50,6 +52,10 @@ MAINTAINED_ACTION_REFS = {
     "actions/checkout": "de0fac2e4500dabe0009e67214ff5f5447ce83dd",
     "actions/setup-python": "a309ff8b426b58ec0e2a45f0f869d46889d02405",
     "actions/setup-node": "48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+    "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "actions/download-artifact": "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53",
+    "actions/attest-build-provenance": "977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+    "actions/attest-sbom": "4651f806c01d8637787e274ac3bdf724ef169f34",
 }
 
 
@@ -146,10 +152,14 @@ def _require_direct_dependencies(
         name = canonicalize_name(requirement.name)
         entry = locked.get(name)
         if entry is None:
-            errors.append(f"{label} lock is missing direct dependency {requirement.name}.")
+            errors.append(
+                f"{label} lock is missing direct dependency {requirement.name}."
+            )
             continue
         if requirement.url is not None:
-            errors.append(f"{label} direct dependency {requirement.name} must not use a URL.")
+            errors.append(
+                f"{label} direct dependency {requirement.name} must not use a URL."
+            )
         if requirement.specifier and not requirement.specifier.contains(
             Version(entry.version),
             prereleases=True,
@@ -186,7 +196,9 @@ def _validate_manifest(
         return
     expected_names = {path.name for path in LOCK_PATHS.values()}
     if set(recorded) != expected_names:
-        errors.append("Python lock manifest inventory does not match required lock files.")
+        errors.append(
+            "Python lock manifest inventory does not match required lock files."
+        )
     for path in LOCK_PATHS.values():
         observed = hashlib.sha256(_normalized_bytes(path)).hexdigest()
         if recorded.get(path.name) != observed:
@@ -238,7 +250,9 @@ def _validate_npm_lock(dockerfile: str, errors: list[str]) -> None:
         "node /tmp/verify-sandbox-npm-archive.mjs",
     ):
         if marker not in dockerfile:
-            errors.append(f"sandbox Dockerfile is missing executed npm integrity marker `{marker}`.")
+            errors.append(
+                f"sandbox Dockerfile is missing executed npm integrity marker `{marker}`."
+            )
     verifier = SANDBOX_NPM_VERIFY_SCRIPT.read_text(encoding="utf-8")
     for marker in (
         'createHash("sha256")',
@@ -261,7 +275,9 @@ def _validate_workflows(errors: list[str]) -> None:
         text = path.read_text(encoding="utf-8")
         relative = path.relative_to(ROOT)
         if "runs-on: ubuntu-latest" in text or "runs-on: ubuntu-24.04" not in text:
-            errors.append(f"{relative} must pin the hosted runner label to ubuntu-24.04.")
+            errors.append(
+                f"{relative} must pin the hosted runner label to ubuntu-24.04."
+            )
         if 'python-version: "3.12.13"' not in text:
             errors.append(f"{relative} must pin Python 3.12.13.")
         if 'pip-version: "26.1.2"' not in text:
@@ -281,12 +297,16 @@ def _validate_workflows(errors: list[str]) -> None:
             if action.startswith("./"):
                 continue
             if ACTION_SHA_RE.fullmatch(action) is None:
-                errors.append(f"{relative} action {action} is not pinned by commit SHA.")
+                errors.append(
+                    f"{relative} action {action} is not pinned by commit SHA."
+                )
                 continue
             action_name, action_ref = action.rsplit("@", 1)
             expected_ref = MAINTAINED_ACTION_REFS.get(action_name)
             if expected_ref is not None and action_ref != expected_ref:
-                errors.append(f"{relative} action {action_name} is not at the maintained commit.")
+                errors.append(
+                    f"{relative} action {action_name} is not at the maintained commit."
+                )
         for forbidden in (
             "pip install --upgrade pip",
             'pip install -e "apps/api[dev]"',
@@ -295,7 +315,9 @@ def _validate_workflows(errors: list[str]) -> None:
             "--dangerously-allow-all-scripts",
         ):
             if forbidden in text:
-                errors.append(f"{relative} contains non-reproducible install `{forbidden}`.")
+                errors.append(
+                    f"{relative} contains non-reproducible install `{forbidden}`."
+                )
 
 
 def _validate_node_reproducibility(errors: list[str]) -> None:
@@ -307,11 +329,17 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
         if root_dev.get(name) != version:
             errors.append(f"package.json must pin {name} {version} exactly.")
     if package.get("overrides") != {"next": {"postcss": "8.5.10"}}:
-        errors.append("package.json must contain only the scoped Next PostCSS 8.5.10 override.")
+        errors.append(
+            "package.json must contain only the scoped Next PostCSS 8.5.10 override."
+        )
     if package.get("packageManager") != "npm@11.16.0":
         errors.append("package.json must pin packageManager npm@11.16.0.")
     engines = package.get("engines")
-    if not isinstance(engines, Mapping) or engines.get("node") != "24.18.0" or engines.get("npm") != "11.16.0":
+    if (
+        not isinstance(engines, Mapping)
+        or engines.get("node") != "24.18.0"
+        or engines.get("npm") != "11.16.0"
+    ):
         errors.append("package.json engines must pin Node 24.18.0 and npm 11.16.0.")
     if package.get("allowScripts") != {
         "esbuild": False,
@@ -319,7 +347,9 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
         "sharp": False,
         "unrs-resolver": False,
     }:
-        errors.append("package.json must explicitly deny every reviewed dependency install script.")
+        errors.append(
+            "package.json must explicitly deny every reviewed dependency install script."
+        )
     try:
         npmrc = NPMRC_PATH.read_text(encoding="utf-8").strip()
     except OSError:
@@ -338,11 +368,18 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
     packages = package_lock.get("packages", {})
     root_package = packages.get("", {})
     if root_package.get("engines") != {"node": "24.18.0", "npm": "11.16.0"}:
-        errors.append("package-lock.json root engines must pin Node 24.18.0 and npm 11.16.0.")
+        errors.append(
+            "package-lock.json root engines must pin Node 24.18.0 and npm 11.16.0."
+        )
     if packages.get("node_modules/next", {}).get("version") != "16.2.10":
         errors.append("package-lock.json must resolve Next 16.2.10.")
-    if packages.get("node_modules/next/node_modules/postcss", {}).get("version") != "8.5.10":
-        errors.append("package-lock.json must resolve Next's PostCSS 8.5.10 correction.")
+    if (
+        packages.get("node_modules/next/node_modules/postcss", {}).get("version")
+        != "8.5.10"
+    ):
+        errors.append(
+            "package-lock.json must resolve Next's PostCSS 8.5.10 correction."
+        )
 
 
 def validate_python_reproducibility() -> None:
@@ -387,7 +424,9 @@ def validate_python_reproducibility() -> None:
     for name, runtime_entry in locks["runtime"].items():
         dev_entry = locks["dev"].get(name)
         if dev_entry is None or dev_entry.version != runtime_entry.version:
-            errors.append(f"dev lock does not preserve runtime pin {name}=={runtime_entry.version}.")
+            errors.append(
+                f"dev lock does not preserve runtime pin {name}=={runtime_entry.version}."
+            )
     build_requires = list(pyproject["build-system"]["requires"])
     _require_direct_dependencies(
         build_requires,
@@ -416,7 +455,9 @@ def validate_python_reproducibility() -> None:
         "pip check",
     ):
         if marker not in api_dockerfile:
-            errors.append(f"API Dockerfile is missing reproducibility marker `{marker}`.")
+            errors.append(
+                f"API Dockerfile is missing reproducibility marker `{marker}`."
+            )
     console_dockerfile = (ROOT / "infra" / "docker" / "console.Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -427,15 +468,21 @@ def validate_python_reproducibility() -> None:
         "npm ci",
     ):
         if marker not in console_dockerfile:
-            errors.append(f"console Dockerfile is missing npm policy marker `{marker}`.")
+            errors.append(
+                f"console Dockerfile is missing npm policy marker `{marker}`."
+            )
     for forbidden in ("--ignore-scripts", "--dangerously-allow-all-scripts"):
         if forbidden in console_dockerfile:
-            errors.append(f"console Dockerfile must not bypass npm policy with {forbidden}.")
+            errors.append(
+                f"console Dockerfile must not bypass npm policy with {forbidden}."
+            )
     if "--no-isolation" not in WHEEL_BUILD_SCRIPT.read_text(encoding="utf-8"):
         errors.append("reproducible wheel build must disable build isolation.")
     for marker in ("sandbox-linux-py312.lock", "--require-hashes", "--no-index"):
         if marker not in sandbox_dockerfile:
-            errors.append(f"sandbox Dockerfile is missing reproducibility marker `{marker}`.")
+            errors.append(
+                f"sandbox Dockerfile is missing reproducibility marker `{marker}`."
+            )
     _validate_npm_lock(sandbox_dockerfile, errors)
     _validate_node_reproducibility(errors)
     _validate_workflows(errors)
@@ -446,7 +493,9 @@ def validate_python_reproducibility() -> None:
 
 def main() -> None:
     validate_python_reproducibility()
-    print("Validated platform-explicit hashed locks and reproducible build configuration.")
+    print(
+        "Validated platform-explicit hashed locks and reproducible build configuration."
+    )
 
 
 if __name__ == "__main__":

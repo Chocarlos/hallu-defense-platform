@@ -36,9 +36,10 @@ def test_bootstrap_seeds_required_kv2_secret_paths_without_value_output() -> Non
 
     assert result["status"] == "passed"
     assert result["seeded_names"] == list(bootstrap.LOCAL_VAULT_SECRET_NAMES)
-    assert [call[0] for call in calls] == ["PUT", "PUT", "PUT", "PUT", "PUT"]
+    assert [call[0] for call in calls] == ["PUT"] * 6
     assert [call[1] for call in calls] == [
         "http://127.0.0.1:8200/v1/secret/data/observability/metrics-scrape-token",
+        "http://127.0.0.1:8200/v1/secret/data/audit/request-commitment-key",
         "http://127.0.0.1:8200/v1/secret/data/approvals/tool-call-commitment-key",
         "http://127.0.0.1:8200/v1/secret/data/auth/trusted-header-signing-key",
         "http://127.0.0.1:8200/v1/secret/data/backup/encryption-key",

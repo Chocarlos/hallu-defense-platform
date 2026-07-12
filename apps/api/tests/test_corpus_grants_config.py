@@ -56,7 +56,7 @@ def test_corpus_grants_config_requires_env_keys() -> None:
 def test_corpus_grants_config_requires_production_memory_rejection() -> None:
     config = list(load_current_config())
     config[3] = config[3].replace(
-        "Production and staging must configure a persistent corpus grants backend.",
+        "Production and staging require the PostgreSQL persistent corpus grants backend.",
         "",
     )
 
