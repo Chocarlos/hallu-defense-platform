@@ -67,7 +67,12 @@ const documentPayload = {
 const toolEnvelope = {
   tool_name: "read_document",
   input: { document_id: "hr-manual-v7" },
-  schema: { type: "object", required: ["document_id"] },
+  schema: {
+    type: "object",
+    properties: { document_id: { type: "string", minLength: 1 } },
+    required: ["document_id"],
+    additionalProperties: false
+  },
   risk_level: "low",
   approval_required: false,
   caller_context: { tenant_id: tenantId }
@@ -124,6 +129,31 @@ describe("hallu-defense MCP server API contract", () => {
       ).toBe(true);
       expect(validateOutput({ error: "missing trace" }), definition.name).toBe(false);
     }
+
+    const validateToolOutput = toolDefinitions.find(
+      (definition) => definition.name === "validate_tool_output"
+    );
+    if (validateToolOutput === undefined) {
+      throw new Error("Missing validate_tool_output definition");
+    }
+    const validateBlockedOutput = createContractSchemaValidator().compile(
+      validateToolOutput.outputSchema
+    );
+    const failClosed = {
+      trace_id: "tr_schema_invalid_redaction",
+      allowed: false,
+      action: "block",
+      reason: "Sanitized tool output does not conform to its trusted JSON Schema.",
+      approval_required: false,
+      approval_id: null,
+      sanitized_output: null,
+      policy_version: null,
+      matched_rules: []
+    };
+    expect(validateBlockedOutput(failClosed), JSON.stringify(validateBlockedOutput.errors)).toBe(
+      true
+    );
+    expect(JSON.stringify(failClosed)).not.toContain("person@example.com");
   });
 
   it("interoperates with the official MCP stdio client", async () => {
@@ -321,14 +351,20 @@ describe("hallu-defense MCP server API contract", () => {
         path: "/tools/validate-output",
         arguments: {
           ...toolEnvelope,
-          input: { api_key: "test-value", nested: { password: "test-password" } }
+          input: { content: "api_key=test-value" },
+          schema: {
+            type: "object",
+            properties: { content: { type: "string" } },
+            required: ["content"],
+            additionalProperties: false
+          }
         },
         assert: (structured: Record<string, unknown>) => {
           const sanitized = requireRecord(
             structured.sanitized_output,
             "validate_tool_output sanitized output"
           );
-          expect(sanitized.api_key).toBe("[REDACTED]");
+          expect(sanitized.content).toBe("[REDACTED]");
         }
       },
       {
@@ -359,7 +395,7 @@ describe("hallu-defense MCP server API contract", () => {
         assert: (structured: Record<string, unknown>) => {
           expect(structured.allowed).toBe(true);
           expect(requireArray(structured, "matched_rules", "explain_policy output")).toContain(
-            "default_allow_low_medium_risk"
+            "default_allow_registered_action"
           );
         }
       },
@@ -604,10 +640,17 @@ function startRpcClient(baseUrl: string): RpcClient {
     request: async (method: string, params?: unknown) => {
       const id = nextId;
       nextId += 1;
+      const requestName =
+        typeof params === "object" &&
+        params !== null &&
+        "name" in params &&
+        typeof params.name === "string"
+          ? `${method}:${params.name}`
+          : method;
       const response = new Promise<JsonRpcResponse>((resolve, reject) => {
         const timeout = setTimeout(() => {
           pending.delete(id);
-          reject(new Error(`Timed out waiting for MCP response to ${method}: ${stderr}`));
+          reject(new Error(`Timed out waiting for MCP response to ${requestName}: ${stderr}`));
         }, 10000);
         pending.set(id, { resolve, reject, timeout });
       });
@@ -694,14 +737,38 @@ async function startApiServer(): Promise<ApiServer> {
   writeFileSync(path.join(sandboxRepo, "service.py"), "def fetch():\n    return 'fresh'\n", {
     encoding: "utf8"
   });
+  writeFileSync(
+    path.join(sandboxWorkspace, "run"),
+    [
+      "from __future__ import annotations",
+      "import json",
+      "import sys",
+      "from pathlib import Path",
+      "from hallu_defense.services.sandbox import _workspace_fingerprint",
+      "args = sys.argv[1:]",
+      "mounts = [args[index + 1] for index, item in enumerate(args[:-1]) if item == '--mount']",
+      "source_mount = next(item for item in mounts if 'target=/hallu-source' in item)",
+      "source = next(item.split('=', 1)[1] for item in source_mount.split(',') if item.startswith('source='))",
+      "commands = json.loads(args[-1])",
+      "fingerprint = _workspace_fingerprint(Path(source))",
+      "payload = {'schema_version': 'sandbox_execution_batch.v3', 'pre_snapshot_fingerprint': fingerprint, 'post_snapshot_fingerprint': fingerprint, 'executions': [{'returncode': 0, 'stdout': 'Python test runtime\\n', 'stderr': '', 'timed_out': False} for _ in commands], 'artifacts': []}",
+      "print(json.dumps(payload, separators=(',', ':')))"
+    ].join("\n"),
+    { encoding: "utf8" }
+  );
   const child = spawn(
     python,
     ["-m", "uvicorn", "hallu_defense.main:app", "--host", "127.0.0.1", "--port", String(port)],
     {
-      cwd: repoRoot,
+      cwd: sandboxWorkspace,
       env: {
         ...process.env,
-        HALLU_DEFENSE_ALLOWED_WORKSPACE: sandboxWorkspace
+        PYTHONPATH: path.join(repoRoot, "apps/api/src"),
+        HALLU_DEFENSE_ALLOWED_WORKSPACE: sandboxWorkspace,
+        HALLU_DEFENSE_ENV: "test",
+        HALLU_DEFENSE_MAX_COMMAND_SECONDS: "5",
+        HALLU_DEFENSE_SANDBOX_BACKEND: "docker",
+        HALLU_DEFENSE_SANDBOX_DOCKER_PATH: python
       },
       stdio: ["pipe", "pipe", "pipe"]
     }
@@ -743,7 +810,12 @@ function cleanupTempDir(target: string): void {
   if (!resolvedTarget.startsWith(`${resolvedTempRoot}${path.sep}`)) {
     throw new Error(`Refusing to clean non-temp directory: ${resolvedTarget}`);
   }
-  rmSync(resolvedTarget, { recursive: true, force: true });
+  rmSync(resolvedTarget, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100
+  });
 }
 
 function resolvePython(): string {
@@ -793,13 +865,36 @@ async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
+  const exited = waitForChildExit(child, 5000);
   child.kill();
-  await Promise.race([
-    new Promise<void>((resolve) => {
-      child.once("exit", () => resolve());
-    }),
-    delay(2000)
-  ]);
+  if (await exited) {
+    return;
+  }
+  const forceExited = waitForChildExit(child, 5000);
+  child.kill("SIGKILL");
+  if (!(await forceExited)) {
+    throw new Error("Child process did not terminate within the bounded shutdown window");
+  }
+}
+
+function waitForChildExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise<boolean>((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    child.once("exit", onExit);
+  });
 }
 
 function delay(ms: number): Promise<void> {

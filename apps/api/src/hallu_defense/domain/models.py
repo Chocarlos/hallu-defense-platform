@@ -567,12 +567,18 @@ class ToolCallEnvelope(BaseModel):
         json_schema_extra={"x-contract-version": "1.0"},
     )
 
+    # Populated only after the server-side tool-definition registry has
+    # resolved and checked the public envelope. PrivateAttr deliberately keeps
+    # the trusted binding out of request parsing, JSON, and OpenAPI so a caller
+    # cannot self-assert registry metadata.
+    _trusted_definition: object | None = PrivateAttr(default=None)
+
     tool_name: str = Field(min_length=1)
-    input: dict[str, object] = Field(default_factory=dict)
-    tool_schema: dict[str, object] = Field(default_factory=dict, alias="schema")
-    risk_level: RiskLevel = RiskLevel.MEDIUM
-    approval_required: bool = False
-    caller_context: dict[str, object] = Field(default_factory=dict)
+    input: dict[str, object]
+    tool_schema: dict[str, object] = Field(alias="schema")
+    risk_level: RiskLevel
+    approval_required: bool
+    caller_context: dict[str, object]
     approval_id: str | None = None
     approval_execution_token: str | None = None
 
@@ -596,6 +602,7 @@ class ApprovalRecord(BaseModel):
     # PrivateAttr keeps it out of REST/OpenAPI/public serialization; approval
     # storage persists it explicitly as opaque metadata.
     _tool_call_commitment: str | None = PrivateAttr(default=None)
+    _approval_binding: object | None = PrivateAttr(default=None)
 
     approval_id: str
     tenant_id: str

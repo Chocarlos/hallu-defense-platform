@@ -80,6 +80,10 @@ from hallu_defense.services.postgres import (  # noqa: E402
     PooledPostgresProvider,
     SqlConnectionProvider,
 )
+from hallu_defense.services.tool_definitions import (  # noqa: E402
+    TrustedToolDefinition,
+    TrustedToolRegistry,
+)
 from scripts.dev.apply_postgres_migrations import (  # noqa: E402
     MIGRATIONS_DIR,
     MigrationConnection,
@@ -93,6 +97,12 @@ DSN_ENV = "HALLU_DEFENSE_POSTGRES_DSN"
 DEFAULT_DSN = "postgresql://hallu:hallu@localhost:5432/hallu_defense"
 SMOKE_KIND = "live_postgres_persistence_smoke"
 SMOKE_TENANT_PREFIX = "tenant-live-pg-persist-smoke"
+SMOKE_TOOL_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {"scope": {"type": "string", "minLength": 1}},
+    "required": ["scope"],
+    "additionalProperties": False,
+}
 # Table names are frozen literal constants (never derived from input), so the
 # scoped cleanup DELETEs below are safe to build without identifier validation.
 CLEANUP_TABLES = (
@@ -317,14 +327,17 @@ def _run_grant_race(
     tenant_id: str,
     run_id: str,
 ) -> bool:
-    queue = ApprovalQueue(storage=PostgresApprovalQueueStorage(connection=connection))
+    queue = ApprovalQueue(
+        storage=PostgresApprovalQueueStorage(connection=connection),
+        tool_registry=_smoke_tool_registry(),
+    )
     request_call = _smoke_tool_call(run_id)
     approval = queue.request_approval(
         tenant_id=tenant_id,
         trace_id=f"tr_live_pg_persist_{run_id}_grant",
         tool_call=request_call,
         reason="Live postgres persistence smoke grant race.",
-        requested_by="live-smoke",
+        requested_by="live-smoke-agent",
     )
     result = queue.decide_with_grant(
         tenant_id,
@@ -376,7 +389,11 @@ def _consume_grant_concurrently(
     def worker() -> None:
         try:
             barrier.wait(timeout=RACE_TIMEOUT_SECONDS)
-            queue.consume_execution_grant(tenant_id, tool_call)
+            queue.consume_execution_grant(
+                tenant_id,
+                tool_call,
+                subject_id="live-smoke-agent",
+            )
         except ApprovalExecutionGrantConsumedError:
             with lock:
                 counters["consumed"] += 1
@@ -478,12 +495,34 @@ def _smoke_tool_call(
     return ToolCallEnvelope(
         tool_name="live_smoke_persist_action",
         input={"scope": f"live-smoke-{run_id}"},
-        schema={"type": "object"},
+        schema=SMOKE_TOOL_SCHEMA,
         risk_level=RiskLevel.HIGH,
         approval_required=True,
         caller_context={"subject": "live-smoke-agent"},
         approval_id=approval_id,
         approval_execution_token=execution_token,
+    )
+
+
+def _smoke_tool_registry() -> TrustedToolRegistry:
+    return TrustedToolRegistry(
+        (
+            TrustedToolDefinition(
+                name="live_smoke_persist_action",
+                version="1.0.0",
+                policy_action="write_file",
+                input_schema=SMOKE_TOOL_SCHEMA,
+                output_schema={
+                    "type": "object",
+                    "properties": {"status": {"type": "string"}},
+                    "required": ["status"],
+                    "additionalProperties": False,
+                },
+                risk_level=RiskLevel.HIGH,
+                approval_required=True,
+                side_effects=("persistence_smoke",),
+            ),
+        )
     )
 
 

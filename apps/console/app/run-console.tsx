@@ -253,10 +253,15 @@ export function RunConsole({ runtimeConfig }: RunConsoleProps) {
       const session = requireAuthSession();
       const validation = await requireClient().validateToolInput({
         tool_name: "delete_repository",
-        input: { repo: "core", operation: "delete" },
-        schema: { type: "object", required: ["repo"] },
+        input: { repo: "core" },
+        schema: {
+          type: "object",
+          properties: { repo: { type: "string", minLength: 1 } },
+          required: ["repo"],
+          additionalProperties: false
+        },
         risk_level: "high",
-        approval_required: false,
+        approval_required: true,
         caller_context: { subject: session.subjectId }
       });
       const message =

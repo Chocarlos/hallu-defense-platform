@@ -6,8 +6,9 @@ import json
 import re
 import secrets
 import threading
+import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -26,18 +27,29 @@ from hallu_defense.domain.models import (
     ToolCallEnvelope,
 )
 from hallu_defense.services.postgres import SqlConnectionProvider
+from hallu_defense.services.content_security import REDACTED_SECRET, SensitiveDataRedactor
 from hallu_defense.services.secrets import (
     SecretAccessError,
     SecretConfigurationError,
     SecretManager,
     SecretNotFoundError,
 )
+from hallu_defense.services.tool_definitions import (
+    ToolDefinitionError,
+    TrustedToolRegistry,
+    canonical_json_dumps,
+    get_trusted_tool_binding,
+)
 
-SENSITIVE_KEY_RE = re.compile(r"(api[_-]?key|secret|token|password)", re.I)
-REDACTED = "[REDACTED]"
-TOOL_CALL_COMMITMENT_DOMAIN = b"hallu-defense:approval-tool-call:v1\x00"
+REDACTED = REDACTED_SECRET
+APPROVAL_BINDING_COMMITMENT_DOMAIN = b"hallu-defense:approval-binding:v3\x00"
+# Compatibility name retained for the configuration integrity gate. The
+# committed message is an ApprovalBinding, not a caller-provided envelope.
+TOOL_CALL_COMMITMENT_DOMAIN = APPROVAL_BINDING_COMMITMENT_DOMAIN
 TOOL_CALL_COMMITMENT_STORAGE_KEY = "_hallu_tool_call_commitment_v1"
+APPROVAL_BINDING_STORAGE_KEY = "_hallu_approval_binding_v3"
 TOOL_CALL_COMMITMENT_RE = re.compile(r"^(?:hmac-)?sha256:[0-9a-f]{64}$")
+ARGUMENTS_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 MIN_COMMITMENT_KEY_BYTES = 32
 
 
@@ -63,6 +75,10 @@ class ApprovalQueueConfigurationError(ApprovalError):
 
 class ApprovalQueueStorageError(ApprovalError):
     """Raised when approval queue storage cannot be read safely."""
+
+
+class ApprovalPayloadSanitizationError(ApprovalError):
+    """Raised when sensitive approval data cannot be redacted completely."""
 
 
 class ApprovalExecutionGrantError(ApprovalError):
@@ -93,6 +109,126 @@ class ApprovalExecutionGrantState:
     consumed_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalBinding:
+    """The exact authorization facts reviewed by a human approver."""
+
+    approval_id: str
+    origin_trace_id: str
+    tenant_id: str
+    subject_id: str
+    tool_name: str
+    policy_action: str
+    arguments_hash: str
+    definition_version: str
+    definition_digest: str
+
+    def as_payload(self) -> dict[str, str]:
+        return {
+            "approval_id": self.approval_id,
+            "arguments_hash": self.arguments_hash,
+            "definition_digest": self.definition_digest,
+            "definition_version": self.definition_version,
+            "origin_trace_id": self.origin_trace_id,
+            "policy_action": self.policy_action,
+            "subject_id": self.subject_id,
+            "tenant_id": self.tenant_id,
+            "tool_name": self.tool_name,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> ApprovalBinding:
+        if not isinstance(value, Mapping):
+            raise ApprovalQueueStorageError("Approval binding must be an object.")
+        expected_keys = {
+            "approval_id",
+            "arguments_hash",
+            "definition_digest",
+            "definition_version",
+            "origin_trace_id",
+            "policy_action",
+            "subject_id",
+            "tenant_id",
+            "tool_name",
+        }
+        if set(value) != expected_keys:
+            raise ApprovalQueueStorageError("Approval binding has invalid fields.")
+        payload: dict[str, str] = {}
+        for key in expected_keys:
+            item = value.get(key)
+            if not isinstance(item, str) or not item:
+                raise ApprovalQueueStorageError("Approval binding contains an invalid value.")
+            payload[key] = item
+        if ARGUMENTS_HASH_RE.fullmatch(payload["arguments_hash"]) is None:
+            raise ApprovalQueueStorageError("Approval binding arguments hash is invalid.")
+        if TOOL_CALL_COMMITMENT_RE.fullmatch(payload["definition_digest"]) is None:
+            raise ApprovalQueueStorageError("Approval binding definition digest is invalid.")
+        for key in ("approval_id", "origin_trace_id", "tenant_id", "subject_id"):
+            identity = payload[key]
+            if (
+                identity != identity.strip()
+                or len(identity) > 256
+                or any(
+                    unicodedata.category(character) in {"Cc", "Cf"}
+                    for character in identity
+                )
+            ):
+                raise ApprovalQueueStorageError("Approval binding identity is invalid.")
+        for key in ("tool_name", "policy_action", "definition_version"):
+            if len(payload[key]) > 128:
+                raise ApprovalQueueStorageError("Approval binding metadata is too long.")
+        return cls(**payload)
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumedApprovalAuthorization:
+    """In-process capability emitted only after an atomic grant consume."""
+
+    approval_id: str
+    binding: ApprovalBinding
+    _issuer_token: object = field(repr=False, compare=False)
+    _capability_token: object = field(repr=False, compare=False)
+
+
+class ApprovalAuthorizationIssuer:
+    """Issues process-local, identity-checked approval capabilities."""
+
+    __slots__ = ("_active_capabilities", "_issuer_token", "_lock")
+
+    def __init__(self) -> None:
+        self._issuer_token = object()
+        self._active_capabilities: set[object] = set()
+        self._lock = threading.Lock()
+
+    def issue(
+        self,
+        *,
+        approval_id: str,
+        binding: ApprovalBinding,
+    ) -> ConsumedApprovalAuthorization:
+        capability_token = object()
+        with self._lock:
+            self._active_capabilities.add(capability_token)
+        return ConsumedApprovalAuthorization(
+            approval_id=approval_id,
+            binding=binding,
+            _issuer_token=self._issuer_token,
+            _capability_token=capability_token,
+        )
+
+    def consume(self, authorization: object) -> bool:
+        if (
+            not isinstance(authorization, ConsumedApprovalAuthorization)
+            or authorization._issuer_token is not self._issuer_token
+        ):
+            return False
+        with self._lock:
+            if authorization._capability_token not in self._active_capabilities:
+                return False
+            self._active_capabilities.remove(authorization._capability_token)
+        return True
+
+
 def _set_record_tool_call_commitment(
     record: ApprovalRecord,
     commitment: object,
@@ -120,6 +256,48 @@ def _record_tool_call_commitment(
     if TOOL_CALL_COMMITMENT_RE.fullmatch(commitment) is None:
         raise ApprovalQueueStorageError("Approval record tool-call commitment is invalid.")
     return commitment
+
+
+def _set_record_approval_binding(
+    record: ApprovalRecord,
+    binding: object,
+) -> None:
+    if binding is None:
+        record._approval_binding = None
+        return
+    if isinstance(binding, Mapping):
+        binding = ApprovalBinding.from_payload(binding)
+    if not isinstance(binding, ApprovalBinding):
+        raise ApprovalQueueStorageError("Approval record binding is invalid.")
+    record._approval_binding = binding
+
+
+def _record_approval_binding(
+    record: ApprovalRecord,
+    *,
+    required: bool,
+) -> ApprovalBinding | None:
+    binding = record._approval_binding
+    if binding is None:
+        if required:
+            raise ApprovalQueueStorageError(
+                "Approval record is missing its trusted authorization binding."
+            )
+        return None
+    if not isinstance(binding, ApprovalBinding):
+        raise ApprovalQueueStorageError("Approval record binding is invalid.")
+    return binding
+
+
+def _copy_record_private_metadata(source: ApprovalRecord, target: ApprovalRecord) -> None:
+    _set_record_tool_call_commitment(
+        target,
+        _record_tool_call_commitment(source, required=False),
+    )
+    _set_record_approval_binding(
+        target,
+        _record_approval_binding(source, required=False),
+    )
 
 
 # --- PostgreSQL backend -------------------------------------------------------
@@ -316,6 +494,9 @@ class PostgresApprovalQueueStorage:
         commitment = _record_tool_call_commitment(record, required=False)
         if commitment is not None:
             payload[TOOL_CALL_COMMITMENT_STORAGE_KEY] = commitment
+        binding = _record_approval_binding(record, required=False)
+        if binding is not None:
+            payload[APPROVAL_BINDING_STORAGE_KEY] = binding.as_payload()
         return json.dumps(
             payload,
             sort_keys=True,
@@ -337,6 +518,7 @@ class PostgresApprovalQueueStorage:
             )
         stored_payload = dict(payload)
         commitment = stored_payload.pop(TOOL_CALL_COMMITMENT_STORAGE_KEY, None)
+        binding = stored_payload.pop(APPROVAL_BINDING_STORAGE_KEY, None)
         try:
             record = ApprovalRecord.model_validate(stored_payload)
         except ValidationError as exc:
@@ -344,6 +526,7 @@ class PostgresApprovalQueueStorage:
                 f"Postgres approval record {row_number} payload is invalid"
             ) from exc
         _set_record_tool_call_commitment(record, commitment)
+        _set_record_approval_binding(record, binding)
         return record
 
     def _coerce_optional_datetime(self, value: object) -> datetime | None:
@@ -375,6 +558,9 @@ class ApprovalQueue:
         storage: ApprovalQueueStorage | None = None,
         execution_grant_ttl_seconds: int = 900,
         commitment_key: bytes | None = None,
+        tool_registry: TrustedToolRegistry | None = None,
+        redactor: SensitiveDataRedactor | None = None,
+        authorization_issuer: ApprovalAuthorizationIssuer | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if storage_path is not None and storage is not None:
@@ -391,6 +577,9 @@ class ApprovalQueue:
                 "Approval tool-call commitment key must contain at least 32 bytes."
             )
         self._commitment_key = commitment_key
+        self._tool_registry = tool_registry or TrustedToolRegistry.default()
+        self._redactor = redactor or SensitiveDataRedactor()
+        self._authorization_issuer = authorization_issuer or ApprovalAuthorizationIssuer()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
         self._records: dict[str, ApprovalRecord] = {}
@@ -407,18 +596,51 @@ class ApprovalQueue:
         reason: str,
         requested_by: str = "system",
     ) -> ApprovalRecord:
-        commitment = self._tool_call_commitment(tool_call)
+        canonical_tool_call = self._bind_tool_call(tool_call)
+        trusted_binding = get_trusted_tool_binding(canonical_tool_call)
+        if not trusted_binding.approval_required:
+            raise ToolDefinitionError(
+                "Trusted tool definition does not require a human approval."
+            )
+        self._require_matching_tenant(canonical_tool_call, tenant_id)
+        verified_context = dict(canonical_tool_call.caller_context)
+        verified_context["tenant_id"] = tenant_id
+        verified_context["subject"] = requested_by
+        canonical_tool_call = canonical_tool_call.model_copy(
+            update={"caller_context": verified_context},
+            deep=True,
+        )
+        canonical_tool_call._trusted_definition = trusted_binding
+        subject_id = self._resolve_subject(
+            canonical_tool_call,
+            asserted_subject=requested_by,
+        )
+        # The record identity is part of the authorization domain. Generate it
+        # before deriving the commitment so two otherwise identical reviews
+        # can never substitute for one another.
+        approval_id = f"apr_{uuid4().hex}"
+        binding = self._approval_binding(
+            approval_id=approval_id,
+            origin_trace_id=trace_id,
+            tenant_id=tenant_id,
+            subject_id=subject_id,
+            tool_call=canonical_tool_call,
+        )
+        commitment = self._binding_commitment(binding)
+        sanitized_tool_call = self._sanitize_tool_call(canonical_tool_call)
+        sanitized_reason = self._sanitize_text(reason, field="approval reason")
         record = ApprovalRecord(
-            approval_id=f"apr_{uuid4().hex}",
+            approval_id=approval_id,
             tenant_id=tenant_id,
             trace_id=trace_id,
-            tool_call=self._sanitize_tool_call(tool_call),
+            tool_call=sanitized_tool_call,
             status=ApprovalStatus.PENDING,
-            risk_level=tool_call.risk_level,
-            reason=reason,
+            risk_level=canonical_tool_call.risk_level,
+            reason=sanitized_reason,
             requested_by=requested_by,
         )
         _set_record_tool_call_commitment(record, commitment)
+        _set_record_approval_binding(record, binding)
         if self._storage is not None:
             self._storage.insert_record(record)
             return record
@@ -429,7 +651,10 @@ class ApprovalQueue:
 
     def list_for_tenant(self, tenant_id: str, request: ApprovalListRequest) -> list[ApprovalRecord]:
         if self._storage is not None:
-            records = self._storage.list_records(tenant_id)
+            records = [
+                self._sanitize_record(record)
+                for record in self._storage.list_records(tenant_id)
+            ]
         else:
             with self._lock:
                 records = list(self._records.values())
@@ -460,6 +685,10 @@ class ApprovalQueue:
                 raise ApprovalAlreadyDecidedError("Approval has already been decided.")
             if not request.decided_by:
                 raise ApprovalDecisionIdentityError("Approval decision requires reviewer identity.")
+            sanitized_decision_reason = self._sanitize_text(
+                request.reason,
+                field="approval decision reason",
+            )
 
             status = (
                 ApprovalStatus.APPROVED
@@ -470,10 +699,11 @@ class ApprovalQueue:
                 update={
                     "status": status,
                     "decided_by": request.decided_by,
-                    "decision_reason": request.reason,
+                    "decision_reason": sanitized_decision_reason,
                     "decided_at": self._now(),
                 }
             )
+            _copy_record_private_metadata(record, decided)
             execution_grant: ApprovalExecutionGrant | None = None
             grant_state: ApprovalExecutionGrantState | None = None
             if status == ApprovalStatus.APPROVED:
@@ -489,17 +719,59 @@ class ApprovalQueue:
         self,
         tenant_id: str,
         tool_call: ToolCallEnvelope,
-    ) -> ApprovalRecord:
+        *,
+        subject_id: str,
+    ) -> ConsumedApprovalAuthorization:
+        try:
+            canonical_tool_call = self._bind_tool_call(tool_call)
+            self._require_matching_tenant(canonical_tool_call, tenant_id)
+            resolved_subject = self._resolve_subject(
+                canonical_tool_call,
+                asserted_subject=subject_id,
+            )
+        except ToolDefinitionError as exc:
+            raise ApprovalExecutionGrantError(
+                "Approval execution grant does not match a trusted tool definition."
+            ) from exc
+        tool_call = canonical_tool_call
         if not tool_call.approval_id or not tool_call.approval_execution_token:
             raise ApprovalExecutionGrantError("Approval execution grant is required.")
         if self._storage is not None:
-            return self._consume_execution_grant_via_storage(tenant_id, tool_call)
+            try:
+                stored_record, binding = self._consume_execution_grant_via_storage(
+                    tenant_id,
+                    resolved_subject,
+                    tool_call,
+                )
+            except ApprovalQueueStorageError as exc:
+                raise ApprovalExecutionGrantError(
+                    "Approval execution grant does not match this tool call."
+                ) from exc
+            return self._consumed_authorization(stored_record, binding)
         with self._lock:
             record = self._records.get(tool_call.approval_id)
             if record is None or record.tenant_id != tenant_id:
                 raise ApprovalNotFoundError("Approval was not found for this tenant.")
             if record.status != ApprovalStatus.APPROVED:
                 raise ApprovalExecutionGrantError("Approval has not been approved.")
+
+            try:
+                stored_binding = self._validated_record_binding(record)
+            except ApprovalQueueStorageError as exc:
+                raise ApprovalExecutionGrantError(
+                    "Approval execution grant does not match this tool call."
+                ) from exc
+            requested_binding = self._approval_binding(
+                approval_id=record.approval_id,
+                origin_trace_id=record.trace_id,
+                tenant_id=tenant_id,
+                subject_id=resolved_subject,
+                tool_call=tool_call,
+            )
+            if stored_binding != requested_binding:
+                raise ApprovalExecutionGrantError(
+                    "Approval execution grant does not match this tool call."
+                )
 
             grant_state = self._grants.get(tool_call.approval_id)
             if grant_state is None or grant_state.tenant_id != tenant_id:
@@ -517,7 +789,7 @@ class ApprovalQueue:
                 raise ApprovalExecutionGrantError("Approval execution grant is invalid.")
             if not hmac.compare_digest(
                 grant_state.tool_call_fingerprint,
-                self._tool_call_commitment(tool_call),
+                self._binding_commitment(stored_binding),
             ):
                 raise ApprovalExecutionGrantError(
                     "Approval execution grant does not match this tool call."
@@ -526,7 +798,7 @@ class ApprovalQueue:
             consumed_state = replace(grant_state, consumed_at=self._now())
             self._append_grant_state_locked(consumed_state)
             self._grants[tool_call.approval_id] = consumed_state
-            return record
+            return self._consumed_authorization(record, stored_binding)
 
     def _decide_with_grant_via_storage(
         self,
@@ -537,10 +809,15 @@ class ApprovalQueue:
         record = self._storage.get_record(tenant_id, request.approval_id)
         if record is None or record.tenant_id != tenant_id:
             raise ApprovalNotFoundError("Approval was not found for this tenant.")
+        record = self._sanitize_record(record)
         if record.status != ApprovalStatus.PENDING:
             raise ApprovalAlreadyDecidedError("Approval has already been decided.")
         if not request.decided_by:
             raise ApprovalDecisionIdentityError("Approval decision requires reviewer identity.")
+        sanitized_decision_reason = self._sanitize_text(
+            request.reason,
+            field="approval decision reason",
+        )
 
         status = (
             ApprovalStatus.APPROVED
@@ -552,7 +829,7 @@ class ApprovalQueue:
                 update={
                     "status": status,
                     "decided_by": request.decided_by,
-                    "decision_reason": request.reason,
+                    "decision_reason": sanitized_decision_reason,
                     "decided_at": self._now(),
                 }
             )
@@ -572,23 +849,47 @@ class ApprovalQueue:
     def _consume_execution_grant_via_storage(
         self,
         tenant_id: str,
+        subject_id: str,
         tool_call: ToolCallEnvelope,
-    ) -> ApprovalRecord:
+    ) -> tuple[ApprovalRecord, ApprovalBinding]:
         assert self._storage is not None
         record = self._storage.get_record(tenant_id, tool_call.approval_id or "")
         if record is None or record.tenant_id != tenant_id:
             raise ApprovalNotFoundError("Approval was not found for this tenant.")
+        record = self._sanitize_record(record)
         if record.status != ApprovalStatus.APPROVED:
             raise ApprovalExecutionGrantError("Approval has not been approved.")
+        stored_binding = self._validated_record_binding(record)
+        requested_binding = self._approval_binding(
+            approval_id=record.approval_id,
+            origin_trace_id=record.trace_id,
+            tenant_id=tenant_id,
+            subject_id=subject_id,
+            tool_call=tool_call,
+        )
+        if stored_binding != requested_binding:
+            raise ApprovalExecutionGrantError(
+                "Approval execution grant does not match this tool call."
+            )
         # Atomic consume-once; storage raises the specific taxonomy error on 0 rows.
         self._storage.consume_grant_once(
             tenant_id=tenant_id,
             approval_id=tool_call.approval_id or "",
             token_hash=self._hash_execution_token(tool_call.approval_execution_token or ""),
-            tool_call_fingerprint=self._tool_call_commitment(tool_call),
+            tool_call_fingerprint=self._binding_commitment(stored_binding),
             now=self._now(),
         )
-        return record
+        return record, stored_binding
+
+    def _consumed_authorization(
+        self,
+        record: ApprovalRecord,
+        binding: ApprovalBinding,
+    ) -> ConsumedApprovalAuthorization:
+        return self._authorization_issuer.issue(
+            approval_id=record.approval_id,
+            binding=binding,
+        )
 
     def _load_from_storage(self) -> None:
         if self._storage_path is None or not self._storage_path.exists():
@@ -625,13 +926,15 @@ class ApprovalQueue:
                     continue
                 stored_payload = dict(payload)
                 commitment = stored_payload.pop(TOOL_CALL_COMMITMENT_STORAGE_KEY, None)
+                binding = stored_payload.pop(APPROVAL_BINDING_STORAGE_KEY, None)
                 try:
                     approval = self._sanitize_record(ApprovalRecord.model_validate(stored_payload))
-                except ValidationError as exc:
+                except (ValidationError, ApprovalPayloadSanitizationError) as exc:
                     raise ApprovalQueueStorageError(
                         f"Approval queue record {line_number} payload is invalid"
                     ) from exc
                 _set_record_tool_call_commitment(approval, commitment)
+                _set_record_approval_binding(approval, binding)
                 records[approval.approval_id] = approval
         self._records = records
         self._grants = grants
@@ -645,6 +948,9 @@ class ApprovalQueue:
         commitment = _record_tool_call_commitment(sanitized, required=False)
         if commitment is not None:
             payload[TOOL_CALL_COMMITMENT_STORAGE_KEY] = commitment
+        binding = _record_approval_binding(sanitized, required=False)
+        if binding is not None:
+            payload[APPROVAL_BINDING_STORAGE_KEY] = binding.as_payload()
         stored_record = {
             "record_type": "approval_record",
             "payload": payload,
@@ -701,37 +1007,79 @@ class ApprovalQueue:
         )
 
     def _sanitize_record(self, record: ApprovalRecord) -> ApprovalRecord:
+        sanitized_tool_call = self._sanitize_tool_call(record.tool_call)
+        sanitized_reason = self._sanitize_text(record.reason, field="approval reason")
+        sanitized_decision_reason = (
+            self._sanitize_text(
+                record.decision_reason,
+                field="approval decision reason",
+            )
+            if record.decision_reason is not None
+            else None
+        )
         sanitized = record.model_copy(
-            update={"tool_call": self._sanitize_tool_call(record.tool_call)},
+            update={
+                "tool_call": sanitized_tool_call,
+                "reason": sanitized_reason,
+                "decision_reason": sanitized_decision_reason,
+            },
             deep=True,
         )
-        commitment = _record_tool_call_commitment(record, required=False)
-        _set_record_tool_call_commitment(sanitized, commitment)
+        _copy_record_private_metadata(record, sanitized)
         return sanitized
 
     def _sanitize_tool_call(self, tool_call: ToolCallEnvelope) -> ToolCallEnvelope:
-        return tool_call.model_copy(
-            update={
-                "input": self._redact_mapping(tool_call.input),
-                "tool_schema": self._redact_mapping(tool_call.tool_schema),
-                "caller_context": self._redact_mapping(tool_call.caller_context),
+        result = self._redactor.redact(
+            {
+                "input": tool_call.input,
+                "schema": tool_call.tool_schema,
+                "caller_context": tool_call.caller_context,
             }
         )
-
-    def _redact_mapping(self, payload: Mapping[str, object]) -> dict[str, object]:
-        return {key: self._redact_value(key, value) for key, value in payload.items()}
-
-    def _redact_value(self, key: str, value: object) -> object:
-        if SENSITIVE_KEY_RE.search(key):
-            return REDACTED
-        if isinstance(value, Mapping):
-            return {
-                nested_key: self._redact_value(str(nested_key), nested_value)
-                for nested_key, nested_value in value.items()
+        if not result.complete:
+            joined = ", ".join(result.violations) or "unknown traversal failure"
+            raise ApprovalPayloadSanitizationError(
+                f"Approval tool payload could not be redacted completely: {joined}."
+            )
+        if not isinstance(result.value, Mapping):  # pragma: no cover - fixed wrapper
+            raise ApprovalPayloadSanitizationError(
+                "Approval tool payload redaction returned an invalid structure."
+            )
+        redacted_input = result.value.get("input")
+        redacted_schema = result.value.get("schema")
+        redacted_context = result.value.get("caller_context")
+        if (
+            not isinstance(redacted_input, Mapping)
+            or not isinstance(redacted_schema, Mapping)
+            or not isinstance(redacted_context, Mapping)
+        ):
+            raise ApprovalPayloadSanitizationError(
+                "Approval tool payload redaction did not preserve object fields."
+            )
+        sanitized = tool_call.model_copy(
+            update={
+                "input": dict(redacted_input),
+                "tool_schema": dict(redacted_schema),
+                "caller_context": dict(redacted_context),
             }
-        if isinstance(value, list):
-            return [self._redact_value(key, item) for item in value]
-        return value
+        )
+        try:
+            sanitized._trusted_definition = get_trusted_tool_binding(tool_call)
+        except ToolDefinitionError:
+            # Persisted public snapshots intentionally do not serialize private
+            # registry bindings. The separately persisted ApprovalBinding is
+            # the authorization source of truth after reload.
+            sanitized._trusted_definition = None
+        return sanitized
+
+    def _sanitize_text(self, value: str, *, field: str) -> str:
+        result = self._redactor.redact_text(value)
+        if not result.complete or not isinstance(result.value, str):
+            joined = ", ".join(result.violations) or "invalid redaction result"
+            raise ApprovalPayloadSanitizationError(
+                f"{field.capitalize()} could not be redacted completely: {joined}."
+            )
+        return result.value
 
     def _create_execution_grant(
         self,
@@ -739,14 +1087,11 @@ class ApprovalQueue:
     ) -> tuple[ApprovalExecutionGrantState, ApprovalExecutionGrant]:
         grant_value = secrets.token_urlsafe(32)
         expires_at = self._now() + self._execution_grant_ttl
+        self._validated_record_binding(record)
         tool_call_commitment = _record_tool_call_commitment(record, required=True)
         if tool_call_commitment is None:  # pragma: no cover - required=True fails first
             raise ApprovalQueueStorageError(
                 "Approval record is missing its original tool-call commitment."
-            )
-        if self._commitment_key is not None and not tool_call_commitment.startswith("hmac-sha256:"):
-            raise ApprovalQueueStorageError(
-                "A keyed approval queue cannot approve a legacy unkeyed tool-call commitment; request approval again."
             )
         state = ApprovalExecutionGrantState(
             approval_id=record.approval_id,
@@ -764,22 +1109,167 @@ class ApprovalQueue:
         )
         return state, grant
 
-    def _tool_call_commitment(self, tool_call: ToolCallEnvelope) -> str:
-        normalized = tool_call.model_copy(
-            update={"approval_id": None, "approval_execution_token": None},
-            deep=True,
-        )
-        payload = normalized.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_none=True,
-        )
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        message = TOOL_CALL_COMMITMENT_DOMAIN + serialized.encode("utf-8")
+    def _validated_record_binding(self, record: ApprovalRecord) -> ApprovalBinding:
+        """Validate persisted review facts before issuing or consuming authority."""
+
+        tool_call_commitment = _record_tool_call_commitment(record, required=True)
+        if tool_call_commitment is None:  # pragma: no cover - required=True raises first
+            raise ApprovalQueueStorageError(
+                "Approval record is missing its original tool-call commitment."
+            )
+        if self._commitment_key is not None and not tool_call_commitment.startswith(
+            "hmac-sha256:"
+        ):
+            raise ApprovalQueueStorageError(
+                "A keyed approval queue cannot approve a legacy unkeyed tool-call commitment; request approval again."
+            )
+        binding = _record_approval_binding(record, required=True)
+        if binding is None:  # pragma: no cover - required=True raises first
+            raise ApprovalQueueStorageError(
+                "Approval record is missing its trusted authorization binding."
+            )
+        try:
+            current_definition = self._tool_registry.resolve(binding.tool_name)
+        except ToolDefinitionError as exc:
+            raise ApprovalQueueStorageError(
+                "Approval references a tool definition that is no longer trusted."
+            ) from exc
+        if current_definition.binding().definition_digest != binding.definition_digest:
+            raise ApprovalQueueStorageError(
+                "Approval references a stale tool definition; request approval again."
+            )
+        if not current_definition.approval_required:
+            raise ApprovalQueueStorageError(
+                "Approval references a definition that does not require approval."
+            )
+        if (
+            record.approval_id != binding.approval_id
+            or record.trace_id != binding.origin_trace_id
+            or record.tenant_id != binding.tenant_id
+            or record.requested_by != binding.subject_id
+            or record.tool_call.tool_name != binding.tool_name
+            or record.risk_level is not current_definition.risk_level
+            or record.tool_call.risk_level is not current_definition.risk_level
+            or record.tool_call.approval_required is not current_definition.approval_required
+            or record.tool_call.caller_context.get("tenant_id") != binding.tenant_id
+            or record.tool_call.caller_context.get("subject") != binding.subject_id
+            or binding.policy_action != current_definition.policy_action
+            or binding.definition_version != current_definition.version
+        ):
+            raise ApprovalQueueStorageError(
+                "Approval record does not match its trusted authorization binding."
+            )
+        if not hmac.compare_digest(
+            tool_call_commitment,
+            self._binding_commitment(binding),
+        ):
+            raise ApprovalQueueStorageError("Approval authorization binding is inconsistent.")
+        return binding
+
+    def _binding_commitment(self, binding: ApprovalBinding) -> str:
+        serialized = canonical_json_dumps(binding.as_payload())
+        message = APPROVAL_BINDING_COMMITMENT_DOMAIN + serialized.encode("utf-8")
         if self._commitment_key is not None:
             digest = hmac.new(self._commitment_key, message, hashlib.sha256).hexdigest()
             return f"hmac-sha256:{digest}"
         return f"sha256:{hashlib.sha256(message).hexdigest()}"
+
+    def _tool_call_commitment(
+        self,
+        tool_call: ToolCallEnvelope,
+        *,
+        approval_id: str,
+        origin_trace_id: str,
+        tenant_id: str,
+        subject_id: str,
+    ) -> str:
+        """Compatibility helper; new code should commit an explicit binding."""
+
+        canonical_tool_call = self._bind_tool_call(tool_call)
+        self._require_matching_tenant(canonical_tool_call, tenant_id)
+        resolved_subject = self._resolve_subject(canonical_tool_call, asserted_subject=subject_id)
+        return self._binding_commitment(
+            self._approval_binding(
+                approval_id=approval_id,
+                origin_trace_id=origin_trace_id,
+                tenant_id=tenant_id,
+                subject_id=resolved_subject,
+                tool_call=canonical_tool_call,
+            )
+        )
+
+    def _bind_tool_call(self, tool_call: ToolCallEnvelope) -> ToolCallEnvelope:
+        canonical = self._tool_registry.bind(tool_call, phase="input")
+        self._tool_registry.verify_binding(canonical)
+        return canonical
+
+    def _approval_binding(
+        self,
+        *,
+        approval_id: str,
+        origin_trace_id: str,
+        tenant_id: str,
+        subject_id: str,
+        tool_call: ToolCallEnvelope,
+    ) -> ApprovalBinding:
+        trusted = self._tool_registry.verify_binding(tool_call)
+        arguments_hash = "sha256:" + hashlib.sha256(
+            canonical_json_dumps(tool_call.input).encode("utf-8")
+        ).hexdigest()
+        return ApprovalBinding(
+            approval_id=self._validated_identity(approval_id, "identifier"),
+            origin_trace_id=self._validated_identity(origin_trace_id, "origin trace"),
+            tenant_id=tenant_id,
+            subject_id=subject_id,
+            tool_name=trusted.tool_name,
+            policy_action=trusted.policy_action,
+            arguments_hash=arguments_hash,
+            definition_version=trusted.definition_version,
+            definition_digest=trusted.definition_digest,
+        )
+
+    def _resolve_subject(
+        self,
+        tool_call: ToolCallEnvelope,
+        *,
+        asserted_subject: str | None = None,
+    ) -> str:
+        context_subject = self._context_identity(tool_call, "subject")
+        if asserted_subject is not None:
+            return self._validated_identity(asserted_subject, "subject")
+        if context_subject is None:
+            raise ToolDefinitionError("Approval requires a verified subject identity.")
+        return context_subject
+
+    def _require_matching_tenant(
+        self,
+        tool_call: ToolCallEnvelope,
+        tenant_id: str,
+    ) -> None:
+        tenant_id = self._validated_identity(tenant_id, "tenant")
+        context_tenant = self._context_identity(tool_call, "tenant_id")
+        if context_tenant is not None and context_tenant != tenant_id:
+            raise ToolDefinitionError(
+                "Tool caller_context tenant does not match the authenticated tenant."
+            )
+
+    def _context_identity(self, tool_call: ToolCallEnvelope, key: str) -> str | None:
+        value = tool_call.caller_context.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ToolDefinitionError(f"Tool caller_context {key} is invalid.")
+        return self._validated_identity(value, key)
+
+    def _validated_identity(self, value: str, label: str) -> str:
+        if (
+            not value
+            or value != value.strip()
+            or len(value) > 256
+            or any(unicodedata.category(character) in {"Cc", "Cf"} for character in value)
+        ):
+            raise ToolDefinitionError(f"Approval {label} identity is invalid.")
+        return value
 
     def _hash_execution_token(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -809,6 +1299,9 @@ def create_approval_queue(
     sql_provider: SqlConnectionProvider | None = None,
     secret_manager: SecretManager | None = None,
     commitment_key: bytes | None = None,
+    tool_registry: TrustedToolRegistry | None = None,
+    redactor: SensitiveDataRedactor | None = None,
+    authorization_issuer: ApprovalAuthorizationIssuer | None = None,
 ) -> ApprovalQueue:
     backend = settings.approval_queue_backend.strip().lower()
     if settings.approval_execution_grant_ttl_seconds <= 0:
@@ -832,12 +1325,18 @@ def create_approval_queue(
         return ApprovalQueue(
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
             commitment_key=resolved_commitment_key,
+            tool_registry=tool_registry,
+            redactor=redactor,
+            authorization_issuer=authorization_issuer,
         )
     if backend == "jsonl":
         return ApprovalQueue(
             storage_path=settings.approval_queue_path,
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
             commitment_key=resolved_commitment_key,
+            tool_registry=tool_registry,
+            redactor=redactor,
+            authorization_issuer=authorization_issuer,
         )
     if backend in {"postgres", "postgresql"}:
         if sql_provider is None:
@@ -848,6 +1347,9 @@ def create_approval_queue(
             storage=PostgresApprovalQueueStorage(connection=sql_provider),
             execution_grant_ttl_seconds=settings.approval_execution_grant_ttl_seconds,
             commitment_key=resolved_commitment_key,
+            tool_registry=tool_registry,
+            redactor=redactor,
+            authorization_issuer=authorization_issuer,
         )
     raise ApprovalQueueConfigurationError(
         f"Unsupported approval queue backend: {settings.approval_queue_backend}"

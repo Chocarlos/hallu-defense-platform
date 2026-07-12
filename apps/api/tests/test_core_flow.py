@@ -38,9 +38,20 @@ from hallu_defense.services.retrieval import HybridRetriever
 from hallu_defense.services.sandbox import SandboxError, SandboxRunner
 from hallu_defense.services.sandbox_exec import ExecutionResult
 from hallu_defense.services.tool_safety import ToolSafetyService, ToolValidationRateLimiter
+from hallu_defense.services.tool_definitions import (
+    TrustedToolDefinition,
+    TrustedToolRegistry,
+)
 from hallu_defense.services.verifier import ClaimVerifier
 
 TEST_RETRIEVED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+DEFAULT_TOOL_REGISTRY = TrustedToolRegistry.default()
+DELETE_REPOSITORY_INPUT_SCHEMA = DEFAULT_TOOL_REGISTRY.resolve(
+    "delete_repository"
+).input_schema
+FETCH_CONFIG_OUTPUT_SCHEMA = DEFAULT_TOOL_REGISTRY.resolve("fetch_config").output_schema
+CUSTOMER_OUTPUT_SCHEMA = DEFAULT_TOOL_REGISTRY.resolve("lookup_customer").output_schema
+SUMMARY_OUTPUT_SCHEMA = DEFAULT_TOOL_REGISTRY.resolve("summarize_build").output_schema
 
 
 client = TestClient(app)
@@ -679,9 +690,9 @@ def test_metrics_endpoint_exposes_domain_safety_metrics(
         json={
             "tool_name": "delete_repository",
             "input": {"repo": "core"},
-            "schema": {"type": "object"},
+            "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
             "risk_level": "high",
-            "approval_required": False,
+            "approval_required": True,
             "caller_context": {"subject": "agent"},
         },
         headers={"x-tenant-id": tenant_id, "x-trace-id": "tr_domain_metrics_approval"},
@@ -1193,9 +1204,9 @@ def test_tool_input_requires_approval_for_high_risk_tool() -> None:
         ToolCallEnvelope(
             tool_name="delete_repository",
             input={"repo": "core"},
-            schema={"type": "object"},
+            schema=DELETE_REPOSITORY_INPUT_SCHEMA,
             risk_level=RiskLevel.HIGH,
-            approval_required=False,
+            approval_required=True,
             caller_context={},
         )
     )
@@ -1230,9 +1241,9 @@ def test_tool_input_rate_limit_blocks_repeated_approval_requests(monkeypatch: py
     payload = {
         "tool_name": "delete_repository",
         "input": {"repo": "core"},
-        "schema": {"type": "object", "required": ["repo"]},
+        "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
         "risk_level": "high",
-        "approval_required": False,
+        "approval_required": True,
         "caller_context": {"subject": "agent-rate-limit"},
     }
 
@@ -1273,10 +1284,10 @@ def test_high_risk_tool_validation_creates_tenant_scoped_approval() -> None:
         "/tools/validate-input",
         json={
             "tool_name": "delete_repository",
-            "input": {"repo": "core", "api_key": "secret-value"},
-            "schema": {"type": "object", "required": ["repo"]},
+            "input": {"repo": "core"},
+            "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
             "risk_level": "high",
-            "approval_required": False,
+            "approval_required": True,
             "caller_context": {"subject": "agent-7", "token": "sensitive-token"},
         },
         headers={"x-tenant-id": tenant_id, "x-trace-id": trace_id},
@@ -1303,8 +1314,8 @@ def test_high_risk_tool_validation_creates_tenant_scoped_approval() -> None:
     assert approval["status"] == "pending"
     assert approval["tenant_id"] == tenant_id
     assert approval["trace_id"] == trace_id
-    assert approval["requested_by"] == "agent-7"
-    assert approval["tool_call"]["input"]["api_key"] == "[REDACTED]"
+    assert approval["requested_by"] == "anonymous"
+    assert approval["tool_call"]["input"] == {"repo": "core"}
     assert approval["tool_call"]["caller_context"]["token"] == "[REDACTED]"
 
     unauthorized_decision = client.post(
@@ -1372,10 +1383,10 @@ def test_high_risk_tool_validation_creates_tenant_scoped_approval() -> None:
         "/tools/validate-input",
         json={
             "tool_name": "delete_repository",
-            "input": {"repo": "core", "api_key": "secret-value"},
-            "schema": {"type": "object", "required": ["repo"]},
+            "input": {"repo": "core"},
+            "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
             "risk_level": "high",
-            "approval_required": False,
+            "approval_required": True,
             "caller_context": {"subject": "agent-7", "token": "sensitive-token"},
             "approval_id": approval_id,
             "approval_execution_token": execution_grant["execution_token"],
@@ -1392,10 +1403,10 @@ def test_high_risk_tool_validation_creates_tenant_scoped_approval() -> None:
         "/tools/validate-input",
         json={
             "tool_name": "delete_repository",
-            "input": {"repo": "core", "api_key": "secret-value"},
-            "schema": {"type": "object", "required": ["repo"]},
+            "input": {"repo": "core"},
+            "schema": DELETE_REPOSITORY_INPUT_SCHEMA,
             "risk_level": "high",
-            "approval_required": False,
+            "approval_required": True,
             "caller_context": {"subject": "agent-7", "token": "sensitive-token"},
             "approval_id": approval_id,
             "approval_execution_token": execution_grant["execution_token"],
@@ -1427,17 +1438,99 @@ def test_tool_output_redacts_secrets() -> None:
     result = service.validate_output(
         ToolCallEnvelope(
             tool_name="fetch_config",
-            input={"api_key": "secret-value", "safe": "ok"},
-            schema={"type": "object"},
+            input={"value": "api_key=secret-value"},
+            schema=FETCH_CONFIG_OUTPUT_SCHEMA,
             risk_level=RiskLevel.LOW,
             approval_required=False,
             caller_context={},
         )
     )
 
-    assert result.sanitized_output == {"api_key": "[REDACTED]", "safe": "ok"}
+    assert result.sanitized_output == {"value": "[REDACTED]"}
     assert result.allowed is False
     assert result.action == "block"
+
+
+def test_tool_output_api_blocks_schema_invalid_redaction_without_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"contact": {"type": "string", "format": "email"}},
+        "required": ["contact"],
+        "additionalProperties": False,
+    }
+    registry = TrustedToolRegistry(
+        (
+            TrustedToolDefinition(
+                name="schema_sensitive_output",
+                version="1.0.0",
+                policy_action="read",
+                input_schema={"type": "object"},
+                output_schema=schema,
+                risk_level=RiskLevel.LOW,
+                approval_required=False,
+            ),
+        )
+    )
+    service = ToolSafetyService(
+        policy_engine=PolicyEngine(
+            Settings(
+                environment="test",
+                policy_version="schema-redaction-api-v1",
+                auth_required=False,
+                allowed_workspace=Path.cwd(),
+                max_command_seconds=5,
+                max_output_chars=1000,
+            )
+        ),
+        content_scanner=ContentSecurityScanner(),
+        tool_registry=registry,
+    )
+    monkeypatch.setattr(routes, "tool_safety", service)
+
+    response = client.post(
+        "/tools/validate-output",
+        headers={"x-tenant-id": "schema-redaction-api"},
+        json={
+            "tool_name": "schema_sensitive_output",
+            "input": {"contact": "person@example.com"},
+            "schema": schema,
+            "risk_level": "low",
+            "approval_required": False,
+            "caller_context": {},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["allowed"] is False
+    assert payload["action"] == "block"
+    assert payload["sanitized_output"] is None
+    assert "person@example.com" not in response.text
+
+
+def test_tool_output_api_rejects_unpaired_surrogate_without_response_failure() -> None:
+    schema = DEFAULT_TOOL_REGISTRY.resolve("read_document").output_schema
+    request_body = (
+        '{"tool_name":"read_document","input":{"content":"\\ud800"},'
+        f'"schema":{json.dumps(schema)},"risk_level":"low",'
+        '"approval_required":false,"caller_context":{}}'
+    )
+
+    response = client.post(
+        "/tools/validate-output",
+        headers={
+            "content-type": "application/json",
+            "x-tenant-id": "surrogate-output-api",
+        },
+        content=request_body.encode("ascii"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["allowed"] is False
+    assert response.json()["sanitized_output"] is None
+    assert "\\ud800" not in response.text
 
 
 def test_tool_output_redacts_common_pii_values() -> None:
@@ -1447,14 +1540,11 @@ def test_tool_output_redacts_common_pii_values() -> None:
         ToolCallEnvelope(
             tool_name="lookup_customer",
             input={
-                "summary": "Contact ada@example.invalid, SSN 123-45-6789, phone (415) 555-2671.",
-                "profile": {
-                    "phone": "4155552671",
-                    "owner_email": "owner@example.invalid",
-                    "aliases": ["secondary@example.invalid"],
-                },
+                "customer_id": "customer-7",
+                "email": "owner@example.invalid",
+                "notes": "Contact ada@example.invalid, SSN 123-45-6789, phone (415) 555-2671.",
             },
-            schema={"type": "object"},
+            schema=CUSTOMER_OUTPUT_SCHEMA,
             risk_level=RiskLevel.LOW,
             approval_required=False,
             caller_context={},
@@ -1463,12 +1553,9 @@ def test_tool_output_redacts_common_pii_values() -> None:
 
     assert result.action == "rewrite"
     assert result.sanitized_output == {
-        "summary": "Contact [REDACTED_EMAIL], SSN [REDACTED_SSN], phone [REDACTED_PHONE].",
-        "profile": {
-            "phone": "[REDACTED_PHONE]",
-            "owner_email": "[REDACTED_EMAIL]",
-            "aliases": ["[REDACTED_EMAIL]"],
-        },
+        "customer_id": "customer-7",
+        "email": "[REDACTED_EMAIL]",
+        "notes": "Contact [REDACTED_EMAIL], SSN [REDACTED_SSN], phone [REDACTED_PHONE].",
     }
 
 
@@ -1479,7 +1566,7 @@ def test_tool_output_keeps_unlabeled_plain_numbers() -> None:
         ToolCallEnvelope(
             tool_name="summarize_build",
             input={"summary": "Build 1234567890 completed on 2026-07-08."},
-            schema={"type": "object"},
+            schema=SUMMARY_OUTPUT_SCHEMA,
             risk_level=RiskLevel.LOW,
             approval_required=False,
             caller_context={},
@@ -1508,7 +1595,7 @@ def test_policy_evaluate_includes_trace_and_allows_low_risk_same_tenant() -> Non
     assert payload["trace_id"] == "tr_policy_allow"
     assert payload["allowed"] is True
     assert payload["action"] == "allow"
-    assert payload["matched_rules"] == ["default_allow_low_medium_risk"]
+    assert payload["matched_rules"] == ["default_allow_registered_action"]
 
 
 def test_policy_denies_cross_tenant_access() -> None:
@@ -1735,11 +1822,10 @@ def test_opa_policy_evaluator_maps_opa_eval_response(tmp_path: Path) -> None:
     assert response.policy_version == "opa-access-risk-approval-v1"
     assert response.matched_rules == ["cross_tenant_access_denied"]
     assert evaluator.input_payload is not None
-    assert evaluator.input_payload["tenant_id"] == "tenant-a"
-    assert evaluator.input_payload["resource"] == {
-        "id": "doc:alpha",
-        "tenant_id": "tenant-b",
-    }
+    assert set(evaluator.input_payload) == {"verified"}
+    assert evaluator.input_payload["verified"]["identity"]["tenant_id"] == "tenant-a"
+    assert evaluator.input_payload["verified"]["resource"] == {"tenant_id": "tenant-b"}
+    assert "attributes" not in evaluator.input_payload
 
 
 def test_policy_engine_blocks_when_opa_evaluation_fails(tmp_path: Path) -> None:

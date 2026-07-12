@@ -75,11 +75,69 @@ describe("agent tool adapters", () => {
     expect(envelope.approval_execution_token).toBe("fixture-execution-grant-token");
   });
 
+  it("keeps high-risk definition assertions canonical across input and output", async () => {
+    const approvalAssertions: boolean[] = [];
+    const adapter = createAgentToolAdapter({
+      client: {
+        validateToolInput: async (envelope) => {
+          approvalAssertions.push(envelope.approval_required);
+          expect(envelope.risk_level).toBe("high");
+          return {
+            allowed: true,
+            action: "allow",
+            reason: "bound grant consumed",
+            approval_required: false
+          };
+        },
+        validateToolOutput: async (envelope) => {
+          approvalAssertions.push(envelope.approval_required);
+          expect(envelope.risk_level).toBe("high");
+          return {
+            allowed: true,
+            action: "allow",
+            reason: "safe output; no second approval",
+            approval_required: false,
+            sanitized_output: { status: "deleted" }
+          };
+        }
+      }
+    });
+
+    const result = await adapter.execute({
+      tool: {
+        name: "delete_repository",
+        inputSchema: {
+          type: "object",
+          properties: { repo: { type: "string" } },
+          required: ["repo"],
+          additionalProperties: false
+        },
+        outputSchema: {
+          type: "object",
+          properties: { status: { type: "string" } },
+          required: ["status"],
+          additionalProperties: false
+        },
+        riskLevel: "high",
+        approvalRequired: true
+      },
+      input: { repo: "core" },
+      approvalGrant: {
+        approvalId: "apr_bound",
+        executionToken: "fixture-execution-grant-token"
+      },
+      execute: async () => ({ status: "deleted" })
+    });
+
+    expect(approvalAssertions).toEqual([true, true]);
+    expect(result.output).toEqual({ status: "deleted" });
+  });
+
   it("returns only sanitized output and safe verdict metadata", async () => {
     const calls: string[] = [];
     const rawSecrets = {
-      apiKey: "raw-api-key-value",
-      password: "raw-password-value",
+      apiKey: "fixture-raw-api-key-value",
+      password: "fixture-raw-password-value",
       bearer: "Bearer raw-bearer-token",
       email: "person@example.test",
       phone: "+1 415-555-0199",

@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hallu-defense.local/schemas/policy-evaluation-response.schema.json",
   "title": "PolicyEvaluationResponse",
+  "description": "An informational policy decision for the supplied verified context; this response is not an execution capability or approval grant.",
   "type": "object",
   "required": ["trace_id", "allowed", "action", "policy_version", "matched_rules", "explanation"],
   "properties": {

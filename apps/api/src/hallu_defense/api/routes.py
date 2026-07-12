@@ -213,13 +213,7 @@ def _canonical_tool_call(
         caller_context.get("tenant_id"),
         context,
     )
-    if context.principal.is_authenticated:
-        caller_context["subject"] = context.principal.subject_id
-    elif (
-        not isinstance(caller_context.get("subject"), str)
-        or not str(caller_context["subject"]).strip()
-    ):
-        caller_context["subject"] = "anonymous"
+    caller_context["subject"] = context.principal.subject_id
     return request.model_copy(update={"caller_context": caller_context}, deep=True)
 
 
@@ -697,9 +691,10 @@ def validate_tool_input(
         tool_request.approval_id is not None or tool_request.approval_execution_token is not None
     ):
         try:
-            approval = approval_queue.consume_execution_grant(
+            authorization = approval_queue.consume_execution_grant(
                 context.tenant_id,
                 tool_request,
+                subject_id=context.principal.subject_id,
             )
         except ApprovalNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -709,26 +704,22 @@ def validate_tool_input(
             tool_request,
             trace_id=context.trace_id,
             tenant_id=context.tenant_id,
-            approval_granted=True,
+            approval_authorization=authorization,
         )
         if not authorized.allowed:
             return authorized
-        return authorized.model_copy(update={"approval_id": approval.approval_id})
+        return authorized.model_copy(update={"approval_id": authorization.approval_id})
 
     if result.approval_required:
-        approval = approval_queue.request_approval(
+        requested_approval = approval_queue.request_approval(
             tenant_id=context.tenant_id,
             trace_id=context.trace_id,
             tool_call=tool_request,
             reason=result.reason,
-            requested_by=(
-                context.principal.subject_id
-                if context.principal.is_authenticated
-                else str(tool_request.caller_context.get("subject", "system"))
-            ),
+            requested_by=context.principal.subject_id,
         )
         metrics_collector.record_approval_request(risk_level=tool_request.risk_level.value)
-        return result.model_copy(update={"approval_id": approval.approval_id})
+        return result.model_copy(update={"approval_id": requested_approval.approval_id})
     return result
 
 
@@ -765,8 +756,13 @@ def evaluate_policy(
             "policy.risk_level": request.risk_level.value,
         },
     ) as span:
+        verified_subject = context.principal.subject_id
+        canonical_request = request.model_copy(update={"subject": verified_subject})
         response = policy_engine.evaluate(
-            request, trace_id=context.trace_id, tenant_id=context.tenant_id
+            canonical_request,
+            trace_id=context.trace_id,
+            tenant_id=context.tenant_id,
+            subject_id=verified_subject,
         )
         span.set_attribute("policy.allowed", response.allowed)
         span.set_attribute("policy.action", response.action.value)

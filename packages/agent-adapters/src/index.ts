@@ -299,7 +299,9 @@ export async function executeAgentTool<
         input: rawOutput,
         schema: request.tool.outputSchema,
         riskLevel,
-        approvalRequired: false,
+        // Output validation keeps the canonical definition assertion. The API
+        // uses the output phase to avoid requesting a second approval.
+        approvalRequired: request.tool.approvalRequired ?? false,
         callerContext
       })
     );

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,10 +28,30 @@ from hallu_defense.outbound_http import (
     OutboundHttpPolicyError,
     outbound_http_policy_from_settings,
 )
+from hallu_defense.services.content_security import (
+    REDACTED_UNSAFE_STRUCTURE,
+    RedactionLimits,
+    SensitiveDataRedactor,
+)
 
 MAX_EXCEPTION_TYPE_LENGTH = 128
 SAFE_ERROR_STATUS_DESCRIPTION = "internal error"
 _UNSAFE_EXCEPTION_TYPE_CHARACTER = re.compile(r"[^A-Za-z0-9_.-]")
+_UNSAFE_TELEMETRY_IDENTIFIER_CHARACTER = re.compile(r"[^A-Za-z0-9_.\[\]-]")
+_UNSAFE_TELEMETRY_NAME_CHARACTER = re.compile(r"[^A-Za-z0-9_. \[\]-]")
+MAX_TELEMETRY_IDENTIFIER_LENGTH = 128
+MAX_TELEMETRY_STRING_LENGTH = 4_096
+_UNSUPPORTED_ATTRIBUTE = "[REDACTED_UNSUPPORTED_ATTRIBUTE]"
+_TELEMETRY_REDACTOR = SensitiveDataRedactor(
+    RedactionLimits(
+        max_depth=8,
+        max_nodes=256,
+        max_items_per_container=64,
+        max_string_chars=MAX_TELEMETRY_STRING_LENGTH,
+        max_total_string_chars=16_384,
+        max_number_chars=20,
+    )
+)
 
 
 class SpanHandle(Protocol):
@@ -58,6 +79,49 @@ class NoopSpanHandle:
         attributes: Mapping[str, AttributeValue] | None = None,
     ) -> None:
         return None
+
+
+@dataclass(frozen=True)
+class SanitizedSpanHandle:
+    """Span facade that prevents arbitrary attributes and events from leaking data."""
+
+    span: SpanHandle
+    redactor: SensitiveDataRedactor = _TELEMETRY_REDACTOR
+
+    def set_attribute(self, key: str, value: AttributeValue) -> None:
+        safe_key = _sanitize_telemetry_identifier(key, fallback="telemetry.redacted_attribute")
+        safe_value = _sanitize_attribute_value(key, value, redactor=self.redactor)
+        self.span.set_attribute(safe_key, safe_value)
+
+    def set_attributes(self, attributes: Mapping[str, AttributeValue]) -> None:
+        for key, value in _sanitize_attribute_mapping(attributes, redactor=self.redactor).items():
+            self.span.set_attribute(key, value)
+
+    def set_status(self, status: Status) -> None:
+        description = status.description
+        if not description:
+            self.span.set_status(status)
+            return
+        result = self.redactor.redact_text(description)
+        safe_description = (
+            result.value
+            if result.complete and isinstance(result.value, str)
+            else SAFE_ERROR_STATUS_DESCRIPTION
+        )
+        self.span.set_status(Status(status.status_code, safe_description))
+
+    def add_event(
+        self,
+        name: str,
+        attributes: Mapping[str, AttributeValue] | None = None,
+    ) -> None:
+        safe_name = _sanitize_telemetry_name(name, fallback="redacted_event")
+        safe_attributes = (
+            _sanitize_attribute_mapping(attributes, redactor=self.redactor)
+            if attributes is not None
+            else None
+        )
+        self.span.add_event(safe_name, attributes=safe_attributes)
 
 
 @dataclass(frozen=True)
@@ -103,13 +167,14 @@ class TelemetryService:
             yield NoopSpanHandle()
             return
         with self.tracer.start_as_current_span(
-            f"HTTP {method}",
+            _sanitize_telemetry_name(f"HTTP {method}", fallback="HTTP request"),
             record_exception=False,
             set_status_on_exception=False,
         ) as span:
-            span.set_attribute("app.trace_id", trace_id)
-            span.set_attribute("http.request.method", method)
-            yield span
+            safe_span = SanitizedSpanHandle(span)
+            safe_span.set_attribute("app.trace_id", trace_id)
+            safe_span.set_attribute("http.request.method", method)
+            yield safe_span
 
     @contextmanager
     def span(
@@ -122,17 +187,17 @@ class TelemetryService:
             yield NoopSpanHandle()
             return
         with self.tracer.start_as_current_span(
-            name,
+            _sanitize_telemetry_name(name, fallback="redacted_span"),
             record_exception=False,
             set_status_on_exception=False,
         ) as span:
+            safe_span = SanitizedSpanHandle(span)
             if attributes is not None:
-                for key, value in attributes.items():
-                    span.set_attribute(key, value)
+                safe_span.set_attributes(attributes)
             try:
-                yield span
+                yield safe_span
             except Exception as exc:
-                self.record_exception(span, exc)
+                self.record_exception(safe_span, exc)
                 raise
 
     def finish_request_span(
@@ -194,6 +259,68 @@ def _span_exporter(settings: Settings) -> SpanExporter:
 def _sanitized_exception_type(exception: BaseException) -> str:
     type_name = _UNSAFE_EXCEPTION_TYPE_CHARACTER.sub("_", type(exception).__name__)
     return (type_name or "Exception")[:MAX_EXCEPTION_TYPE_LENGTH]
+
+
+def _sanitize_telemetry_identifier(value: str, *, fallback: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    result = _TELEMETRY_REDACTOR.redact_text(normalized)
+    if not result.complete or not isinstance(result.value, str):
+        return fallback
+    safe = _UNSAFE_TELEMETRY_IDENTIFIER_CHARACTER.sub("_", result.value).strip("_")
+    return (safe or fallback)[:MAX_TELEMETRY_IDENTIFIER_LENGTH]
+
+
+def _sanitize_telemetry_name(value: str, *, fallback: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    result = _TELEMETRY_REDACTOR.redact_text(normalized)
+    if not result.complete or not isinstance(result.value, str):
+        return fallback
+    safe = _UNSAFE_TELEMETRY_NAME_CHARACTER.sub("_", result.value).strip("_ ")
+    return (safe or fallback)[:MAX_TELEMETRY_IDENTIFIER_LENGTH]
+
+
+def _sanitize_attribute_value(
+    key: str,
+    value: object,
+    *,
+    redactor: SensitiveDataRedactor,
+) -> AttributeValue:
+    result = redactor.redact({key: value})
+    if not result.complete or not isinstance(result.value, dict):
+        return REDACTED_UNSAFE_STRUCTURE
+    sanitized = result.value.get(key, REDACTED_UNSAFE_STRUCTURE)
+    return _coerce_attribute_value(sanitized)
+
+
+def _sanitize_attribute_mapping(
+    attributes: Mapping[str, AttributeValue],
+    *,
+    redactor: SensitiveDataRedactor,
+) -> dict[str, AttributeValue]:
+    result = redactor.redact(attributes)
+    if not result.complete or not isinstance(result.value, dict):
+        return {"telemetry.redaction": REDACTED_UNSAFE_STRUCTURE}
+    return {
+        _sanitize_telemetry_identifier(
+            key, fallback="telemetry.redacted_attribute"
+        ): _coerce_attribute_value(value)
+        for key, value in result.value.items()
+    }
+
+
+def _coerce_attribute_value(sanitized: object) -> AttributeValue:
+    if isinstance(sanitized, str | bool | int | float):
+        return sanitized
+    if isinstance(sanitized, list):
+        if not sanitized:
+            return ()
+        element_type = type(sanitized[0])
+        if element_type not in {str, bool, int, float} or any(
+            type(item) is not element_type for item in sanitized
+        ):
+            return _UNSUPPORTED_ATTRIBUTE
+        return tuple(sanitized)
+    return _UNSUPPORTED_ATTRIBUTE
 
 
 def _otlp_no_redirect_session() -> requests.Session:

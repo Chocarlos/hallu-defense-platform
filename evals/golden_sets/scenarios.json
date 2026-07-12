@@ -477,7 +477,12 @@
     "request": {
       "tool_name": "lookup_policy",
       "input": {},
-      "schema": {"type": "object", "required": ["query"]},
+      "schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "minLength": 1}},
+        "required": ["query"],
+        "additionalProperties": false
+      },
       "risk_level": "low",
       "approval_required": false,
       "caller_context": {"subject": "agent"}
@@ -495,9 +500,14 @@
     "request": {
       "tool_name": "delete_repository",
       "input": {"repo": "sandbox"},
-      "schema": {"type": "object", "required": ["repo"]},
+      "schema": {
+        "type": "object",
+        "properties": {"repo": {"type": "string", "minLength": 1}},
+        "required": ["repo"],
+        "additionalProperties": false
+      },
       "risk_level": "high",
-      "approval_required": false,
+      "approval_required": true,
       "caller_context": {"subject": "agent"}
     },
     "expect": {
@@ -514,9 +524,22 @@
     "category": "tools",
     "request": {
       "tool_name": "customer_lookup",
-      "input": {"api_key": "redact", "email": "analyst@example.com"},
-      "schema": {"type": "object"},
-      "risk_level": "medium",
+      "input": {
+        "customer_id": "customer-7",
+        "email": "analyst@example.com",
+        "notes": "api_key=redact-value"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {"type": "string"},
+          "email": {"type": "string"},
+          "notes": {"type": "string"}
+        },
+        "required": ["customer_id"],
+        "additionalProperties": false
+      },
+      "risk_level": "low",
       "approval_required": false,
       "caller_context": {"subject": "agent"}
     },
@@ -525,8 +548,9 @@
       "allowed": false,
       "action": "block",
       "sanitized_output": {
-        "api_key": "[REDACTED]",
-        "email": "[REDACTED_EMAIL]"
+        "customer_id": "customer-7",
+        "email": "[REDACTED_EMAIL]",
+        "notes": "[REDACTED]"
       }
     }
   },

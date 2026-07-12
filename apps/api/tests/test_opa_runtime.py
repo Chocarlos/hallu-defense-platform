@@ -24,7 +24,7 @@ from hallu_defense.services.opa import (
     OpaPolicyEvaluationError,
     OpaPolicyEvaluator,
 )
-from hallu_defense.services.policy import PolicyEngine
+from hallu_defense.services.policy import PolicyEngine, VerifiedPolicyContext
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -114,6 +114,43 @@ def test_missing_opa_executable_fails_closed_without_exposing_path(tmp_path: Pat
     assert response.action is VerdictAction.BLOCK
     assert response.matched_rules == ["opa_policy_evaluation_failed"]
     assert response.explanation == "OPA policy evaluation failed closed."
+
+
+def test_opa_rejects_cross_subject_verified_context_before_execution(
+    tmp_path: Path,
+) -> None:
+    evaluator = StaticProcessEvaluator(
+        _settings(tmp_path),
+        completed=subprocess.CompletedProcess(
+            args=["opa"],
+            returncode=0,
+            stdout=_decision_stdout(),
+            stderr="",
+        ),
+    )
+    context = VerifiedPolicyContext(
+        tenant_id="tenant-a",
+        subject_id="agent-b",
+        action="read",
+        resource="doc-a",
+        resource_tenant_id="tenant-a",
+        risk_level=RiskLevel.LOW,
+        definition_known=True,
+        definition_version="read.v1",
+        approval_granted=True,
+        approval_binding_valid=True,
+        approval_id="apr-agent-b",
+    )
+
+    with pytest.raises(OpaPolicyEvaluationError, match="did not match"):
+        evaluator.evaluate(
+            _request(subject="agent-a"),
+            trace_id="tr_cross_subject",
+            tenant_id="tenant-a",
+            verified_context=context,
+        )
+
+    assert evaluator.input_text is None
 
 
 def test_nonzero_exit_and_malicious_stderr_are_redacted(tmp_path: Path) -> None:
@@ -247,7 +284,12 @@ def test_opa_uses_stdin_private_bounded_outputs_and_minimal_environment(
     assert "--stdin-input" in args
     assert "--input" not in args
     input_payload = json.loads(calls[0]["input"])
-    assert input_payload["attributes"]["private_input"] == "sensitive-input-value"
+    assert set(input_payload) == {"verified"}
+    assert input_payload["verified"]["identity"] == {
+        "subject_id": "agent-a",
+        "tenant_id": "tenant-a",
+    }
+    assert "sensitive-input-value" not in calls[0]["input"].decode("utf-8")
     assert "OPA_PARENT_MARKER" not in calls[0]["env"]
 
 
@@ -275,11 +317,7 @@ def test_opa_timeout_and_input_limit_fail_without_causal_payload(tmp_path: Path)
         ),
     )
     with pytest.raises(OpaPolicyEvaluationError, match="input limit"):
-        oversized.evaluate(
-            _request(attributes={"payload": "x" * (OPA_MAX_INPUT_BYTES + 1)}),
-            trace_id="tr_opa_large_input",
-            tenant_id="tenant-a",
-        )
+        oversized._encode_input({"payload": "x" * (OPA_MAX_INPUT_BYTES + 1)})
     assert oversized.input_text is None
 
 
