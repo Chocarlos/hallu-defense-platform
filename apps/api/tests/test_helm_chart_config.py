@@ -152,7 +152,7 @@ def test_values_schema_rejects_unknown_top_level_and_nested_keys() -> None:
     values = _merged_kind_values()
     values["workre"] = {"enabled": True}
     values["worker"]["metricPort"] = 9090
-    values["sandbox"]["cleanupGraceSecond"] = 10
+    values["sandbox"]["cleanupGraceSecond"] = 20
 
     locations = {
         "/" + "/".join(str(part) for part in error.absolute_path)
@@ -177,9 +177,9 @@ def test_values_schema_rejects_unknown_top_level_and_nested_keys() -> None:
         (("migrations", "expectedCount"), 13),
         (("sandbox", "setupGraceSeconds"), 4),
         (("sandbox", "setupGraceSeconds"), 61),
-        (("sandbox", "cleanupGraceSeconds"), 0),
-        (("sandbox", "cleanupGraceSeconds"), 121),
-        (("sandbox", "cleanupGraceSeconds"), "10"),
+        (("sandbox", "cleanupGraceSeconds"), 14),
+        (("sandbox", "cleanupGraceSeconds"), 31),
+        (("sandbox", "cleanupGraceSeconds"), "20"),
         (("provider", "apiKeySecretName"), "a/../b"),
         (("vault", "mount"), "secret/../root"),
         (("rateLimit", "redis", "urlSecretName"), "a//b"),
@@ -211,6 +211,47 @@ def test_values_schema_rejects_invalid_types_ports_and_ranges(
     errors = list(Draft7Validator(_values_schema()).iter_errors(values))
     assert errors
     assert any(tuple(error.absolute_path) == path for error in errors)
+
+
+@pytest.mark.parametrize("cleanup_grace_seconds", [15, 20, 30])
+def test_values_schema_accepts_sandbox_cleanup_grace_boundaries(
+    cleanup_grace_seconds: int,
+) -> None:
+    values = _merged_kind_values()
+    values["sandbox"]["cleanupGraceSeconds"] = cleanup_grace_seconds
+
+    errors = list(Draft7Validator(_values_schema()).iter_errors(values))
+    assert not errors
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value"),
+    [("minimum", 16), ("maximum", 29), ("const", 20)],
+)
+def test_static_checker_rejects_cleanup_grace_schema_contract_drift(
+    keyword: str,
+    value: int,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    schema = _values_schema()
+    cleanup_schema = schema["properties"]["sandbox"]["properties"][
+        "cleanupGraceSeconds"
+    ]
+    cleanup_schema[keyword] = value
+    mutated_schema_path = tmp_path / "values.schema.json"
+    mutated_schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.setattr(
+        check_helm_chart,
+        "VALUES_SCHEMA_PATH",
+        mutated_schema_path,
+    )
+
+    with pytest.raises(
+        HelmChartConfigError,
+        match="must accept exactly the integer range 15..30",
+    ):
+        validate_helm_chart(**_current_inputs())
 
 
 def test_values_schema_pins_exact_migration_checksum_inventory() -> None:
@@ -246,12 +287,12 @@ def test_values_schema_pins_exact_migration_checksum_inventory() -> None:
         ),
         (
             "hallu-defense",
-            ("--set", "sandbox.cleanupGraceSeconds=0"),
+            ("--set", "sandbox.cleanupGraceSeconds=14"),
             "cleanupgraceseconds",
         ),
         (
             "hallu-defense",
-            ("--set", "sandbox.cleanupGraceSeconds=121"),
+            ("--set", "sandbox.cleanupGraceSeconds=31"),
             "cleanupgraceseconds",
         ),
         (
@@ -261,7 +302,7 @@ def test_values_schema_pins_exact_migration_checksum_inventory() -> None:
         ),
         (
             "hallu-defense",
-            ("--set", "sandbox.cleanupGraceSecond=10"),
+            ("--set", "sandbox.cleanupGraceSecond=20"),
             "sandbox",
         ),
         (

@@ -12,7 +12,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -1598,17 +1598,146 @@ def _verify_sandbox_with_executor(executor: RecordingExecutor) -> dict[str, obje
     )
 
 
+def test_sandbox_request_timeout_budgets_are_derived_not_magic() -> None:
+    source = Path(smoke.__file__).read_text(encoding="utf-8")
+
+    assert "timeout=45" not in source
+    assert "timeout_seconds=2.0" not in source
+    assert "min(2.0, remaining)" not in source
+    assert "timeout=$request_timeout_seconds" in source
+    assert smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS == 5
+    assert smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS == (
+        smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS
+        * smoke.SANDBOX_KUBE_API_POLL_REQUESTS
+    )
+    assert smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS == (
+        smoke.SANDBOX_SETUP_BUDGET_SECONDS
+        + smoke.SANDBOX_COMMAND_BUDGET_SECONDS
+        + smoke.SANDBOX_CLEANUP_GRACE_SECONDS
+        + smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
+    )
+    assert smoke.SANDBOX_REQUEST_EXEC_TIMEOUT_SECONDS == (
+        smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS
+        + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+    )
+    assert smoke.SANDBOX_CLEANUP_GRACE_MIN_SECONDS == 15
+    assert smoke.SANDBOX_CLEANUP_GRACE_MAX_SECONDS == 30
+    assert smoke.SANDBOX_CLEANUP_GRACE_SECONDS == 20
+    assert smoke.SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS == (
+        smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS
+    )
+    assert smoke.SANDBOX_CLEANUP_OUTER_SAFETY_MARGIN_SECONDS > 0
+
+
+@pytest.mark.parametrize("command_count", [1, 2])
+@pytest.mark.parametrize("cleanup_grace_seconds", [15, 20, 30])
+def test_sandbox_cleanup_exec_timeout_never_precedes_supported_cleanup_path(
+    command_count: int,
+    cleanup_grace_seconds: int,
+) -> None:
+    supported_path_seconds = (
+        smoke.SANDBOX_SETUP_BUDGET_SECONDS
+        + smoke.SANDBOX_COMMAND_BUDGET_SECONDS * command_count
+        + cleanup_grace_seconds
+    )
+    request_timeout_seconds = (
+        supported_path_seconds + smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
+    )
+    request_join_timeout_seconds = (
+        request_timeout_seconds + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+    )
+    inner_budget_seconds = (
+        smoke.SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS
+        + smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
+        + request_join_timeout_seconds
+        + cleanup_grace_seconds
+    )
+
+    exec_timeout_seconds = smoke._sandbox_cleanup_exec_timeout_seconds(
+        command_count,
+        cleanup_grace_seconds
+    )
+
+    assert smoke._sandbox_supported_request_path_seconds(
+        command_count,
+        cleanup_grace_seconds,
+    ) == supported_path_seconds
+    assert smoke._sandbox_request_timeout_seconds(
+        command_count,
+        cleanup_grace_seconds,
+    ) == request_timeout_seconds
+    assert exec_timeout_seconds > inner_budget_seconds
+    assert exec_timeout_seconds == (
+        inner_budget_seconds + smoke.SANDBOX_CLEANUP_OUTER_SAFETY_MARGIN_SECONDS
+    )
+    script = smoke._sandbox_cleanup_uid_probe_script(
+        command_count,
+        cleanup_grace_seconds,
+    )
+    assert f"urlopen(request, timeout={request_timeout_seconds})" in script
+    assert (
+        "request_thread.join(timeout="
+        f"{request_join_timeout_seconds})"
+        in script
+    )
+    assert (
+        "timeout_seconds="
+        f"{smoke.SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS}"
+        in script
+    )
+    assert "capture_remaining = capture_deadline - time.monotonic()" in script
+    assert "timeout_seconds=min(\n                5,\n                capture_remaining" in script
+
+
+@pytest.mark.parametrize(
+    "commands",
+    [
+        ["python probe.py"],
+        ["python probe.py", "python -c \"print('sandbox-second')\""],
+    ],
+    ids=["one-command", "two-commands"],
+)
+def test_repo_request_timeout_tracks_payload_command_count(
+    commands: list[str],
+) -> None:
+    executor = RecordingExecutor()
+
+    smoke._repo_checks_request(
+        executor,
+        kubectl=["kubectl"],
+        bearer_token="test-bearer-token",
+        payload={
+            "repo_ref": "smoke-repo",
+            "commands": commands,
+            "network_policy": "deny",
+        },
+        expected_status=200,
+    )
+
+    command_count = len(commands)
+    request_timeout_seconds = smoke._sandbox_request_timeout_seconds(
+        command_count,
+        smoke.SANDBOX_CLEANUP_GRACE_SECONDS,
+    )
+    assert executor.command_timeouts[-1] == smoke._sandbox_request_exec_timeout_seconds(
+        command_count,
+        smoke.SANDBOX_CLEANUP_GRACE_SECONDS,
+    )
+    assert f"urlopen(request, timeout={request_timeout_seconds})" in executor.commands[-1][-1]
+
+
 def test_sandbox_cleanup_probe_is_foreground_uid_scoped_and_bounded() -> None:
     script = smoke.SANDBOX_CLEANUP_UID_PROBE_SCRIPT
 
     ast.parse(script)
-    assert "request_thread.join()" in script
+    assert "request_thread.join(timeout=" in script
+    assert "request_thread.is_alive()" in script
     assert 'owner.get("uid") == target_job_uid' in script
     assert "target_job is None and not owned_pods" in script
     assert "sandbox request completed before Job UID capture" in script
     assert "sandbox Job name was rebound to a different UID" in script
     assert '"target_owned_pods": 0' in script
-    assert "cleanup_grace_seconds <= 120" in script
+    assert "cleanup_grace_seconds <= 30" in script
 
 
 def _execute_embedded_cleanup_probe(
@@ -1621,10 +1750,45 @@ def _execute_embedded_cleanup_probe(
 ) -> tuple[dict[str, object], dict[str, int]]:
     target_job_name = "hallu-sandbox-timeout"
     target_job_uid = "11111111-1111-4111-8111-111111111111"
-    release_request = threading.Event()
     state = {"job_gets": 0, "pod_lists": 0}
     pod_cleanup_sequence = list(cleanup_pod_uids)
     clock = {"now": 0.0}
+    urlopen_timeouts: list[tuple[str, float]] = []
+    join_timeouts: list[float | None] = []
+    fake_threads: list[FakeThread] = []
+
+    class FakeEvent:
+        def __init__(self) -> None:
+            self._set = False
+
+        def set(self) -> None:
+            self._set = True
+
+        def is_set(self) -> bool:
+            return self._set
+
+    class FakeThread:
+        def __init__(self, *, target: Callable[[], None], name: str) -> None:
+            self._target = target
+            self.name = name
+            self._started = False
+            self._finished = False
+            fake_threads.append(self)
+
+        def start(self) -> None:
+            self._started = True
+
+        def run_pending(self) -> None:
+            if self._started and not self._finished:
+                self._target()
+                self._finished = True
+
+        def join(self, timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+            self.run_pending()
+
+        def is_alive(self) -> bool:
+            return self._started and not self._finished
 
     class FakeResponse(io.BytesIO):
         def __init__(self, payload: object, *, status: int = 200) -> None:
@@ -1662,10 +1826,10 @@ def _execute_embedded_cleanup_probe(
         timeout: float,
         context: object | None = None,
     ) -> FakeResponse:
-        del timeout, context
+        del context
         url = request.full_url
+        urlopen_timeouts.append((url, timeout))
         if url == "http://127.0.0.1:8000/repo/checks/run":
-            assert release_request.wait(timeout=2)
             if request_error:
                 raise OSError("injected request failure")
             return FakeResponse(
@@ -1681,7 +1845,8 @@ def _execute_embedded_cleanup_probe(
             if state["pod_lists"] == 1:
                 return FakeResponse({"items": []})
             if state["pod_lists"] == 2:
-                release_request.set()
+                assert len(fake_threads) == 1
+                fake_threads[0].run_pending()
                 items = [pod_owned_by(target_job_uid)] if capture_target else []
                 return FakeResponse({"items": items})
             owner_uid = (
@@ -1723,7 +1888,6 @@ def _execute_embedded_cleanup_probe(
 
     def fake_sleep(seconds: float) -> None:
         clock["now"] += seconds
-        threading.Event().wait(0.001)
 
     request_input = {
         "token": "signed-test-jwt",
@@ -1733,7 +1897,7 @@ def _execute_embedded_cleanup_probe(
             "network_policy": "deny",
         },
         "sandbox_namespace": smoke.DEFAULT_SANDBOX_NAMESPACE,
-        "cleanup_grace_seconds": 1,
+        "cleanup_grace_seconds": 20,
     }
     stdout = io.StringIO()
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
@@ -1741,6 +1905,8 @@ def _execute_embedded_cleanup_probe(
     monkeypatch.setattr("builtins.open", fake_open)
     monkeypatch.setattr(ssl, "create_default_context", lambda **kwargs: object())
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(threading, "Event", FakeEvent)
+    monkeypatch.setattr(threading, "Thread", FakeThread)
     monkeypatch.setattr(smoke.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(smoke.time, "sleep", fake_sleep)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request_input)))
@@ -1749,14 +1915,31 @@ def _execute_embedded_cleanup_probe(
     try:
         exec(smoke.SANDBOX_CLEANUP_UID_PROBE_SCRIPT, {"__name__": "__main__"})
     finally:
-        assert not any(
-            thread.name == "sandbox-cleanup-probe" and thread.is_alive()
-            for thread in threading.enumerate()
-        )
+        assert all(not thread.is_alive() for thread in fake_threads)
     envelope = json.loads(stdout.getvalue())
     assert isinstance(envelope, dict)
     assert "signed-test-jwt" not in stdout.getvalue()
     assert "service-account-token" not in stdout.getvalue()
+    assert join_timeouts == [
+        smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS
+        + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+    ]
+    repo_timeouts = [
+        timeout
+        for url, timeout in urlopen_timeouts
+        if url == "http://127.0.0.1:8000/repo/checks/run"
+    ]
+    kube_timeouts = [
+        timeout
+        for url, timeout in urlopen_timeouts
+        if url != "http://127.0.0.1:8000/repo/checks/run"
+    ]
+    assert repo_timeouts == [smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS]
+    assert kube_timeouts
+    assert all(
+        0 < timeout <= smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS
+        for timeout in kube_timeouts
+    )
     return envelope, state
 
 
@@ -1841,19 +2024,24 @@ def test_cleanup_probe_executor_timeout_covers_maximum_schema_grace() -> None:
         },
         sandbox_namespace=smoke.DEFAULT_SANDBOX_NAMESPACE,
         expected_status=200,
-        cleanup_grace_seconds=120,
+        cleanup_grace_seconds=30,
     )
 
     assert body["exit_codes"] == [smoke.SANDBOX_TIMEOUT_RETURN_CODE]
     assert evidence["target_owned_pods"] == 0
-    assert executor.command_timeouts[-1] == 185
+    assert executor.command_timeouts[-1] == 150
 
 
-@pytest.mark.parametrize("invalid_grace", [True, 0, 121])
-def test_cleanup_probe_rejects_out_of_contract_grace(invalid_grace: int | bool) -> None:
+@pytest.mark.parametrize(
+    "invalid_grace",
+    [True, 14, 31, 15.5, float("nan"), float("inf")],
+)
+def test_cleanup_probe_rejects_out_of_contract_grace(
+    invalid_grace: int | bool | float,
+) -> None:
     executor = RecordingExecutor()
 
-    with pytest.raises(smoke.LiveKindHelmSmokeError, match="integer between 1 and 120"):
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="integer between 15 and 30"):
         smoke._repo_checks_request_with_cleanup_evidence(
             executor,
             kubectl=["kubectl"],

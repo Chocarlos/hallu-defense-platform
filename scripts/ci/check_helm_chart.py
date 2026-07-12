@@ -217,6 +217,19 @@ def run_helm_template_if_available(
         label="helm template",
     )
     _validate_rendered_manifest(template_result.stdout)
+    for cleanup_grace_seconds in (15, 20, 30):
+        _run_helm_command(
+            [
+                executable,
+                "template",
+                "hallu-defense",
+                str(CHART_DIR),
+                *value_args,
+                "--set",
+                f"sandbox.cleanupGraceSeconds={cleanup_grace_seconds}",
+            ],
+            label=f"helm template cleanup grace {cleanup_grace_seconds}",
+        )
     for label, release, overrides, expected_error in (
         (
             "kind unknown worker typo",
@@ -249,15 +262,15 @@ def run_helm_template_if_available(
             "/sandbox/setupGraceSeconds",
         ),
         (
-            "kind zero sandbox cleanup grace",
+            "kind below-minimum sandbox cleanup grace",
             "hallu-defense",
-            ("--set", "sandbox.cleanupGraceSeconds=0"),
+            ("--set", "sandbox.cleanupGraceSeconds=14"),
             "/sandbox/cleanupGraceSeconds",
         ),
         (
             "kind excessive sandbox cleanup grace",
             "hallu-defense",
-            ("--set", "sandbox.cleanupGraceSeconds=121"),
+            ("--set", "sandbox.cleanupGraceSeconds=31"),
             "/sandbox/cleanupGraceSeconds",
         ),
         (
@@ -269,7 +282,7 @@ def run_helm_template_if_available(
         (
             "kind unknown sandbox cleanup typo",
             "hallu-defense",
-            ("--set", "sandbox.cleanupGraceSecond=10"),
+            ("--set", "sandbox.cleanupGraceSecond=20"),
             "/sandbox",
         ),
         (
@@ -831,6 +844,30 @@ def _validate_values_schema(
         errors.append(
             "values.schema.json must declare every and only top-level values key"
         )
+    sandbox_schema = _mapping(
+        properties.get("sandbox"),
+        "values.schema.properties.sandbox",
+        errors,
+    )
+    sandbox_properties = _mapping(
+        sandbox_schema.get("properties"),
+        "values.schema.properties.sandbox.properties",
+        errors,
+    )
+    cleanup_grace_schema = _mapping(
+        sandbox_properties.get("cleanupGraceSeconds"),
+        "values.schema.properties.sandbox.properties.cleanupGraceSeconds",
+        errors,
+    )
+    if dict(cleanup_grace_schema) != {
+        "type": "integer",
+        "minimum": 15,
+        "maximum": 30,
+    }:
+        errors.append(
+            "values.schema.json sandbox.cleanupGraceSeconds must accept exactly "
+            "the integer range 15..30"
+        )
     required = payload.get("required")
     if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
         errors.append("values.schema.json root required must be an array")
@@ -847,9 +884,10 @@ def _validate_values_schema(
             )
 
     validator = Draft7Validator(payload)
+    merged_kind_values = _deep_merge(values, kind_values)
     for profile, document in (
         ("base values", values),
-        ("kind merged values", _deep_merge(values, kind_values)),
+        ("kind merged values", merged_kind_values),
     ):
         for validation_error in sorted(
             validator.iter_errors(document), key=lambda item: list(item.absolute_path)
@@ -859,6 +897,26 @@ def _validate_values_schema(
             errors.append(
                 f"values.schema.json rejected {profile}{location}: "
                 f"{validation_error.message}"
+            )
+    for cleanup_grace_seconds in (15, 20, 30):
+        candidate = copy.deepcopy(merged_kind_values)
+        candidate_sandbox = candidate.get("sandbox")
+        if isinstance(candidate_sandbox, dict):
+            candidate_sandbox["cleanupGraceSeconds"] = cleanup_grace_seconds
+        if list(validator.iter_errors(candidate)):
+            errors.append(
+                "values.schema.json must accept sandbox.cleanupGraceSeconds="
+                f"{cleanup_grace_seconds}"
+            )
+    for cleanup_grace_seconds in (14, 31):
+        candidate = copy.deepcopy(merged_kind_values)
+        candidate_sandbox = candidate.get("sandbox")
+        if isinstance(candidate_sandbox, dict):
+            candidate_sandbox["cleanupGraceSeconds"] = cleanup_grace_seconds
+        if not list(validator.iter_errors(candidate)):
+            errors.append(
+                "values.schema.json must reject sandbox.cleanupGraceSeconds="
+                f"{cleanup_grace_seconds}"
             )
 
 
@@ -1321,9 +1379,9 @@ def _validate_values(
         errors.append(
             "values.sandbox.setupGraceSeconds must default to the bounded 15-second fixture grace"
         )
-    if sandbox_defaults.get("cleanupGraceSeconds") != 10:
+    if sandbox_defaults.get("cleanupGraceSeconds") != 20:
         errors.append(
-            "values.sandbox.cleanupGraceSeconds must default to the bounded 10-second cleanup grace"
+            "values.sandbox.cleanupGraceSeconds must default to the bounded 20-second cleanup grace"
         )
     sandbox_image = _mapping(
         sandbox_defaults.get("image"), "values.sandbox.image", errors
@@ -3064,7 +3122,7 @@ def _validate_supporting_files(
         "hallu-sandbox-admission-source-rw",
         "http://127.0.0.1:8000/repo/checks/run",
         "SANDBOX_TIMEOUT_RETURN_CODE",
-        "SANDBOX_CLEANUP_GRACE_SECONDS = 10",
+        "SANDBOX_CLEANUP_GRACE_SECONDS = 20",
         "SANDBOX_CLEANUP_UID_PROBE_SCRIPT",
         "_repo_checks_request_with_cleanup_evidence(",
         "_validate_sandbox_cleanup_evidence(",
@@ -4380,7 +4438,7 @@ def _validate_rendered_production_sandbox(rendered: str) -> None:
                 env_by_name.get(
                     "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS", {}
                 ).get("value")
-                != "10"
+                != "20"
             ):
                 errors.append(
                     "production API must receive the bounded Kubernetes cleanup grace"
@@ -5349,7 +5407,7 @@ def _validate_rendered_sandbox(
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_WORKSPACE_MOUNT_PATH": "/workspace",
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_NETWORK_POLICY_NAME": "hallu-defense-sandbox-deny-egress",
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_TENANT_ID": "kind-smoke-tenant",
-            "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS": "10",
+            "HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS": "20",
             "HALLU_DEFENSE_SANDBOX_KUBERNETES_KIND_LOCAL_IMAGE": "true",
             "HALLU_DEFENSE_OPA_ENABLED": "true",
             "HALLU_DEFENSE_OPA_PATH": "/usr/local/bin/opa",

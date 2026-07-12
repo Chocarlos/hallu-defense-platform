@@ -6539,8 +6539,9 @@ Implementation:
   exact revision-owned Pod to be Ready before completion. The smoke performs an
   install and a second `helm upgrade`, proves history revisions 1/2, checks
   both revisions for Secret leakage and preserves exact scratch identifiers.
-- Added `sandbox.cleanupGraceSeconds` with default `10`, Draft 7 integer range
-  `1..120`, exact API-only env mapping
+- Added `sandbox.cleanupGraceSeconds`; the root-audit correction converges its
+  final default to `20` and Draft 7 integer range to `15..30`, with exact
+  API-only env mapping
   `HALLU_DEFENSE_SANDBOX_KUBERNETES_CLEANUP_GRACE_SECONDS`, rendered-profile
   checks, direct/checker Helm negatives and deployment documentation. It is not
   leaked into the worker environment.
@@ -6595,11 +6596,120 @@ Remaining risks:
   Docker's label-backed inventory path; both clients were terminated and later
   process/container/image inventories proved no Front D scratch resource or
   client remained. The live install/upgrade was not reported green.
-- Front C must integrate the chart contract before runtime cleanup-budget
-  enforcement can be claimed: add finite
-  `sandbox_kubernetes_cleanup_grace_seconds=10.0` (`0 < value <= 120`), consume
-  the exact env above, pass it independently to `KubernetesJobBackend`, and
-  after DELETE wait to the monotonic deadline for both exact Job absence and no
-  Pods whose owner UID matches the created Job. Do not reuse Docker grace or
-  accept name/label/Jobs-only evidence.
+- The converged Front C/runtime contract uses finite
+  `sandbox_kubernetes_cleanup_grace_seconds=20.0` (`15 <= value <= 30`),
+  consumes the exact env above independently from Docker grace, and after
+  DELETE waits to the monotonic deadline for both exact Job absence and no Pods
+  whose owner UID matches the created Job.
+- Status remains `tested`, not `accepted`; no global close is claimed.
+
+## 2026-07-11 - Front D Helm/Kind cleanup-grace and timeout-budget audit corrections
+
+Slice selected:
+
+- Root-audit corrections for the Front D Helm/Kind slice: converge
+  `sandbox.cleanupGraceSeconds` to a single default (20 seconds) and bounded
+  range (15..30 inclusive) everywhere it is declared or asserted, and replace
+  the sandbox cleanup smoke's internal magic `urlopen(..., timeout=45)` with
+  named, derived setup/command/cleanup/poll/margin timeout budgets.
+
+Implementation:
+
+- `infra/k8s/helm/hallu-defense/values.yaml`: `sandbox.cleanupGraceSeconds`
+  default pinned to 20.
+- `infra/k8s/helm/hallu-defense/values.schema.json`: Draft 7 bound pinned to
+  exact integer `minimum: 15, maximum: 30`.
+- `scripts/ci/check_helm_chart.py`: default-value assertion, negative-case
+  Helm `--set` values (14/31 instead of 0/121), the embedded
+  `SANDBOX_CLEANUP_GRACE_SECONDS = 20` source marker, and both rendered-env
+  (`"20"`) expectations updated to match. The no-Helm static path now pins the
+  exact integer schema node, accepts 15/20/30, rejects 14/31, and rejects
+  narrowing keywords such as `const`; available Helm also templates every
+  accepted boundary.
+- `apps/api/tests/test_helm_chart_config.py`: invalid-range parametrize cases
+  use 14/31, typo-key values use 20, and a new
+  `test_values_schema_accepts_sandbox_cleanup_grace_boundaries` parametrized
+  over [15, 20, 30] proves the inclusive boundaries validate cleanly.
+- `scripts/dev/live_kind_helm_smoke.py`: added named budget constants
+  (`SANDBOX_SETUP_BUDGET_SECONDS=15`, `SANDBOX_COMMAND_BUDGET_SECONDS=30`,
+  `SANDBOX_CLEANUP_GRACE_SECONDS=20`,
+  `SANDBOX_CLEANUP_GRACE_MIN/MAX_SECONDS=15/30`,
+  `SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS=15`,
+  `SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS=5`, derived three-request poll
+  allowance `15`, and `SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS=5`). Request
+  timeouts now account for setup + 30 seconds per payload command + the actual
+  cleanup grace + Kubernetes allowance; plain outer exec timeouts add a named
+  request margin. The cleanup observer's outer timeout separately budgets the
+  initial Pod inventory, deadline-capped UID capture, the bounded request join,
+  its post-response convergence window, and a distinct positive outer margin.
+  Its default outer timeout is therefore 130 seconds and strictly exceeds all
+  sequential inner phase maxima. Both embedded scripts receive derived values
+  through `string.Template`; Kubernetes API calls, poll intervals and bounded
+  thread join are named rather than magic literals.
+- `apps/api/tests/test_live_kind_helm_smoke.py`: updated the embedded-script
+  assertion, request-input fixture, and executor-timeout/rejection tests to
+  the new 15/20/30 boundaries; added
+  `test_sandbox_request_timeout_budgets_are_derived_not_magic` (proves no
+  `timeout=45` literal remains in the module source and that the derived
+  constants compute the expected values) and
+  `test_sandbox_cleanup_exec_timeout_never_precedes_supported_cleanup_path`
+  (one/two commands × 15/20/30) and direct generated-script/executor timeout
+  assertions. The embedded probe harness uses cooperative fake Thread/Event
+  objects and an injected monotonic clock; no wall-clock wait or real sleep is
+  used.
+- `apps/api/tests/test_worklog.py`: replaced the branch-specific latest-title
+  assertion with a stable chronological invariant so subsequent front entries
+  do not break the committed-document gate.
+- `docs/deployment/kubernetes-helm.md`: records the converged chart/Front C
+  contract: default 20, finite inclusive range 15..30, exact
+  environment/setting name, and exact Job plus owner-UID Pod convergence
+  semantics.
+- `docs/TRACEABILITY_MATRIX.md`: refreshed the `FND-014` evidence and risk
+  cells to state the new default/bound explicitly and to stop implying the
+  prior session's 264-test count already covers this slice's new cases.
+
+Validation:
+
+- Set `PYTHONPATH` to this worktree's `apps/api/src`; the shared virtualenv
+  resolved `hallu_defense.__file__` under
+  `sixfront-d-helm-c0ca4c8/apps/api/src/hallu_defense/__init__.py`.
+- `python -m pytest -q apps/api/tests/test_helm_chart_config.py
+  apps/api/tests/test_live_kind_helm_smoke.py
+  apps/api/tests/test_bootstrap_kind_vault.py`: 282 passed in 14.62 seconds
+  with the project virtualenv after verifying the worktree import path. An
+  earlier repetition with the incomplete `sixfront-root` virtualenv produced
+  12 `ModuleNotFoundError: redis` environment failures (270 tests passed) and
+  was discarded rather than reported as a green run.
+- `python scripts/ci/check_helm_chart.py`: passed, including locally available
+  Helm lint/template, accepted cleanup boundaries 15/20/30, malformed values
+  14/31/type/typo, and the no-Helm exact schema checks.
+- `python -m ruff check scripts/ci/check_helm_chart.py
+  scripts/dev/live_kind_helm_smoke.py apps/api/tests/test_helm_chart_config.py
+  apps/api/tests/test_live_kind_helm_smoke.py apps/api/tests/test_worklog.py`:
+  all checks passed.
+- The final deterministic timeout/cleanup subset passed 15 tests in 0.22
+  seconds; it covers the exact inner/outer phase sum after the independent
+  audit correction. The earlier 20-test subset also passed before that
+  correction but is not used as final evidence.
+- `python scripts/ci/check_traceability_matrix.py` validated 182 requirement
+  rows; `python scripts/ci/check_worklog.py` validated 107 entries; the focused
+  traceability/worklog tests passed 14 tests.
+- Standalone Draft 7 validation accepted baseline and merged Kind values plus
+  cleanup values 15/20/30, and rejected 14/31.
+- Three read-only Codex auditors made no edits and ran no live infrastructure:
+  the contract audit was clean; the timeout/test audit reproduced the omitted
+  initial-inventory/join-margin outer budget, which was corrected to 130/150
+  seconds with deadline-capped capture calls; the repeat timeout audit was
+  clean. No Claude workflow agent was used.
+- `git diff --check`: passed with only Git's informational Windows LF/CRLF
+  conversion warnings.
+- The deterministic harness's fake sleep only advances the injected clock;
+  fake Thread/Event objects
+  perform no wall-clock wait.
+
+Remaining risks:
+
+- Enabled local Kind/Docker/kubectl live execution was intentionally not
+  attempted in this corrective follow-up; no persistent infrastructure was
+  touched and live install/upgrade evidence remains pending.
 - Status remains `tested`, not `accepted`; no global close is claimed.
