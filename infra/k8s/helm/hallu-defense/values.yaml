@@ -230,7 +230,7 @@ migrations:
     010_add_retrieved_at.sql: c3e1d88a7b6dd489beba1d22604e4b8244d214212be9992b3e8afe2aec4cf3b5
     011_rag_lifecycle_outbox.sql: c76a3072243cbc620bd7aad9785edc9e08e95a626b3f08645c223b2ff0bd1d84
     012_rag_tenant_deletion_fence.sql: 4e854001f82516e3b989f7fb9f8c8693e2c5ff40e38f443d1311ba9bf12083e8
-    013_audit_history_integrity.sql: 2b0481c79513dd9f6aa3541808aa6aefabddb8e5396f6cb046f0434c23464dd6
+    013_audit_history_integrity.sql: 53de950dd40706e81597cf219a25a6435dff3c2ba9bca1ff37a5cc6836c4d59e
   waitTimeoutSeconds: 600
   image:
     reference: ""
