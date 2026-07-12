@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[2]
 SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
@@ -42,6 +42,19 @@ IMAGE_REFS = {
 }
 TRIVY_ACTION = "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25"
 TRIVY_VERSION = "v0.72.0"
+TRIVY_CONFIG_INPUT = "${{ runner.temp }}/hallu-trivy-policy/trivy.yaml"
+TRIVY_IGNORE_INPUT = "${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore"
+TRIVY_POLICY_STEP_NAME = "Create empty external Trivy policy"
+TRIVY_POLICY_RUN = " ".join(
+    (
+        "set -euo pipefail",
+        'install -d -m 0755 "${RUNNER_TEMP}/hallu-trivy-policy"',
+        "printf '{}\\n' > \"${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml\"",
+        ': > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"',
+        'chmod 0444 "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \\',
+        '"${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"',
+    )
+)
 KIND_NODE_IMAGE = (
     "kindest/node:v1.36.1@sha256:"
     "3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
@@ -77,7 +90,9 @@ def validate_container_scan_config(
         if dockerfile_text is None:
             errors.append(f"missing Dockerfile text for {name}")
             continue
-        _validate_dockerfile(name, image_ref, dockerfile_text, workflow_text, errors)
+        if image_ref != f"hallu-defense-{name}:ci":
+            errors.append(f"first-party image ref for {name} must be name-derived")
+        _validate_dockerfile(name, dockerfile_text, errors)
     _validate_external_image_inventory(workflow_text, errors)
     _validate_kind_ci_boundary(errors)
     _validate_dockerignore(
@@ -118,7 +133,9 @@ def _validate_workflow(workflow_text: str, errors: list[str]) -> None:
     if "ignore-unfixed:" in workflow_text:
         errors.append("security workflow must not ignore unfixed vulnerabilities")
     if "915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2" in workflow_text:
-        errors.append("security workflow must not use the vulnerable Trivy action v0.28.0")
+        errors.append(
+            "security workflow must not use the vulnerable Trivy action v0.28.0"
+        )
     try:
         workflow = yaml.safe_load(workflow_text)
     except yaml.YAMLError as exc:
@@ -126,7 +143,6 @@ def _validate_workflow(workflow_text: str, errors: list[str]) -> None:
         return
     jobs = workflow.get("jobs", {}) if isinstance(workflow, dict) else {}
     trivy_steps: list[Mapping[str, object]] = []
-    run_commands: list[str] = []
     if isinstance(jobs, dict):
         for job in jobs.values():
             if not isinstance(job, dict):
@@ -134,20 +150,16 @@ def _validate_workflow(workflow_text: str, errors: list[str]) -> None:
             steps = job.get("steps", [])
             if not isinstance(steps, list):
                 continue
-            run_commands.extend(
-                str(step["run"]).strip()
-                for step in steps
-                if isinstance(step, dict) and isinstance(step.get("run"), str)
-            )
             trivy_steps.extend(
                 step
                 for step in steps
                 if isinstance(step, dict)
                 and str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
             )
-    if len(trivy_steps) != len(IMAGE_REFS) + 1:
+    if len(trivy_steps) != 2:
         errors.append(
-            f"security workflow must have {len(IMAGE_REFS)} first-party scans and one matrix scan"
+            "security workflow must have one first-party matrix scan and one "
+            "third-party matrix scan"
         )
     scan_refs: list[str] = []
     for step in trivy_steps:
@@ -160,32 +172,286 @@ def _validate_workflow(workflow_text: str, errors: list[str]) -> None:
         scan_refs.append(str(inputs.get("image-ref", "")))
         expected = {
             "version": TRIVY_VERSION,
+            "image-ref": (
+                "hallu-defense-${{ matrix.name }}:ci"
+                if "first-party" in str(step.get("name", "")).lower()
+                else "${{ matrix.image }}"
+            ),
+            "format": "table",
             "exit-code": "1",
             "vuln-type": "os,library",
             "severity": "CRITICAL,HIGH",
+            "trivy-config": TRIVY_CONFIG_INPUT,
+            "trivyignores": TRIVY_IGNORE_INPUT,
         }
+        if set(inputs) != set(expected):
+            errors.append(
+                "every Trivy scan must contain only the exact fail-closed input set"
+            )
         for key, value in expected.items():
             if str(inputs.get(key, "")) != value:
                 errors.append(f"every Trivy scan must set {key}: {value}")
 
-    matrix_ref = "${{ matrix.image }}"
-    first_party_refs = Counter(ref for ref in scan_refs if ref != matrix_ref)
-    if first_party_refs != Counter(IMAGE_REFS.values()):
-        errors.append(
-            "security workflow first-party image-ref multiset must exactly match "
-            "the approved image inventory"
-        )
-    if scan_refs.count(matrix_ref) != 1:
+    first_party_ref = "hallu-defense-${{ matrix.name }}:ci"
+    third_party_ref = "${{ matrix.image }}"
+    if scan_refs.count(first_party_ref) != 1:
+        errors.append("security workflow must have exactly one first-party matrix scan")
+    if scan_refs.count(third_party_ref) != 1:
         errors.append("security workflow must have exactly one matrix image-ref scan")
+    if isinstance(jobs, Mapping):
+        _validate_first_party_matrix(jobs.get("first-party-images"), errors)
+        _validate_third_party_matrix(jobs.get("third-party-images"), errors)
 
-    for name, image_ref in IMAGE_REFS.items():
-        expected_build = f"docker build -f infra/docker/{name}.Dockerfile -t {image_ref} ."
-        tag_commands = [command for command in run_commands if f"-t {image_ref}" in command]
-        if tag_commands != [expected_build]:
+
+def _validate_first_party_matrix(job: object, errors: list[str]) -> None:
+    if not isinstance(job, Mapping):
+        errors.append("security workflow first-party image matrix job is missing")
+        return
+    if set(job) != {"runs-on", "timeout-minutes", "strategy", "steps"}:
+        errors.append("first-party image matrix job must have only its exact fields")
+    if job.get("runs-on") != "ubuntu-24.04" or job.get("timeout-minutes") != 45:
+        errors.append(
+            "first-party image matrix job must use its exact trusted runner limits"
+        )
+    strategy = job.get("strategy")
+    if not isinstance(strategy, Mapping) or strategy.get("fail-fast") is not False:
+        errors.append("first-party image matrix must set fail-fast: false")
+        return
+    if set(strategy) != {"fail-fast", "max-parallel", "matrix"}:
+        errors.append("first-party image matrix strategy must have only exact fields")
+    if strategy.get("max-parallel") != 1:
+        errors.append(
+            "first-party image matrix must serialize Docker work with max-parallel: 1"
+        )
+    matrix = strategy.get("matrix")
+    if not isinstance(matrix, Mapping) or set(matrix) != {"include"}:
+        errors.append(
+            "first-party image matrix must contain only its exact include list"
+        )
+    include = matrix.get("include") if isinstance(matrix, Mapping) else None
+    if not isinstance(include, list):
+        errors.append("first-party image matrix include list is missing")
+        return
+    actual_rows: Counter[tuple[str, str]] = Counter()
+    for row in include:
+        if not isinstance(row, Mapping) or set(row) != {"name", "dockerfile"}:
             errors.append(
-                f"security workflow must build {image_ref} exactly once from "
-                f"infra/docker/{name}.Dockerfile"
+                "first-party matrix rows must contain only exact name and dockerfile fields"
             )
+            continue
+        actual_rows[(str(row["name"]), str(row["dockerfile"]))] += 1
+    expected_rows = Counter(
+        (name, f"infra/docker/{name}.Dockerfile") for name in IMAGE_REFS
+    )
+    if actual_rows != expected_rows:
+        errors.append(
+            "first-party matrix must cover every approved Dockerfile exactly once"
+        )
+
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        errors.append("first-party image matrix steps are missing")
+        return
+    if any(isinstance(step, Mapping) and "continue-on-error" in step for step in steps):
+        errors.append("first-party image matrix steps must not weaken failures")
+    _validate_external_trivy_policy_step(steps, errors, label="first-party")
+    if len(steps) != 4:
+        errors.append(
+            "first-party matrix must contain exactly four ordered trusted steps"
+        )
+    else:
+        checkout = steps[1]
+        build = steps[2]
+        scan = steps[3]
+        if not isinstance(checkout, Mapping) or dict(checkout) != {
+            "uses": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+            "with": {"persist-credentials": False},
+        }:
+            errors.append(
+                "first-party matrix checkout step must be exact and credentialless"
+            )
+        if not isinstance(build, Mapping) or set(build) != {"name", "run"}:
+            errors.append(
+                "first-party matrix build step must contain only exact metadata"
+            )
+        _validate_exact_trivy_step(
+            scan,
+            expected_name="Scan current first-party image",
+            expected_ref="hallu-defense-${{ matrix.name }}:ci",
+            label="first-party",
+            errors=errors,
+        )
+    run_step_names = [
+        step.get("name")
+        for step in steps
+        if isinstance(step, Mapping) and isinstance(step.get("run"), str)
+    ]
+    if run_step_names != [TRIVY_POLICY_STEP_NAME, "Build current first-party image"]:
+        errors.append(
+            "first-party matrix must contain only its exact policy and image build commands"
+        )
+    build_commands = [
+        " ".join(str(step["run"]).split())
+        for step in steps
+        if isinstance(step, Mapping)
+        and step.get("name") == "Build current first-party image"
+        and isinstance(step.get("run"), str)
+    ]
+    expected_build = (
+        'docker build -f "${{ matrix.dockerfile }}" '
+        '-t "hallu-defense-${{ matrix.name }}:ci" .'
+    )
+    if build_commands != [expected_build]:
+        errors.append(
+            "first-party matrix must contain only its exact current Dockerfile build "
+            "and name-derived tag"
+        )
+    matrix_scans = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    ]
+    if len(matrix_scans) != 1 or not isinstance(matrix_scans[0].get("with"), Mapping):
+        errors.append("first-party matrix must contain exactly one Trivy scan")
+    elif matrix_scans[0]["with"].get("image-ref") != (
+        "hallu-defense-${{ matrix.name }}:ci"
+    ):
+        errors.append("first-party matrix Trivy scan must use its name-derived image")
+
+
+def _validate_third_party_matrix(job: object, errors: list[str]) -> None:
+    if not isinstance(job, Mapping):
+        errors.append("security workflow third-party image matrix job is missing")
+        return
+    if set(job) != {"runs-on", "timeout-minutes", "strategy", "steps"}:
+        errors.append("third-party image matrix job must have only its exact fields")
+    if job.get("runs-on") != "ubuntu-24.04" or job.get("timeout-minutes") != 45:
+        errors.append(
+            "third-party image matrix job must use its exact trusted runner limits"
+        )
+    strategy = job.get("strategy")
+    if not isinstance(strategy, Mapping) or strategy.get("fail-fast") is not False:
+        errors.append("third-party image matrix must set fail-fast: false")
+    if not isinstance(strategy, Mapping) or strategy.get("max-parallel") != 1:
+        errors.append(
+            "third-party image matrix must serialize scans with max-parallel: 1"
+        )
+    matrix = strategy.get("matrix") if isinstance(strategy, Mapping) else None
+    if (
+        not isinstance(strategy, Mapping)
+        or set(strategy) != {"fail-fast", "max-parallel", "matrix"}
+        or not isinstance(matrix, Mapping)
+        or set(matrix) != {"image"}
+    ):
+        errors.append(
+            "third-party image matrix must use only its exact immutable image list"
+        )
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        errors.append("third-party image matrix steps are missing")
+        return
+    if any(isinstance(step, Mapping) and "continue-on-error" in step for step in steps):
+        errors.append("third-party image matrix steps must not weaken failures")
+    _validate_external_trivy_policy_step(steps, errors, label="third-party")
+    if len(steps) != 2:
+        errors.append("third-party matrix must contain exactly policy then Trivy scan")
+    else:
+        _validate_exact_trivy_step(
+            steps[1],
+            expected_name="Scan immutable third-party image",
+            expected_ref="${{ matrix.image }}",
+            label="third-party",
+            errors=errors,
+        )
+    run_step_names = [
+        step.get("name")
+        for step in steps
+        if isinstance(step, Mapping) and isinstance(step.get("run"), str)
+    ]
+    if run_step_names != [TRIVY_POLICY_STEP_NAME]:
+        errors.append("third-party matrix must contain only its exact policy command")
+    matrix_scans = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    ]
+    if len(matrix_scans) != 1 or not isinstance(matrix_scans[0].get("with"), Mapping):
+        errors.append("third-party matrix must contain exactly one Trivy scan")
+    elif matrix_scans[0]["with"].get("image-ref") != "${{ matrix.image }}":
+        errors.append(
+            "third-party matrix Trivy scan must use its immutable matrix image"
+        )
+
+
+def _validate_exact_trivy_step(
+    step: object,
+    *,
+    expected_name: str,
+    expected_ref: str,
+    label: str,
+    errors: list[str],
+) -> None:
+    if not isinstance(step, Mapping) or set(step) != {"name", "uses", "with"}:
+        errors.append(f"{label} Trivy step must contain only exact trusted metadata")
+        return
+    expected_inputs = {
+        "version": TRIVY_VERSION,
+        "image-ref": expected_ref,
+        "format": "table",
+        "exit-code": "1",
+        "vuln-type": "os,library",
+        "severity": "CRITICAL,HIGH",
+        "trivy-config": TRIVY_CONFIG_INPUT,
+        "trivyignores": TRIVY_IGNORE_INPUT,
+    }
+    if (
+        step.get("name") != expected_name
+        or step.get("uses") != TRIVY_ACTION
+        or step.get("with") != expected_inputs
+    ):
+        errors.append(f"{label} Trivy step must equal its exact fail-closed definition")
+
+
+def _validate_external_trivy_policy_step(
+    steps: list[object],
+    errors: list[str],
+    *,
+    label: str,
+) -> None:
+    policy_steps = [
+        step
+        for step in steps
+        if isinstance(step, Mapping) and step.get("name") == TRIVY_POLICY_STEP_NAME
+    ]
+    if len(policy_steps) != 1:
+        errors.append(
+            f"{label} scan must create exactly one external empty Trivy policy"
+        )
+        return
+    step = policy_steps[0]
+    if set(step) != {"name", "shell", "run"} or step.get("shell") != "bash":
+        errors.append(
+            f"{label} external Trivy policy step must contain only exact trusted metadata"
+        )
+    run = " ".join(str(step.get("run", "")).split())
+    if run != TRIVY_POLICY_RUN:
+        errors.append(
+            f"{label} external Trivy policy must use the exact empty fail-closed command"
+        )
+    policy_index = steps.index(step)
+    scan_indexes = [
+        index
+        for index, candidate in enumerate(steps)
+        if isinstance(candidate, Mapping)
+        and (
+            str(candidate.get("uses", "")).startswith("aquasecurity/trivy-action@")
+            or candidate.get("name") == "Build current first-party image"
+        )
+    ]
+    if scan_indexes and policy_index >= min(scan_indexes):
+        errors.append(f"{label} external Trivy policy must exist before build/scan")
 
 
 def _validate_external_image_inventory(workflow_text: str, errors: list[str]) -> None:
@@ -214,7 +480,10 @@ def _validate_external_image_inventory(workflow_text: str, errors: list[str]) ->
         reference = entry.get("reference")
         sources = entry.get("sources")
         digest_kind = entry.get("digest_kind")
-        if not isinstance(reference, str) or IMMUTABLE_IMAGE_RE.fullmatch(reference) is None:
+        if (
+            not isinstance(reference, str)
+            or IMMUTABLE_IMAGE_RE.fullmatch(reference) is None
+        ):
             errors.append(f"inventory image reference must be tag@sha256: {reference}")
             continue
         if reference in inventory_refs:
@@ -231,23 +500,33 @@ def _validate_external_image_inventory(workflow_text: str, errors: list[str]) ->
 
     actual_by_source = _actual_external_images(errors)
     if set(expected_by_source) != set(actual_by_source):
-        errors.append("container inventory source set does not match Compose/Helm/scripts")
+        errors.append(
+            "container inventory source set does not match Compose/Helm/scripts"
+        )
     for source in sorted(set(expected_by_source) | set(actual_by_source)):
         if expected_by_source[source] != actual_by_source.get(source, set()):
             errors.append(f"container inventory drift for {source}")
 
     try:
         workflow = yaml.safe_load(workflow_text)
-        matrix_refs = set(
-            workflow["jobs"]["third-party-images"]["strategy"]["matrix"]["image"]
-        )
+        raw_matrix_refs = workflow["jobs"]["third-party-images"]["strategy"]["matrix"][
+            "image"
+        ]
+        if not isinstance(raw_matrix_refs, list):
+            raise TypeError
+        matrix_refs = Counter(str(reference) for reference in raw_matrix_refs)
     except (KeyError, TypeError, yaml.YAMLError):
-        errors.append("security workflow third-party image matrix is missing or invalid")
+        errors.append(
+            "security workflow third-party image matrix is missing or invalid"
+        )
         return
-    if matrix_refs != inventory_refs:
-        missing = sorted(inventory_refs - matrix_refs)
-        extra = sorted(matrix_refs - inventory_refs)
-        errors.append(f"security workflow image matrix drift; missing={missing}, extra={extra}")
+    expected_refs = Counter(inventory_refs)
+    if matrix_refs != expected_refs:
+        missing = sorted((expected_refs - matrix_refs).elements())
+        extra = sorted((matrix_refs - expected_refs).elements())
+        errors.append(
+            f"security workflow image matrix drift; missing={missing}, extra={extra}"
+        )
 
 
 def _actual_external_images(errors: list[str]) -> dict[str, set[str]]:
@@ -280,18 +559,26 @@ def _validate_kind_ci_boundary(errors: list[str]) -> None:
         return
     if workflow.get("permissions") != {"contents": "read"}:
         errors.append("live workflow must use read-only contents permission")
-    if job.get("if") != "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'":
-        errors.append("Kind live job must run only for trusted dispatch or schedule events")
-    if job.get("timeout-minutes") != 35:
-        errors.append("Kind live job must keep its explicit 35 minute timeout")
+    if (
+        job.get("if")
+        != "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'"
+    ):
+        errors.append(
+            "Kind live job must run only for trusted dispatch or schedule events"
+        )
+    if job.get("timeout-minutes") != 60:
+        errors.append("Kind live job must keep its explicit 60 minute timeout")
     environment = job.get("env", {})
-    if not isinstance(environment, Mapping) or environment.get(
-        "HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE"
-    ) != KIND_NODE_IMAGE:
+    if (
+        not isinstance(environment, Mapping)
+        or environment.get("HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE") != KIND_NODE_IMAGE
+    ):
         errors.append("Kind live job must pin the approved node image by exact digest")
     rendered_job = yaml.safe_dump(job, sort_keys=False)
     if "secrets." in rendered_job:
-        errors.append("Kind live job must not receive repository or environment secrets")
+        errors.append(
+            "Kind live job must not receive repository or environment secrets"
+        )
     for marker in (
         "KIND_VERSION: v0.32.0",
         "KIND_SHA256: 50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54",
@@ -322,7 +609,9 @@ def _validate_kind_ci_boundary(errors: list[str]) -> None:
         '"egress_blocked_by_kindnet": True',
     ):
         if marker not in smoke_text:
-            errors.append(f"Kind smoke is missing approved CI boundary marker `{marker}`")
+            errors.append(
+                f"Kind smoke is missing approved CI boundary marker `{marker}`"
+            )
     for forbidden_marker in (
         "disableDefaultCNI:",
         "raw.githubusercontent.com/project",
@@ -340,7 +629,9 @@ def _literal_assignment(path: Path, name: str) -> object:
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            if any(
+                isinstance(target, ast.Name) and target.id == name for target in targets
+            ):
                 if node.value is None:
                     continue
                 return ast.literal_eval(node.value)
@@ -349,18 +640,15 @@ def _literal_assignment(path: Path, name: str) -> object:
 
 def _validate_dockerfile(
     name: str,
-    image_ref: str,
     dockerfile_text: str,
-    workflow_text: str,
     errors: list[str],
 ) -> None:
     dockerfile_path = f"infra/docker/{name}.Dockerfile"
-    if f"docker build -f {dockerfile_path} -t {image_ref} ." not in workflow_text:
-        errors.append(f"security workflow must build {image_ref} from {dockerfile_path}")
-    if f"image-ref: {image_ref}" not in workflow_text:
-        errors.append(f"security workflow must scan image-ref {image_ref}")
-
-    from_lines = [line for line in dockerfile_text.splitlines() if line.strip().startswith("FROM ")]
+    from_lines = [
+        line
+        for line in dockerfile_text.splitlines()
+        if line.strip().startswith("FROM ")
+    ]
     if not from_lines:
         errors.append(f"{dockerfile_path} must declare a base image")
     for line in from_lines:
@@ -384,7 +672,9 @@ def _validate_dockerfile(
 
     if name == "api":
         if "pip install --no-cache-dir" not in dockerfile_text:
-            errors.append(f"{dockerfile_path} must install Python dependencies without pip cache")
+            errors.append(
+                f"{dockerfile_path} must install Python dependencies without pip cache"
+            )
         if API_OPA_BUILDER_FROM not in from_lines:
             errors.append(
                 f"{dockerfile_path} must pin the Go 1.26.4 OPA builder stage by digest"
@@ -417,16 +707,24 @@ def _validate_dockerfile(
             "find /app -type f -exec chmod 0444",
         ):
             if snippet not in dockerfile_text:
-                errors.append(f"{dockerfile_path} missing OPA runtime marker `{snippet}`")
+                errors.append(
+                    f"{dockerfile_path} missing OPA runtime marker `{snippet}`"
+                )
         if "-require=oras.land/oras-go" in dockerfile_text:
-            errors.append(f"{dockerfile_path} must not force an OCI client into the OPA build")
+            errors.append(
+                f"{dockerfile_path} must not force an OCI client into the OPA build"
+            )
         if re.search(r"(?m)^COPY\s+infra/opa(?:\s|/tests(?:\s|/))", dockerfile_text):
             errors.append(f"{dockerfile_path} must copy only infra/opa/policies")
         if re.search(r"chown\s+-R\s+\S+\s+/app", dockerfile_text):
-            errors.append(f"{dockerfile_path} must keep application and policy files root-owned")
+            errors.append(
+                f"{dockerfile_path} must keep application and policy files root-owned"
+            )
     if name == "console":
         if "npm ci" not in dockerfile_text:
-            errors.append(f"{dockerfile_path} must use npm ci for reproducible installs")
+            errors.append(
+                f"{dockerfile_path} must use npm ci for reproducible installs"
+            )
         for snippet in (
             "COPY .npmrc /app/.npmrc",
             'test "$(node --version)" = "v24.18.0"',
@@ -441,9 +739,13 @@ def _validate_dockerfile(
                 )
         for forbidden in ("--ignore-scripts", "--dangerously-allow-all-scripts"):
             if forbidden in dockerfile_text:
-                errors.append(f"{dockerfile_path} must not bypass npm install-script policy")
+                errors.append(
+                    f"{dockerfile_path} must not bypass npm install-script policy"
+                )
         if "--chown=node:node" in dockerfile_text:
-            errors.append(f"{dockerfile_path} must not make runtime code writable by node")
+            errors.append(
+                f"{dockerfile_path} must not make runtime code writable by node"
+            )
     if name == "sandbox":
         for snippet in (
             "sandbox-linux-py312.lock",
@@ -456,13 +758,22 @@ def _validate_dockerfile(
             "apk add --no-cache git=2.54.0-r0",
         ):
             if snippet not in dockerfile_text:
-                errors.append(f"{dockerfile_path} missing sandbox integrity marker `{snippet}`")
+                errors.append(
+                    f"{dockerfile_path} missing sandbox integrity marker `{snippet}`"
+                )
         if "--chown=10001:10001" in dockerfile_text or re.search(
             r"chown\s+-R\s+10001:10001\s+/opt", dockerfile_text
         ):
-            errors.append(f"{dockerfile_path} must keep runner code root-owned/read-only")
-        if "node:" not in dockerfile_text or "/usr/local/bin/node" not in dockerfile_text:
-            errors.append(f"{dockerfile_path} must include pinned Node/npm runtime support")
+            errors.append(
+                f"{dockerfile_path} must keep runner code root-owned/read-only"
+            )
+        if (
+            "node:" not in dockerfile_text
+            or "/usr/local/bin/node" not in dockerfile_text
+        ):
+            errors.append(
+                f"{dockerfile_path} must include pinned Node/npm runtime support"
+            )
         if "USER 10001" not in dockerfile_text:
             errors.append(f"{dockerfile_path} must run as non-root UID 10001")
         for snippet in (
@@ -472,7 +783,9 @@ def _validate_dockerfile(
             "python -m py_compile /opt/hallu-defense/sandbox_runner.py",
         ):
             if snippet not in dockerfile_text:
-                errors.append(f"{dockerfile_path} missing image-baked runner marker `{snippet}`")
+                errors.append(
+                    f"{dockerfile_path} missing image-baked runner marker `{snippet}`"
+                )
     if name == "pgvector":
         for snippet in (
             "postgres:16.14-alpine3.24@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
@@ -487,11 +800,15 @@ def _validate_dockerfile(
             "USER postgres",
         ):
             if snippet not in dockerfile_text:
-                errors.append(f"{dockerfile_path} missing pgvector integrity marker `{snippet}`")
+                errors.append(
+                    f"{dockerfile_path} missing pgvector integrity marker `{snippet}`"
+                )
         if dockerfile_text.count("FROM postgres:16.14-alpine3.24@sha256:") != 2:
             errors.append(f"{dockerfile_path} must use the exact Postgres base twice")
         if "COPY --from=pgvector-builder" not in dockerfile_text:
-            errors.append(f"{dockerfile_path} must keep compiler tooling out of runtime")
+            errors.append(
+                f"{dockerfile_path} must keep compiler tooling out of runtime"
+            )
     if name == "keycloak":
         _validate_keycloak_dockerfile(dockerfile_text, dockerfile_path, errors)
     if name == "grafana":
@@ -513,12 +830,12 @@ def _validate_seaweedfs_dockerfile(
         "ARG SEAWEEDFS_VERSION=4.29",
         "ARG SEAWEEDFS_COMMIT=1355c7a102194d6c461baf090eff50367b575afb",
         "ARG SEAWEEDFS_SOURCE_SHA256=d4ec97a7eda952296913fbfdcb3aefc62546fb80da7ad06f8e0c85f59474c6ed",
-        'https://codeload.github.com/seaweedfs/seaweedfs/tar.gz/${SEAWEEDFS_COMMIT}',
+        "https://codeload.github.com/seaweedfs/seaweedfs/tar.gz/${SEAWEEDFS_COMMIT}",
         "sha256sum -c -",
         "weed/command/admin.go",
-        'addr := fmt.Sprintf(\"127.0.0.1:%d\", *options.port)',
+        'addr := fmt.Sprintf("127.0.0.1:%d", *options.port)',
         "weed/admin/dash/worker_grpc_server.go",
-        'net.Listen(\"tcp\", fmt.Sprintf(\"127.0.0.1:%d\", port))',
+        'net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))',
         "go mod edit -dropreplace=github.com/apache/thrift",
         "github.com/apache/thrift@v0.23.0",
         "golang.org/x/net@v0.55.0",
@@ -620,7 +937,9 @@ def _validate_grafana_dockerfile(
     )
     for marker in markers:
         if marker not in dockerfile_text:
-            errors.append(f"{dockerfile_path} missing Grafana integrity marker `{marker}`")
+            errors.append(
+                f"{dockerfile_path} missing Grafana integrity marker `{marker}`"
+            )
     for forbidden in (
         "COPY --from=upstream-assets /usr/share/grafana /usr/share/grafana",
         "plugins-bundled",
@@ -629,7 +948,9 @@ def _validate_grafana_dockerfile(
         "chown -R 472:0 /usr/share/grafana",
     ):
         if forbidden in dockerfile_text:
-            errors.append(f"{dockerfile_path} contains forbidden Grafana marker `{forbidden}`")
+            errors.append(
+                f"{dockerfile_path} contains forbidden Grafana marker `{forbidden}`"
+            )
     if re.search(
         r"(?im)\bchown\b[^\n]*\b472(?::(?:472|0))?\b[^\n]*"
         r"(?:/etc/grafana|/usr/share/grafana)",
@@ -647,8 +968,8 @@ def _validate_opensearch_dockerfile(
         "opensearchproject/opensearch:3.7.0@sha256:123e6591a47b1d54686890551bdb35739c85193ecded381219fc9e059e18128f",
         "ARG AMAZON_LINUX_RELEASEVER=2023.12.20260706",
         '--releasever="${AMAZON_LINUX_RELEASEVER}" upgrade',
-        "openssl-libs)\" = \"3.5.5-1.amzn2023.0.5",
-        "expat)\" = \"2.6.3-1.amzn2023.0.6",
+        'openssl-libs)" = "3.5.5-1.amzn2023.0.5',
+        'expat)" = "2.6.3-1.amzn2023.0.6',
         "/usr/share/opensearch/plugins/*",
         "/usr/share/opensearch/modules/ingest-geoip",
         'test -z "$(ls -A /usr/share/opensearch/plugins)"',
@@ -779,7 +1100,9 @@ def _validate_keycloak_dockerfile(
     )
     for marker in markers:
         if marker not in dockerfile_text:
-            errors.append(f"{dockerfile_path} missing Keycloak integrity marker `{marker}`")
+            errors.append(
+                f"{dockerfile_path} missing Keycloak integrity marker `{marker}`"
+            )
     for forbidden in (
         "quay.io/keycloak/keycloak:",
         "start-dev",
@@ -787,7 +1110,9 @@ def _validate_keycloak_dockerfile(
         "--chown=10001:10001",
     ):
         if forbidden in dockerfile_text:
-            errors.append(f"{dockerfile_path} contains forbidden Keycloak marker `{forbidden}`")
+            errors.append(
+                f"{dockerfile_path} contains forbidden Keycloak marker `{forbidden}`"
+            )
     if re.search(
         r"(?im)\bchown\b[^\n]*\b10001(?::10001)?\b[^\n]*/opt/keycloak",
         dockerfile_text,
@@ -819,14 +1144,15 @@ def _validate_dockerignore(dockerignore_text: str, errors: list[str]) -> None:
     }
     missing = sorted(required - patterns)
     if missing:
-        errors.append(f".dockerignore missing sensitive/build-state patterns: {missing}")
+        errors.append(
+            f".dockerignore missing sensitive/build-state patterns: {missing}"
+        )
 
 
 def load_current_config() -> tuple[str, dict[str, str]]:
     workflow_text = SECURITY_WORKFLOW.read_text(encoding="utf-8")
     dockerfile_texts = {
-        name: path.read_text(encoding="utf-8")
-        for name, path in DOCKERFILES.items()
+        name: path.read_text(encoding="utf-8") for name, path in DOCKERFILES.items()
     }
     return workflow_text, dockerfile_texts
 

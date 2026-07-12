@@ -1,0 +1,7 @@
+{
+  "schema_version": "release-encryption-trust-store.v1",
+  "trust_store_id": "release-trust-example",
+  "generated_at": "not-a-timestamp",
+  "valid_until": "2020-01-01T00:00:00Z",
+  "bindings": []
+}

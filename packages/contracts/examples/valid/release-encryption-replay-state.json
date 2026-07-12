@@ -1,0 +1,24 @@
+{
+  "schema_version": "release-encryption-replay-state.v1",
+  "trust_store_id": "release-trust-example",
+  "state_key_id": "state-epoch-7",
+  "bindings": [
+    {
+      "tenant_id": "tenant-example",
+      "environment": "production",
+      "highest_sequence": 41,
+      "highest_deployment_revision": 42,
+      "current_deployment_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "highest_rotation_epoch": 7,
+      "current_rotation_phase": "stable",
+      "last_issued_at": "2026-07-11T12:01:00Z",
+      "recent_nonces": ["0123456789abcdef0123456789abcdef"],
+      "last_transition": {
+        "bundle_id": "bundle-example-0001",
+        "bundle_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "previous_state_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  ],
+  "state_mac": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

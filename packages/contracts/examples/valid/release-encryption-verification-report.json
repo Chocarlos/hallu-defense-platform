@@ -1,0 +1,29 @@
+{
+  "schema_version": "release-encryption-verification-report.v1",
+  "verified_at": "2026-07-11T12:02:00Z",
+  "bundle_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "bundle_id": "bundle-example-0001",
+  "replay_state_previous_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "replay_state_next_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "anchor_update_required": false,
+  "anchor_finalized": true,
+  "report_authenticator": {
+    "algorithm": "hmac-sha256",
+    "key_id": "report-epoch-7",
+    "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "compliance_asserted": true,
+  "checks": {
+    "schema_valid": true,
+    "external_inputs_bound": true,
+    "tenant_environment_bound": true,
+    "timestamps_valid": true,
+    "provenance_valid": true,
+    "controls_attested": true,
+    "rotation_valid": true,
+    "commitments_valid": true,
+    "authenticators_valid": true,
+    "replay_rollback_safe": true
+  },
+  "failure_codes": []
+}

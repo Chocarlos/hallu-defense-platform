@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/release-encryption-keyring.schema.json",
+  "title": "ReleaseEncryptionKeyring",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "trust_store_id", "keys"],
+  "properties": {
+    "schema_version": {
+      "const": "release-encryption-keyring.v1"
+    },
+    "trust_store_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "keys": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key_id", "purpose", "encoding", "material"],
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+          },
+          "purpose": {
+            "enum": [
+              "authenticator-ed25519-public",
+              "commitment-hmac-sha256",
+              "replay-state-hmac-sha256",
+              "verification-report-hmac-sha256"
+            ]
+          },
+          "encoding": {
+            "const": "base64"
+          },
+          "material": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+            "minLength": 43,
+            "maxLength": 172
+          }
+        }
+      }
+    }
+  }
+}

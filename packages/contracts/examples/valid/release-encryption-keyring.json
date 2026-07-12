@@ -1,0 +1,30 @@
+{
+  "schema_version": "release-encryption-keyring.v1",
+  "trust_store_id": "release-trust-example",
+  "keys": [
+    {
+      "key_id": "auth-epoch-7",
+      "purpose": "authenticator-ed25519-public",
+      "encoding": "base64",
+      "material": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    },
+    {
+      "key_id": "commit-epoch-7",
+      "purpose": "commitment-hmac-sha256",
+      "encoding": "base64",
+      "material": "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="
+    },
+    {
+      "key_id": "state-epoch-7",
+      "purpose": "replay-state-hmac-sha256",
+      "encoding": "base64",
+      "material": "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M="
+    },
+    {
+      "key_id": "report-epoch-7",
+      "purpose": "verification-report-hmac-sha256",
+      "encoding": "base64",
+      "material": "ZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQ="
+    }
+  ]
+}

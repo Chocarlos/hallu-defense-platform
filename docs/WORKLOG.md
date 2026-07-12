@@ -7163,3 +7163,62 @@ Remaining risks:
 - Operators must archive incompatible private approval metadata and require
   reapproval before deploying v3; the runtime intentionally does not reinterpret
   redacted legacy snapshots as authority.
+
+## 2026-07-12 - Root integration: release security, encryption evidence, and exact scanning
+
+Slice selected:
+
+- Integrated the audited Front F source commit `0b4dae3` after preserving the
+  already integrated approval v3, Console OIDC, Helm/Kind, audit, trusted-tool,
+  and sandbox boundaries.
+
+Implementation:
+
+- Added the four-stage `verify-tag -> build-release -> scan-release ->
+  attest-release` workflow, its fail-closed static/executable checker, immutable
+  artifact/digest handoffs, external GPG trust, canonical Docker-archive/Trivy
+  binding, exact checksums, SBOMs, and final attestation subjects.
+- Added six release-encryption contracts, the Ed25519/HMAC evidence verifier,
+  protected two-phase prepare/finalize workflow, replay/CAS controls, tests,
+  and operational encryption/rotation documentation.
+- Replaced three-image assumptions with exact discovery and a serialized
+  eight-image first-party matrix while preserving the 60-minute Kind live
+  budget and the Helm setup/gates from Front D.
+- Hardened Gitleaks and the repository secret scanner around an exact
+  path/rule/match-SHA manifest. The secret scanner now mirrors the Git snapshot
+  instead of traversing ignored Codex/worktree/tooling state; the integrated
+  Console fixture is allowlisted only in `secret_scan_fixtures` with its exact
+  fingerprint.
+- Preserved the Front E setup-python executable and Console browser contract,
+  reconciled trace IDs as `SEC-019`, `CI-031`, and `CI-032`, corrected stale
+  make/OPA/Compose evidence, and replaced obsolete SECURITY.md implementation
+  gaps with remaining deployment-evidence gaps.
+- The Front F sandbox could not create the shared Git `index.lock`; root verified
+  all 61 files, removed exactly 69 verified empty `release-archive-gate-*`
+  directories inside that worktree, and created the source commit without
+  touching any persistent service or data.
+
+Validation:
+
+- Integrated release/encryption/container/sandbox/Gitleaks/secret/docs group:
+  `356 passed, 8 skipped`.
+- Full API suite after cross-front corrections: `2685 passed, 28 skipped`; the
+  only warning is the existing FastAPI TestClient deprecation notice.
+- Release security, release encryption workflow, eight-image container,
+  sandbox isolation, Gitleaks configuration, exact secret scan, 79-schema,
+  Python reproducibility, metrics materializer, traceability and worklog gates
+  passed.
+- Ruff passed for API/tests/scripts/evals; standard mypy passed 59 API sources
+  and the focused script pass reported no issues in 9 sources.
+- Local OPA 1.7.1 passed strict check and `31/31` Rego tests; the integrated
+  Python policy selection passed `164` tests. GNU Make 4.4.1 is available.
+
+Remaining risks:
+
+- Local execution does not create GitHub attestations or external replay CAS
+  state, and it does not prove current CVE status for the eight built images.
+- The local OPA binary differs from the CI pin (1.17.0); the remote pinned run
+  remains version-authoritative.
+- Docker/Kind/Trivy/Gitleaks-container live evidence is deferred to the final
+  serial scratch-only phase; no persistent container, volume, cluster, Vault,
+  database, or tenant data was touched in this integration step.

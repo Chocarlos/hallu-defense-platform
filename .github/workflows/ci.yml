@@ -78,6 +78,10 @@ jobs:
         run: python scripts/ci/run_policy_tests.py
       - name: Check encryption config
         run: python scripts/ci/check_encryption_config.py
+      - name: Check release security config
+        run: python scripts/ci/check_release_security_config.py
+      - name: Check release encryption verification workflow
+        run: python scripts/ci/check_release_encryption_workflow.py
       - name: Check auth config
         run: python scripts/ci/check_auth_config.py
       - name: OIDC provider smoke

@@ -1,0 +1,89 @@
+{
+  "schema_version": "release-encryption-trust-store.v1",
+  "trust_store_id": "release-trust-example",
+  "generated_at": "2026-07-11T12:00:00Z",
+  "valid_until": "2027-07-11T12:00:00Z",
+  "bindings": [
+    {
+      "tenant_id": "tenant-example",
+      "environment": "production",
+      "trust_root_id": "tenant-example-production",
+      "allowed_issuers": ["release-attestor.example.invalid"],
+      "allowed_builders": ["builder.example.invalid/hallu-defense"],
+      "allowed_workflows": ["release.yml@refs/heads/main"],
+      "allowed_source_repositories": ["https://example.invalid/hallu-defense"],
+      "allowed_kms_authorities": ["vault://example/transit/release"],
+      "allowed_tls_ca_sha256": [
+        "1111111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "sequence_floor": 40,
+      "deployment_revision_floor": 41,
+      "freshness": {
+        "max_bundle_age_seconds": 600,
+        "max_attestation_age_seconds": 300,
+        "max_clock_skew_seconds": 30
+      },
+      "authenticator_keys": [
+        {
+          "key_id": "auth-epoch-7",
+          "key_reference": "release/auth/epoch-7",
+          "material_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 7,
+          "status": "active",
+          "not_before": "2026-07-01T00:00:00Z",
+          "not_after": "2027-01-01T00:00:00Z"
+        }
+      ],
+      "commitment_keys": [
+        {
+          "key_id": "commit-epoch-7",
+          "key_reference": "release/commitment/epoch-7",
+          "material_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "epoch": 7,
+          "status": "active",
+          "not_before": "2026-07-01T00:00:00Z",
+          "not_after": "2027-01-01T00:00:00Z"
+        }
+      ],
+      "replay_state_keys": [
+        {
+          "key_id": "state-epoch-7",
+          "key_reference": "release/state/epoch-7",
+          "material_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "epoch": 7,
+          "status": "active",
+          "not_before": "2026-01-01T00:00:00Z",
+          "not_after": "2028-01-01T00:00:00Z"
+        }
+      ],
+      "report_authenticator_keys": [
+        {
+          "key_id": "report-epoch-7",
+          "key_reference": "release/report/epoch-7",
+          "material_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "epoch": 7,
+          "status": "active",
+          "not_before": "2026-07-01T00:00:00Z",
+          "not_after": "2027-01-01T00:00:00Z"
+        }
+      ],
+      "rotation": {
+        "epoch": 7,
+        "phase": "stable",
+        "active_authenticator_key_id": "auth-epoch-7",
+        "active_commitment_key_id": "commit-epoch-7",
+        "previous_authenticator_key_id": null,
+        "previous_commitment_key_id": null,
+        "required_authenticator_key_ids": ["auth-epoch-7"],
+        "required_commitment_key_ids": ["commit-epoch-7"],
+        "active_replay_state_key_id": "state-epoch-7",
+        "previous_replay_state_key_id": null,
+        "required_replay_state_key_ids": ["state-epoch-7"],
+        "active_report_authenticator_key_id": "report-epoch-7",
+        "previous_report_authenticator_key_id": null,
+        "required_report_authenticator_key_ids": ["report-epoch-7"],
+        "overlap_not_after": null
+      }
+    }
+  ]
+}

@@ -104,7 +104,7 @@ def validate_corpus_grants_config(
             "request.actor_id",
             "request.updated_at_from",
             "request.updated_at_to",
-            "Production and staging must configure a persistent corpus grants backend.",
+            "Production and staging require the PostgreSQL persistent corpus grants backend.",
             'if backend == "jsonl"',
             'backend in {"postgres", "postgresql"}',
             "storage_path=settings.corpus_grants_path",

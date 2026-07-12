@@ -13,6 +13,23 @@ Run a one-shot materialization after configuring the normal Vault settings:
 python scripts/dev/materialize_metrics_bearer_token.py
 ```
 
+The minimum materializer-specific configuration is below. It is a subset of the
+normal validated application settings; the workload may require additional shared
+production settings, but it must not receive a raw metrics token:
+
+```text
+HALLU_DEFENSE_SECRETS_BACKEND=vault
+HALLU_DEFENSE_VAULT_ADDR=https://vault.example.internal
+HALLU_DEFENSE_VAULT_MOUNT=secret
+HALLU_DEFENSE_VAULT_TOKEN_FILE=/run/secrets/hallu_defense_vault_token
+HALLU_DEFENSE_VAULT_CA_CERT_PATH=/run/hallu-defense/vault/ca.crt
+HALLU_DEFENSE_METRICS_BEARER_TOKEN_SECRET_NAME=observability/metrics-scrape-token
+```
+
+The Vault address must be HTTPS, the CA and token paths must be absolute regular
+files supplied by the platform, and the logical secret name is not secret material.
+Do not add a token-value environment variable or CLI flag.
+
 Run continuous rotation:
 
 ```text
@@ -26,6 +43,11 @@ request a clean exit. A transient Vault/read/write failure retains the prior
 complete file and is retried on the next watch interval. Output contains only
 generic status messages; neither the Vault token nor the metrics bearer token
 is printed or included in exceptions.
+
+For rotation, update the logical Vault value, wait for one successful refresh plus
+one scrape, and verify only file metadata (owner, mode, modification time, and an
+operator-side commitment). Never emit the credential or its digest as a metric. Keep
+the previous Vault version recoverable until the new scrape succeeds, then revoke it.
 
 ## Filesystem Contract
 

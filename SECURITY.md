@@ -61,9 +61,11 @@ These are tracked in `docs/TRACEABILITY_MATRIX.md` and must not be represented a
   deployment.
 - Tenant identity is JWT-derived in `oidc_jwt` mode; local and trusted-gateway
   modes still rely on boundary headers.
-- Persistent tenant-aware database layer.
+- Managed-scale performance, failover, and restore evidence for the implemented
+  tenant-aware PostgreSQL, pgvector, and OpenSearch persistence layers.
 - Runtime Vault connectivity tests against deployed infrastructure.
-- Full OPA/Rego policy test suite.
+- Remote evidence for the CI-pinned OPA version and deployment-specific policy
+  bundles; the repository's Python policy tests and executable Rego suite are active.
 - Broader PII detection beyond deterministic common patterns, including non-US
   identifiers and domain-specific sensitive payloads.
 - Runtime proof that Docker/Kubernetes services are using TLS and encrypted volumes.

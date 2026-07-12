@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/release-encryption-trust-store.schema.json",
+  "title": "ReleaseEncryptionTrustStore",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "trust_store_id", "generated_at", "valid_until", "bindings"],
+  "properties": {
+    "schema_version": {
+      "const": "release-encryption-trust-store.v1"
+    },
+    "trust_store_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/binding"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+    },
+    "key_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key_id",
+        "key_reference",
+        "material_sha256",
+        "epoch",
+        "status",
+        "not_before",
+        "not_after"
+      ],
+      "properties": {
+        "key_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "key_reference": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9/_-]{2,255}$"
+        },
+        "material_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": ["active", "retiring"]
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "not_after": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "rotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "epoch",
+        "phase",
+        "active_authenticator_key_id",
+        "active_commitment_key_id",
+        "required_authenticator_key_ids",
+        "required_commitment_key_ids",
+        "active_replay_state_key_id",
+        "required_replay_state_key_ids",
+        "active_report_authenticator_key_id",
+        "required_report_authenticator_key_ids"
+      ],
+      "properties": {
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "phase": {
+          "enum": ["stable", "overlap"]
+        },
+        "active_authenticator_key_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "active_commitment_key_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "previous_authenticator_key_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+        },
+        "previous_commitment_key_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+        },
+        "required_authenticator_key_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "required_commitment_key_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "active_replay_state_key_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "previous_replay_state_key_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+        },
+        "required_replay_state_key_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "active_report_authenticator_key_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "previous_report_authenticator_key_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+        },
+        "required_report_authenticator_key_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "overlap_not_after": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id",
+        "environment",
+        "trust_root_id",
+        "allowed_issuers",
+        "allowed_builders",
+        "allowed_workflows",
+        "allowed_source_repositories",
+        "allowed_kms_authorities",
+        "allowed_tls_ca_sha256",
+        "sequence_floor",
+        "deployment_revision_floor",
+        "freshness",
+        "authenticator_keys",
+        "commitment_keys",
+        "replay_state_keys",
+        "report_authenticator_keys",
+        "rotation"
+      ],
+      "properties": {
+        "tenant_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+        },
+        "environment": {
+          "enum": ["staging", "production"]
+        },
+        "trust_root_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "allowed_issuers": {
+          "$ref": "#/$defs/nonempty_strings"
+        },
+        "allowed_builders": {
+          "$ref": "#/$defs/nonempty_strings"
+        },
+        "allowed_workflows": {
+          "$ref": "#/$defs/nonempty_strings"
+        },
+        "allowed_source_repositories": {
+          "$ref": "#/$defs/nonempty_strings"
+        },
+        "allowed_kms_authorities": {
+          "$ref": "#/$defs/nonempty_strings"
+        },
+        "allowed_tls_ca_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "sequence_floor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deployment_revision_floor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_bundle_age_seconds",
+            "max_attestation_age_seconds",
+            "max_clock_skew_seconds"
+          ],
+          "properties": {
+            "max_bundle_age_seconds": {
+              "type": "integer",
+              "minimum": 60,
+              "maximum": 3600
+            },
+            "max_attestation_age_seconds": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 1800
+            },
+            "max_clock_skew_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 120
+            }
+          }
+        },
+        "authenticator_keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/key_descriptor"
+          }
+        },
+        "commitment_keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/key_descriptor"
+          }
+        },
+        "replay_state_keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/key_descriptor"
+          }
+        },
+        "report_authenticator_keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/key_descriptor"
+          }
+        },
+        "rotation": {
+          "$ref": "#/$defs/rotation"
+        }
+      }
+    },
+    "nonempty_strings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    }
+  }
+}

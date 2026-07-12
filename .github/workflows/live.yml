@@ -262,7 +262,8 @@ jobs:
             fi
             wait "${console_pid}" 2> /dev/null || true
           fi
-          docker compose down -v || true
+          docker compose stop keycloak || true
+          docker compose rm -f keycloak || true
 
   vault-live:
     runs-on: ubuntu-24.04

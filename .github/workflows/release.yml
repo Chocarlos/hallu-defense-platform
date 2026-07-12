@@ -1,0 +1,1461 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed semantic-version tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  TRIVY_VERSION: "0.72.0"
+  TRIVY_LINUX_X64_SHA256: "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
+
+jobs:
+  verify-tag:
+    if: >-
+      github.ref_protected && github.ref_type == 'branch' &&
+      (github.ref_name == 'main' || github.ref_name == 'master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      source-commit: ${{ steps.verified-tag.outputs.source-commit }}
+      tag-object: ${{ steps.verified-tag.outputs.tag-object }}
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Validate protected control ref and canonical tag input
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "${GITHUB_REF_PROTECTED}" = "true"
+          test "${GITHUB_REF_TYPE}" = "branch"
+          test "${GITHUB_REF_NAME}" = "main" -o "${GITHUB_REF_NAME}" = "master"
+      - name: Verify signed tag without checking out subject code
+        id: verified-tag
+        shell: bash
+        env:
+          RELEASE_SIGNING_PUBLIC_KEYS_B64: ${{ secrets.RELEASE_SIGNING_PUBLIC_KEYS_B64 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          trust_bundle="${RUNNER_TEMP}/release-signing-public-keys.asc"
+          gnupg_home="${RUNNER_TEMP}/release-verify-tag-gnupg"
+          bare_repo="${RUNNER_TEMP}/release-verify-tag.git"
+          askpass="${RUNNER_TEMP}/release-verify-tag-askpass.sh"
+          cleanup() {
+            rm -f -- "${trust_bundle}" "${askpass}"
+            rm -rf -- "${gnupg_home}" "${bare_repo}"
+          }
+          trap cleanup EXIT
+          trap 'exit 1' HUP INT TERM
+
+          test -n "${RELEASE_SIGNING_PUBLIC_KEYS_B64}"
+          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEYS_B64}" | base64 --decode > "${trust_bundle}"
+          install -d -m 0700 "${gnupg_home}"
+          inspection="$(gpg --batch --no-options --homedir "${gnupg_home}" \
+            --with-colons --show-keys "${trust_bundle}" 2>/dev/null)"
+          if grep -Eq '^(sec|ssb):' <<< "${inspection}"; then
+            echo "Release trust bundle contains forbidden secret-key packets." >&2
+            exit 1
+          fi
+          grep -q '^pub:' <<< "${inspection}"
+          gpg --batch --no-options --homedir "${gnupg_home}" --import "${trust_bundle}"
+          if gpg --batch --no-options --homedir "${gnupg_home}" --with-colons \
+            --list-secret-keys 2>/dev/null | grep -Eq '^(sec|ssb):'; then
+            echo "Release trust store imported forbidden secret-key material." >&2
+            exit 1
+          fi
+
+          [[ "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          export GNUPGHOME="${gnupg_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_ASKPASS="${askpass}"
+          cat > "${askpass}" <<'ASKPASS'
+          #!/usr/bin/env bash
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+          git init --bare "${bare_repo}"
+          git --git-dir="${bare_repo}" -c core.hooksPath=/dev/null fetch \
+            --no-tags --depth=1 \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          git --git-dir="${bare_repo}" cat-file -e "refs/tags/${RELEASE_TAG}^{tag}"
+          git --git-dir="${bare_repo}" verify-tag "refs/tags/${RELEASE_TAG}"
+          tag_object="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{tag}")"
+          source_commit="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          [[ "${tag_object}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
+          printf 'tag-object=%s\n' "${tag_object}" >> "${GITHUB_OUTPUT}"
+          printf 'source-commit=%s\n' "${source_commit}" >> "${GITHUB_OUTPUT}"
+
+  build-release:
+    needs: verify-tag
+    if: >-
+      needs.verify-tag.result == 'success' &&
+      github.ref_protected && github.ref_type == 'branch' &&
+      (github.ref_name == 'main' || github.ref_name == 'master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      build-artifact-id: ${{ steps.build-upload.outputs.artifact-id }}
+      build-artifact-digest: ${{ steps.build-upload.outputs.artifact-digest }}
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      VERIFIED_SOURCE_COMMIT: ${{ needs.verify-tag.outputs.source-commit }}
+      VERIFIED_TAG_OBJECT: ${{ needs.verify-tag.outputs.tag-object }}
+      RELEASE_IMAGE_ROWS: |-
+        api|infra/docker/api.Dockerfile
+        console|infra/docker/console.Dockerfile
+        sandbox|infra/docker/sandbox.Dockerfile
+        pgvector|infra/docker/pgvector.Dockerfile
+        keycloak|infra/docker/keycloak.Dockerfile
+        grafana|infra/docker/grafana.Dockerfile
+        opensearch|infra/docker/opensearch.Dockerfile
+        seaweedfs|infra/docker/seaweedfs.Dockerfile
+    steps:
+      - name: Validate protected control ref and verified tag handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "${VERIFIED_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${VERIFIED_TAG_OBJECT}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_REF_PROTECTED}" = "true"
+          test "${GITHUB_REF_TYPE}" = "branch"
+          test "${GITHUB_REF_NAME}" = "main" -o "${GITHUB_REF_NAME}" = "master"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.VERIFIED_SOURCE_COMMIT }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+      - name: Bind verified release subject metadata
+        id: release-subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${VERIFIED_SOURCE_COMMIT}"
+          printf 'source-commit=%s\n' "${VERIFIED_SOURCE_COMMIT}" >> "${GITHUB_OUTPUT}"
+          printf 'tag-object=%s\n' "${VERIFIED_TAG_OBJECT}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - name: Install exact locked toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci/install_python_lock.py build-tools
+          python scripts/ci/compile_python_locks.py --check
+          python scripts/ci/install_python_lock.py dev
+          python scripts/ci/check_python_reproducibility.py
+          test "$(npm --version)" = "11.16.0"
+          npm ci
+      - name: Install pinned Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 --output "${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          printf '%s  %s\n' "${GITLEAKS_LINUX_X64_SHA256}" "${archive}" | sha256sum --check
+          install -d -m 0755 "${RUNNER_TEMP}/gitleaks-bin"
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}/gitleaks-bin" gitleaks
+          chmod 0755 "${RUNNER_TEMP}/gitleaks-bin/gitleaks"
+          test "$("${RUNNER_TEMP}/gitleaks-bin/gitleaks" version)" = "${GITLEAKS_VERSION}"
+          printf 'GITLEAKS_BINARY=%s\n' "${RUNNER_TEMP}/gitleaks-bin/gitleaks" >> "${GITHUB_ENV}"
+      - name: Run release security gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci/check_release_security_config.py
+          python scripts/ci/check_gitleaks_config.py
+          python scripts/ci/run_gitleaks.py
+          python scripts/ci/secret_scan.py
+          python scripts/ci/check_encryption_config.py
+          python scripts/ci/check_container_scan_config.py
+          python scripts/ci/python_dependency_audit.py
+          npm audit --audit-level=high
+          npm audit --omit=dev --audit-level=high
+      - name: Verify release tests and builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m ruff check apps/api/src apps/api/tests scripts evals
+          python -m mypy apps/api/src
+          python -m pytest apps/api/tests
+          npm run lint
+          npm run typecheck
+          npm run test
+          npm run build
+      - name: Build reproducible package subjects
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.release-subject.outputs.source-commit }}
+          TAG_OBJECT: ${{ steps.release-subject.outputs.tag-object }}
+        run: |
+          set -euo pipefail
+          release_root="${RUNNER_TEMP}/release-build"
+          rm -rf "${release_root}"
+          mkdir -p "${release_root}/images"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${SOURCE_COMMIT}")"
+          {
+            printf 'schema_version=release-source.v1\n'
+            printf 'release_tag=%s\n' "${RELEASE_TAG}"
+            printf 'tag_object_sha=%s\n' "${TAG_OBJECT}"
+            printf 'source_commit=%s\n' "${SOURCE_COMMIT}"
+            printf 'control_repository=%s\n' "${GITHUB_REPOSITORY}"
+            printf 'control_ref=%s\n' "${GITHUB_REF}"
+            printf 'control_commit=%s\n' "${GITHUB_SHA}"
+            printf 'workflow_ref=%s\n' "${GITHUB_WORKFLOW_REF}"
+          } > "${release_root}/RELEASE_SOURCE"
+          python scripts/ci/build_reproducible_wheel.py --output-dir "${release_root}"
+          git archive --format=tar --prefix="hallu-defense-${RELEASE_TAG}/" "${SOURCE_COMMIT}" \
+            | gzip -n > "${release_root}/hallu-defense-${RELEASE_TAG}.tar.gz"
+          python -m pip_audit \
+            --requirement requirements/python/runtime-linux-py312.lock \
+            --disable-pip --progress-spinner off --format cyclonedx-json \
+            --output "${release_root}/api-runtime.cdx.json"
+          npm sbom --sbom-format cyclonedx > "${release_root}/node-runtime.cdx.json"
+          cp requirements/python/runtime-linux-py312.lock "${release_root}/api-runtime-lock.txt"
+          cp package-lock.json "${release_root}/node-runtime-lock.json"
+      - name: Export all release images as classic Docker archives sequentially
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.release-subject.outputs.source-commit }}
+        run: |
+          set -euo pipefail
+          release_root="${RUNNER_TEMP}/release-build"
+          # Generated release subjects live outside the checked-out build context.
+          # This prevents an earlier archive from entering a later image context.
+          test ! -e release
+          test ! -e scan-input
+          test ! -e attestation-input
+          while IFS='|' read -r name dockerfile; do
+            test -n "${name}"
+            test -f "${dockerfile}"
+            image_ref="hallu-defense-${name}:${RELEASE_TAG}"
+            docker buildx build \
+              --provenance=false \
+              --tag "${image_ref}" \
+              --label "org.opencontainers.image.revision=${SOURCE_COMMIT}" \
+              --label "org.opencontainers.image.version=${RELEASE_TAG}" \
+              --output "type=docker,oci-mediatypes=false,compression=uncompressed,force-compression=true,name=${image_ref},dest=${release_root}/images/${name}.docker.tar" \
+              -f "${dockerfile}" .
+          done <<< "${RELEASE_IMAGE_ROWS}"
+      - name: Bind build archives and create build checksums
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.release-subject.outputs.source-commit }}
+          RELEASE_ROOT: ${{ runner.temp }}/release-build
+        run: |
+          set -euo pipefail
+          python -I -S - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import os
+          import tarfile
+          from pathlib import Path
+
+          release = Path(os.environ["RELEASE_ROOT"])
+          images = []
+          for raw in os.environ["RELEASE_IMAGE_ROWS"].splitlines():
+              name, dockerfile = raw.split("|", 1)
+              archive_path = release / "images" / f"{name}.docker.tar"
+              with tarfile.open(archive_path, mode="r:") as archive:
+                  manifests = archive.getmembers()
+                  by_name = {member.name: member for member in manifests}
+                  manifest_member = by_name.get("manifest.json")
+                  if manifest_member is None or not manifest_member.isreg() or manifest_member.size > 1024 * 1024:
+                      raise SystemExit(f"{name}: classic Docker manifest is missing")
+                  handle = archive.extractfile(manifest_member)
+                  if handle is None:
+                      raise SystemExit(f"{name}: classic Docker manifest is unreadable")
+                  manifest = json.load(handle)
+                  if not isinstance(manifest, list) or len(manifest) != 1:
+                      raise SystemExit(f"{name}: classic Docker manifest entry count is invalid")
+                  config_name = manifest[0].get("Config")
+                  config_member = by_name.get(config_name) if isinstance(config_name, str) else None
+                  if config_member is None or not config_member.isreg() or config_member.size > 16 * 1024 * 1024:
+                      raise SystemExit(f"{name}: classic Docker config is invalid")
+                  config_handle = archive.extractfile(config_member)
+                  if config_handle is None:
+                      raise SystemExit(f"{name}: classic Docker config is unreadable")
+                  config_bytes = config_handle.read(16 * 1024 * 1024 + 1)
+              digest = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+              (release / "images" / f"{name}.image-config-digest").write_text(
+                  digest + "\n", encoding="utf-8"
+              )
+              images.append(
+                  {
+                      "name": name,
+                      "dockerfile": dockerfile,
+                      "dockerfile_sha256": hashlib.sha256(Path(dockerfile).read_bytes()).hexdigest(),
+                      "image_reference": f"hallu-defense-{name}:{os.environ['RELEASE_TAG']}",
+                      "digest_kind": "docker-image-config",
+                      "image_config_digest": digest,
+                      "archive": f"images/{name}.docker.tar",
+                  }
+              )
+          (release / "image-build-metadata.json").write_text(
+              json.dumps(
+                  {
+                      "schema_version": "release-image-build.v1",
+                      "release_tag": os.environ["RELEASE_TAG"],
+                      "source_commit": os.environ["SOURCE_COMMIT"],
+                      "archive_format": "buildx-type-docker-v1-uncompressed",
+                      "images": images,
+                  },
+                  indent=2,
+                  sort_keys=True,
+          ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          (
+            cd "${RELEASE_ROOT}"
+            find . -type f ! -name BUILD_SHA256SUMS -printf '%P\0' \
+              | LC_ALL=C sort -z | xargs -0 sha256sum > BUILD_SHA256SUMS
+          )
+      - name: Upload immutable build artifact envelope
+        id: build-upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hallu-defense-${{ env.RELEASE_TAG }}-build-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-build/
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 1
+          overwrite: false
+          retention-days: 1
+
+  scan-release:
+    needs: build-release
+    if: >-
+      needs.build-release.result == 'success' &&
+      github.ref_protected && github.ref_type == 'branch' &&
+      (github.ref_name == 'main' || github.ref_name == 'master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions: {}
+    outputs:
+      release-artifact-id: ${{ steps.scan-upload.outputs.artifact-id }}
+      release-artifact-digest: ${{ steps.scan-upload.outputs.artifact-digest }}
+      build-artifact-id: ${{ needs.build-release.outputs.build-artifact-id }}
+      build-artifact-digest: ${{ needs.build-release.outputs.build-artifact-digest }}
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      BUILD_ARTIFACT_ID: ${{ needs.build-release.outputs.build-artifact-id }}
+      BUILD_ARTIFACT_DIGEST: ${{ needs.build-release.outputs.build-artifact-digest }}
+      RELEASE_IMAGE_ROWS: |-
+        api|infra/docker/api.Dockerfile
+        console|infra/docker/console.Dockerfile
+        sandbox|infra/docker/sandbox.Dockerfile
+        pgvector|infra/docker/pgvector.Dockerfile
+        keycloak|infra/docker/keycloak.Dockerfile
+        grafana|infra/docker/grafana.Dockerfile
+        opensearch|infra/docker/opensearch.Dockerfile
+        seaweedfs|infra/docker/seaweedfs.Dockerfile
+    steps:
+      - name: Validate immutable build artifact handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${BUILD_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${BUILD_ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "${GITHUB_REF_PROTECTED}" = "true"
+          test "${GITHUB_REF_TYPE}" = "branch"
+          test "${GITHUB_REF_NAME}" = "main" -o "${GITHUB_REF_NAME}" = "master"
+      - name: Download exact immutable build artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          artifact-ids: ${{ env.BUILD_ARTIFACT_ID }}
+          path: scan-input/release
+      - name: Validate inert build subjects and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I -S - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import os
+          import re
+          from pathlib import Path, PurePosixPath
+
+          root = Path("scan-input/release")
+          if not root.is_dir() or root.is_symlink():
+              raise SystemExit("build artifact root is invalid")
+          files = {}
+          for candidate in root.rglob("*"):
+              if candidate.is_symlink() or (not candidate.is_dir() and not candidate.is_file()):
+                  raise SystemExit("build artifact contains a link or special file")
+              if candidate.is_file():
+                  files[candidate.relative_to(root).as_posix()] = candidate
+          manifest = root / "BUILD_SHA256SUMS"
+          if manifest.stat().st_size > 1024 * 1024:
+              raise SystemExit("build checksum manifest is oversized")
+          checksums = {}
+          pattern = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
+          for line in manifest.read_text(encoding="utf-8").splitlines():
+              match = pattern.fullmatch(line)
+              if match is None:
+                  raise SystemExit("build checksum manifest contains an unsafe entry")
+              digest, relative = match.groups()
+              path = PurePosixPath(relative)
+              if path.is_absolute() or "." in path.parts or ".." in path.parts or relative in checksums:
+                  raise SystemExit("build checksum manifest contains traversal/duplicate")
+              checksums[relative] = digest
+          if set(checksums) != set(files) - {"BUILD_SHA256SUMS"}:
+              raise SystemExit("build checksum manifest coverage is not exact")
+          for relative, expected in checksums.items():
+              digest = hashlib.sha256()
+              with files[relative].open("rb") as handle:
+                  while chunk := handle.read(1024 * 1024):
+                      digest.update(chunk)
+              if digest.hexdigest() != expected:
+                  raise SystemExit(f"build subject digest mismatch: {relative}")
+          image_names = {line.split("|", 1)[0] for line in os.environ["RELEASE_IMAGE_ROWS"].splitlines()}
+          wheel_files = {name for name in files if name.endswith(".whl") and "/" not in name}
+          expected_files = {
+              "BUILD_SHA256SUMS", "RELEASE_SOURCE", "api-runtime.cdx.json",
+              "api-runtime-lock.txt", "node-runtime.cdx.json", "node-runtime-lock.json",
+              f"hallu-defense-{os.environ['RELEASE_TAG']}.tar.gz",
+              "image-build-metadata.json", *wheel_files,
+          }
+          for name in image_names:
+              expected_files.update({
+                  f"images/{name}.docker.tar",
+                  f"images/{name}.image-config-digest",
+              })
+          if len(wheel_files) != 1 or set(files) != expected_files:
+              raise SystemExit("build artifact file inventory is not exact")
+          PY
+      - name: Install pinned Trivy on the fresh scan runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          archive="${RUNNER_TEMP}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          /usr/bin/curl --fail --location --proto '=https' --tlsv1.2 --output "${archive}" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          printf '%s  %s\n' "${TRIVY_LINUX_X64_SHA256}" "${archive}" | /usr/bin/sha256sum --check
+          /usr/bin/install -d -m 0755 "${RUNNER_TEMP}/release-trivy/bin"
+          /usr/bin/tar -xzf "${archive}" -C "${RUNNER_TEMP}/release-trivy/bin" trivy
+          /usr/bin/chmod 0755 "${RUNNER_TEMP}/release-trivy/bin/trivy"
+          test "$("${RUNNER_TEMP}/release-trivy/bin/trivy" --version | head -n 1)" = "Version: ${TRIVY_VERSION}"
+          /usr/bin/install -d -m 0700 \
+            "${RUNNER_TEMP}/release-trivy/home" \
+            "${RUNNER_TEMP}/release-trivy/cache"
+          # These policy inputs are authored by the protected workflow on this
+          # fresh runner; neither the tag nor the build artifact can override them.
+          printf '{}\n' > scan-input/release/trivy-config.yaml
+          : > scan-input/release/trivy-ignorefile
+          chmod 0444 scan-input/release/trivy-config.yaml \
+            scan-input/release/trivy-ignorefile
+      - name: Scan every inert Docker archive sequentially and finalize evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${GITHUB_WORKSPACE}/scan-input/release"
+          mkdir -p "${root}/trivy"
+          scan_status=0
+          : > "${root}/trivy/scan-status.tsv"
+          while IFS='|' read -r name dockerfile; do
+            archive="images/${name}.docker.tar"
+            report="${root}/trivy/${name}.json"
+            stderr_log="${root}/trivy/${name}.stderr.log"
+            set +e
+            (
+              cd "${root}"
+              /usr/bin/env -i \
+                HOME="${RUNNER_TEMP}/release-trivy/home" \
+                XDG_CACHE_HOME="${RUNNER_TEMP}/release-trivy/cache" \
+                SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+                PATH=/usr/bin:/bin \
+                "${RUNNER_TEMP}/release-trivy/bin/trivy" image \
+                --cache-dir "${RUNNER_TEMP}/release-trivy/cache" \
+                --config trivy-config.yaml --ignorefile trivy-ignorefile \
+                --no-progress --scanners vuln --vuln-type os,library \
+                --severity CRITICAL,HIGH --format json \
+                --output "trivy/${name}.json" \
+                --exit-code 1 --input "${archive}" 2> "trivy/${name}.stderr.log"
+            )
+            result=$?
+            set -e
+            printf '%s\t%s\n' "${name}" "${result}" >> "${root}/trivy/scan-status.tsv"
+            if [[ "${result}" -ne 0 ]]; then scan_status=1; fi
+          done <<< "${RELEASE_IMAGE_ROWS}"
+
+          export RELEASE_ROOT="${root}"
+          set +e
+          python -I -S - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          def validate_trivy_report_binding(
+              report: object,
+              *,
+              expected_archive_path: str,
+              expected_repo_tag: str,
+              expected_image_config_digest: str,
+              expected_diff_ids: list[str] | None,
+          ) -> None:
+              if re.fullmatch(
+                  r"images/[a-z0-9][a-z0-9-]*\.docker\.tar",
+                  expected_archive_path,
+              ) is None:
+                  raise ValueError("trusted Trivy archive path is invalid")
+              if not isinstance(report, dict):
+                  raise ValueError("Trivy JSON root must be an object")
+              if report.get("ArtifactName") != expected_archive_path:
+                  raise ValueError("Trivy ArtifactName/archive path mismatch")
+              metadata = report.get("Metadata")
+              if not isinstance(metadata, dict):
+                  raise ValueError("Trivy metadata is missing")
+              if metadata.get("ImageID") != expected_image_config_digest:
+                  raise ValueError("Trivy ImageID/config digest mismatch")
+              if metadata.get("RepoTags") != [expected_repo_tag]:
+                  raise ValueError("Trivy RepoTags binding mismatch")
+              diff_ids = metadata.get("DiffIDs")
+              if not isinstance(diff_ids, list) or not diff_ids:
+                  raise ValueError("Trivy DiffIDs are missing")
+              if expected_diff_ids is not None and diff_ids != expected_diff_ids:
+                  raise ValueError("Trivy DiffIDs/layer binding mismatch")
+              if not isinstance(report.get("SchemaVersion"), int) or not isinstance(
+                  report.get("Results"), list
+              ):
+                  raise ValueError("Trivy JSON result shape is invalid")
+
+          root = Path(os.environ["RELEASE_ROOT"])
+          build = json.loads((root / "image-build-metadata.json").read_text(encoding="utf-8"))
+          rows = [line.split("|", 1) for line in os.environ["RELEASE_IMAGE_ROWS"].splitlines()]
+          build_by_name = {item["name"]: item for item in build["images"]}
+          statuses = {}
+          for line in (root / "trivy" / "scan-status.tsv").read_text(encoding="utf-8").splitlines():
+              name, raw_status = line.split("\t")
+              statuses[name] = int(raw_status)
+          errors = []
+          evidence = []
+          for name, dockerfile in rows:
+              built = build_by_name[name]
+              digest = (root / "images" / f"{name}.image-config-digest").read_text(
+                  encoding="utf-8"
+              ).strip()
+              report_path = root / "trivy" / f"{name}.json"
+              report_sha = None
+              report_image_id = None
+              artifact_name = None
+              repo_tags = None
+              diff_ids = None
+              if report_path.is_file() and report_path.stat().st_size <= 128 * 1024 * 1024:
+                  report_bytes = report_path.read_bytes()
+                  report_sha = hashlib.sha256(report_bytes).hexdigest()
+                  try:
+                      report = json.loads(report_bytes)
+                  except json.JSONDecodeError:
+                      errors.append(f"{name}: invalid Trivy JSON")
+                  else:
+                      expected_archive = f"images/{name}.docker.tar"
+                      metadata = report.get("Metadata", {})
+                      if isinstance(metadata, dict):
+                          report_image_id = metadata.get("ImageID")
+                          repo_tags = metadata.get("RepoTags")
+                          diff_ids = metadata.get("DiffIDs")
+                      artifact_name = report.get("ArtifactName")
+                      if built.get("archive") != expected_archive:
+                          errors.append(f"{name}: build archive path binding mismatch")
+                      try:
+                          validate_trivy_report_binding(
+                              report,
+                              expected_archive_path=expected_archive,
+                              expected_repo_tag=built["image_reference"],
+                              expected_image_config_digest=digest,
+                              expected_diff_ids=None,
+                          )
+                      except ValueError as exc:
+                          errors.append(f"{name}: {exc}")
+              else:
+                  errors.append(f"{name}: Trivy report missing/oversized")
+              evidence.append({
+                  **built,
+                  "registry_manifest_digest": None,
+                  "trivy_artifact_name": artifact_name,
+                  "trivy_repo_tags": repo_tags,
+                  "trivy_diff_ids": diff_ids,
+                  "trivy_report": f"trivy/{name}.json",
+                  "trivy_report_sha256": report_sha,
+                  "trivy_report_image_config_digest": report_image_id,
+                  "scan_return_code": statuses.get(name),
+              })
+          policy = {
+              "scanners": ["vuln"], "vulnerability_types": ["os", "library"],
+              "severity": ["CRITICAL", "HIGH"], "ignore_unfixed": False,
+              "input_mode": "classic-docker-archive",
+              "config_sha256": hashlib.sha256(
+                  (root / "trivy-config.yaml").read_bytes()
+              ).hexdigest(),
+              "ignorefile_sha256": hashlib.sha256(
+                  (root / "trivy-ignorefile").read_bytes()
+              ).hexdigest(),
+          }
+          (root / "image-evidence.json").write_text(json.dumps({
+              "schema_version": "release-image-evidence.v2",
+              "release_tag": os.environ["RELEASE_TAG"],
+              "source_commit": build["source_commit"],
+              "scan_policy": policy,
+              "images": evidence,
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          (root / "trivy" / "scan-status.json").write_text(json.dumps({
+              "schema_version": "release-image-scan-status.v2",
+              "scan_policy": policy,
+              "images": [{
+                  "name": item["name"], "digest_kind": item["digest_kind"],
+                  "image_config_digest": item["image_config_digest"],
+                  "return_code": item["scan_return_code"], "report": item["trivy_report"],
+              } for item in evidence],
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          (root / "trivy" / "scan-status.tsv").unlink()
+          (root / "BUILD_ARTIFACT").write_text(
+              "schema_version=release-build-artifact.v1\n"
+              f"artifact_id={os.environ['BUILD_ARTIFACT_ID']}\n"
+              f"artifact_digest={os.environ['BUILD_ARTIFACT_DIGEST']}\n",
+              encoding="utf-8",
+          )
+          if errors:
+              raise SystemExit("; ".join(errors))
+          PY
+          binding_status=$?
+          set -e
+          if [[ "${binding_status}" -ne 0 ]]; then scan_status=1; fi
+          (
+            cd "${root}"
+            find . -type f ! -name SHA256SUMS -printf '%P\0' \
+              | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+          exit "${scan_status}"
+      - name: Upload immutable scanned release artifact envelope
+        id: scan-upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hallu-defense-${{ env.RELEASE_TAG }}-scanned-${{ github.run_id }}
+          path: scan-input/release/
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 1
+          overwrite: false
+          retention-days: 30
+      - name: Clean only fresh scanner scratch state
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf "${RUNNER_TEMP}/release-trivy"
+
+  attest-release:
+    needs: scan-release
+    if: >-
+      needs.scan-release.result == 'success' &&
+      github.ref_protected && github.ref_type == 'branch' &&
+      (github.ref_name == 'main' || github.ref_name == 'master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_ARTIFACT_ID: ${{ needs.scan-release.outputs.release-artifact-id }}
+      RELEASE_ARTIFACT_DIGEST: ${{ needs.scan-release.outputs.release-artifact-digest }}
+      BUILD_ARTIFACT_ID: ${{ needs.scan-release.outputs.build-artifact-id }}
+      BUILD_ARTIFACT_DIGEST: ${{ needs.scan-release.outputs.build-artifact-digest }}
+      RELEASE_IMAGE_ROWS: |-
+        api|infra/docker/api.Dockerfile
+        console|infra/docker/console.Dockerfile
+        sandbox|infra/docker/sandbox.Dockerfile
+        pgvector|infra/docker/pgvector.Dockerfile
+        keycloak|infra/docker/keycloak.Dockerfile
+        grafana|infra/docker/grafana.Dockerfile
+        opensearch|infra/docker/opensearch.Dockerfile
+        seaweedfs|infra/docker/seaweedfs.Dockerfile
+    steps:
+      - name: Validate immutable artifact handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${RELEASE_ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${BUILD_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${BUILD_ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "${GITHUB_REF_PROTECTED}" = "true"
+          test "${GITHUB_REF_TYPE}" = "branch"
+          test "${GITHUB_REF_NAME}" = "main" -o "${GITHUB_REF_NAME}" = "master"
+      - name: Download exact immutable release artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          artifact-ids: ${{ env.RELEASE_ARTIFACT_ID }}
+          path: attestation-input/release
+      - name: Verify external tag trust and inert release subjects
+        id: verify-subject
+        shell: bash
+        env:
+          RELEASE_SIGNING_PUBLIC_KEYS_B64: ${{ secrets.RELEASE_SIGNING_PUBLIC_KEYS_B64 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          trust_bundle="${RUNNER_TEMP}/release-signing-public-keys.asc"
+          gnupg_home="${RUNNER_TEMP}/release-gnupg"
+          bare_repo="${RUNNER_TEMP}/release-tag.git"
+          askpass="${RUNNER_TEMP}/release-git-askpass.sh"
+          dockerfile_metadata="${RUNNER_TEMP}/expected-release-dockerfiles.tsv"
+
+          cleanup_trust() {
+            rm -f "${trust_bundle}" "${askpass}"
+            rm -rf "${gnupg_home}" "${bare_repo}"
+          }
+          cleanup_all() {
+            cleanup_trust
+            rm -f "${dockerfile_metadata}"
+          }
+          trap cleanup_all EXIT
+          trap 'exit 1' HUP INT TERM
+
+          test -n "${RELEASE_SIGNING_PUBLIC_KEYS_B64}"
+          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEYS_B64}" | base64 --decode > "${trust_bundle}"
+          install -d -m 0700 "${gnupg_home}"
+          inspection="$(gpg --batch --no-options --homedir "${gnupg_home}" \
+            --with-colons --show-keys "${trust_bundle}" 2>/dev/null)"
+          if grep -Eq '^(sec|ssb):' <<< "${inspection}"; then
+            echo "Release trust bundle contains forbidden secret-key packets." >&2
+            exit 1
+          fi
+          grep -q '^pub:' <<< "${inspection}"
+          gpg --batch --no-options --homedir "${gnupg_home}" --import "${trust_bundle}"
+          if gpg --batch --no-options --homedir "${gnupg_home}" --with-colons \
+            --list-secret-keys 2>/dev/null | grep -Eq '^(sec|ssb):'; then
+            echo "Release trust store imported forbidden secret-key material." >&2
+            exit 1
+          fi
+
+          [[ "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          export GNUPGHOME="${gnupg_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_ASKPASS="${askpass}"
+          cat > "${askpass}" <<'ASKPASS'
+          #!/usr/bin/env bash
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+          git init --bare "${bare_repo}"
+          git --git-dir="${bare_repo}" -c core.hooksPath=/dev/null fetch \
+            --no-tags --depth=1 \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          git --git-dir="${bare_repo}" cat-file -e "refs/tags/${RELEASE_TAG}^{tag}"
+          git --git-dir="${bare_repo}" verify-tag "refs/tags/${RELEASE_TAG}"
+          expected_tag_object="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{tag}")"
+          expected_source_commit="$(git --git-dir="${bare_repo}" rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          test "$(git --git-dir="${bare_repo}" cat-file -t "${expected_source_commit}")" = commit
+          node_lock_object="$(git --git-dir="${bare_repo}" rev-parse "${expected_source_commit}:package-lock.json")"
+          test "$(git --git-dir="${bare_repo}" cat-file -t "${node_lock_object}")" = blob
+          expected_node_lock_sha256="$(git --git-dir="${bare_repo}" cat-file blob "${node_lock_object}" | sha256sum | cut -d' ' -f1)"
+          api_lock_object="$(git --git-dir="${bare_repo}" rev-parse "${expected_source_commit}:requirements/python/runtime-linux-py312.lock")"
+          test "$(git --git-dir="${bare_repo}" cat-file -t "${api_lock_object}")" = blob
+          expected_api_lock_sha256="$(git --git-dir="${bare_repo}" cat-file blob "${api_lock_object}" | sha256sum | cut -d' ' -f1)"
+
+          : > "${dockerfile_metadata}"
+          while IFS='|' read -r name dockerfile; do
+            blob_object="$(git --git-dir="${bare_repo}" rev-parse "${expected_source_commit}:${dockerfile}")"
+            test "$(git --git-dir="${bare_repo}" cat-file -t "${blob_object}")" = blob
+            dockerfile_sha256="$(git --git-dir="${bare_repo}" cat-file blob "${blob_object}" | sha256sum | cut -d' ' -f1)"
+            printf '%s\t%s\t%s\n' "${name}" "${dockerfile}" "${dockerfile_sha256}" \
+              >> "${dockerfile_metadata}"
+          done <<< "${RELEASE_IMAGE_ROWS}"
+
+          # Trust roots, credentials, and the bare repository are gone before parsing
+          # downloaded data and before any OIDC-backed attestation action executes.
+          cleanup_trust
+          unset RELEASE_SIGNING_PUBLIC_KEYS_B64 GITHUB_TOKEN GNUPGHOME GIT_ASKPASS
+
+          export EXPECTED_TAG_OBJECT="${expected_tag_object}"
+          export EXPECTED_SOURCE_COMMIT="${expected_source_commit}"
+          export EXPECTED_NODE_LOCK_SHA256="${expected_node_lock_sha256}"
+          export EXPECTED_API_LOCK_SHA256="${expected_api_lock_sha256}"
+          export EXPECTED_DOCKERFILE_METADATA="${dockerfile_metadata}"
+          export RELEASE_ROOT="${GITHUB_WORKSPACE}/attestation-input/release"
+          python -I -S - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import re
+          import tarfile
+          from pathlib import Path, PurePosixPath
+
+          root = Path(os.environ["RELEASE_ROOT"])
+          if not root.is_dir() or root.is_symlink():
+              raise SystemExit("downloaded release root must be a real directory")
+
+          files: dict[str, Path] = {}
+          for candidate in root.rglob("*"):
+              if candidate.is_symlink():
+                  raise SystemExit(f"release artifact contains a symlink: {candidate}")
+              if candidate.is_dir():
+                  continue
+              if not candidate.is_file():
+                  raise SystemExit(f"release artifact contains a non-regular file: {candidate}")
+              relative = candidate.relative_to(root).as_posix()
+              files[relative] = candidate
+
+          def sha256_file(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  while chunk := handle.read(1024 * 1024):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def validate_trivy_report_binding(
+              report: object,
+              *,
+              expected_archive_path: str,
+              expected_repo_tag: str,
+              expected_image_config_digest: str,
+              expected_diff_ids: list[str] | None,
+          ) -> None:
+              if re.fullmatch(
+                  r"images/[a-z0-9][a-z0-9-]*\.docker\.tar",
+                  expected_archive_path,
+              ) is None:
+                  raise ValueError("trusted Trivy archive path is invalid")
+              if not isinstance(report, dict):
+                  raise ValueError("Trivy JSON root must be an object")
+              if report.get("ArtifactName") != expected_archive_path:
+                  raise ValueError("Trivy ArtifactName/archive path mismatch")
+              metadata = report.get("Metadata")
+              if not isinstance(metadata, dict):
+                  raise ValueError("Trivy metadata is missing")
+              if metadata.get("ImageID") != expected_image_config_digest:
+                  raise ValueError("Trivy ImageID/config digest mismatch")
+              if metadata.get("RepoTags") != [expected_repo_tag]:
+                  raise ValueError("Trivy RepoTags binding mismatch")
+              diff_ids = metadata.get("DiffIDs")
+              if not isinstance(diff_ids, list) or not diff_ids:
+                  raise ValueError("Trivy DiffIDs are missing")
+              if expected_diff_ids is not None and diff_ids != expected_diff_ids:
+                  raise ValueError("Trivy DiffIDs/layer binding mismatch")
+              if not isinstance(report.get("SchemaVersion"), int) or not isinstance(
+                  report.get("Results"), list
+              ):
+                  raise ValueError("Trivy JSON result shape is invalid")
+
+          def safe_tar_member_name(name: str) -> None:
+              path = PurePosixPath(name)
+              if (
+                  not name
+                  or "\\" in name
+                  or path.is_absolute()
+                  or "." in path.parts
+                  or ".." in path.parts
+              ):
+                  raise SystemExit(f"Docker archive contains unsafe member path: {name}")
+
+          def read_bounded_tar_member(
+              archive: tarfile.TarFile,
+              member: tarfile.TarInfo,
+              *,
+              limit: int,
+          ) -> bytes:
+              if not member.isreg() or member.size > limit:
+                  raise SystemExit(f"Docker archive control member is invalid: {member.name}")
+              extracted = archive.extractfile(member)
+              if extracted is None:
+                  raise SystemExit(f"Docker archive control member cannot be read: {member.name}")
+              content = extracted.read(limit + 1)
+              if len(content) != member.size or len(content) > limit:
+                  raise SystemExit(f"Docker archive control member exceeds its bound: {member.name}")
+              return content
+
+          def sha256_tar_member(
+              archive: tarfile.TarFile,
+              member: tarfile.TarInfo,
+          ) -> str:
+              extracted = archive.extractfile(member)
+              if extracted is None:
+                  raise SystemExit(f"Docker archive layer cannot be read: {member.name}")
+              digest = hashlib.sha256()
+              observed_size = 0
+              while chunk := extracted.read(1024 * 1024):
+                  observed_size += len(chunk)
+                  if observed_size > member.size:
+                      raise SystemExit("Docker archive layer exceeds its declared size")
+                  digest.update(chunk)
+              if observed_size != member.size:
+                  raise SystemExit("Docker archive layer size does not match its header")
+              return "sha256:" + digest.hexdigest()
+
+          def validate_docker_archive(
+              path: Path,
+              *,
+              expected_config_digest: str,
+              expected_repo_tag: str,
+              expected_revision: str,
+              expected_version: str,
+          ) -> list[str]:
+              max_compressed_bytes = 4 * 1024 * 1024 * 1024
+              max_uncompressed_bytes = 12 * 1024 * 1024 * 1024
+              max_members = 20_000
+              compressed_bytes = path.stat().st_size
+              if compressed_bytes <= 0 or compressed_bytes > max_compressed_bytes:
+                  raise SystemExit("Docker archive compressed size is outside its bound")
+              try:
+                  with tarfile.open(path, mode="r:") as archive:
+                      members: dict[str, tarfile.TarInfo] = {}
+                      total_uncompressed = 0
+                      for member in archive:
+                          if len(members) >= max_members:
+                              raise SystemExit("Docker archive exceeds its member-count bound")
+                          safe_tar_member_name(member.name)
+                          if member.name in members:
+                              raise SystemExit("Docker archive contains duplicate member paths")
+                          if not (member.isdir() or member.isreg()):
+                              raise SystemExit(
+                                  "Docker archive contains a link, device, or special member"
+                              )
+                          if member.size < 0 or member.size > max_uncompressed_bytes:
+                              raise SystemExit("Docker archive member size is outside its bound")
+                          total_uncompressed += member.size
+                          if total_uncompressed > max_uncompressed_bytes:
+                              raise SystemExit("Docker archive exceeds its uncompressed-size bound")
+                          members[member.name] = member
+                      if total_uncompressed > compressed_bytes * 200 + 64 * 1024 * 1024:
+                          raise SystemExit("Docker archive compression ratio exceeds its bound")
+
+                      manifest_member = members.get("manifest.json")
+                      if manifest_member is None:
+                          raise SystemExit("Docker archive manifest.json is missing")
+                      manifest_bytes = read_bounded_tar_member(
+                          archive,
+                          manifest_member,
+                          limit=1024 * 1024,
+                      )
+                      manifest = json.loads(manifest_bytes)
+                      if not isinstance(manifest, list) or len(manifest) != 1:
+                          raise SystemExit("Docker archive must contain exactly one manifest entry")
+                      entry = manifest[0]
+                      if not isinstance(entry, dict) or set(entry) != {
+                          "Config",
+                          "RepoTags",
+                          "Layers",
+                      }:
+                          raise SystemExit("Docker archive manifest entry shape is invalid")
+                      config_name = entry.get("Config")
+                      repo_tags = entry.get("RepoTags")
+                      layers = entry.get("Layers")
+                      if not isinstance(config_name, str):
+                          raise SystemExit("Docker archive config path is invalid")
+                      safe_tar_member_name(config_name)
+                      if repo_tags != [expected_repo_tag]:
+                          raise SystemExit("Docker archive RepoTags binding is invalid")
+                      if (
+                          not isinstance(layers, list)
+                          or not layers
+                          or len(layers) > 512
+                          or not all(isinstance(layer, str) for layer in layers)
+                          or len(set(layers)) != len(layers)
+                      ):
+                          raise SystemExit("Docker archive layer inventory is invalid")
+                      for layer_name in layers:
+                          safe_tar_member_name(layer_name)
+                          layer_member = members.get(layer_name)
+                          if layer_member is None or not layer_member.isreg():
+                              raise SystemExit("Docker archive references a missing layer")
+
+                      config_member = members.get(config_name)
+                      if config_member is None:
+                          raise SystemExit("Docker archive config member is missing")
+                      config_bytes = read_bounded_tar_member(
+                          archive,
+                          config_member,
+                          limit=16 * 1024 * 1024,
+                      )
+                      observed_digest = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+                      if observed_digest != expected_config_digest:
+                          raise SystemExit(
+                              "Docker archive config JSON does not match the image config digest"
+                          )
+                      config_document = json.loads(config_bytes)
+                      if not isinstance(config_document, dict) or not {
+                          "config",
+                          "rootfs",
+                      }.issubset(config_document):
+                          raise SystemExit("Docker archive config JSON shape is invalid")
+                      config_section = config_document.get("config")
+                      labels = (
+                          config_section.get("Labels")
+                          if isinstance(config_section, dict)
+                          else None
+                      )
+                      if not isinstance(labels, dict) or labels.get(
+                          "org.opencontainers.image.revision"
+                      ) != expected_revision or labels.get(
+                          "org.opencontainers.image.version"
+                      ) != expected_version:
+                          raise SystemExit(
+                              "Docker archive config labels are not bound to source/tag"
+                          )
+                      rootfs = config_document.get("rootfs")
+                      diff_ids = rootfs.get("diff_ids") if isinstance(rootfs, dict) else None
+                      if (
+                          not isinstance(rootfs, dict)
+                          or rootfs.get("type") != "layers"
+                          or not isinstance(diff_ids, list)
+                          or len(diff_ids) != len(layers)
+                          or not all(
+                              isinstance(diff_id, str)
+                              and re.fullmatch(r"sha256:[0-9a-f]{64}", diff_id)
+                              for diff_id in diff_ids
+                          )
+                      ):
+                          raise SystemExit(
+                              "Docker archive rootfs diff_ids do not match the layer inventory"
+                          )
+                      for layer_name, expected_diff_id in zip(layers, diff_ids, strict=True):
+                          observed_diff_id = sha256_tar_member(
+                              archive,
+                              members[layer_name],
+                          )
+                          if observed_diff_id != expected_diff_id:
+                              raise SystemExit(
+                                  "Docker archive layer content does not match rootfs diff_id"
+                              )
+                      return list(diff_ids)
+              except (OSError, tarfile.TarError, json.JSONDecodeError) as exc:
+                  raise SystemExit(f"Docker archive is malformed: {exc}") from exc
+
+          manifest_path = root / "SHA256SUMS"
+          if manifest_path.stat().st_size > 1024 * 1024:
+              raise SystemExit("SHA256SUMS exceeds the control-plane size limit")
+          manifest_re = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
+          checksums: dict[str, str] = {}
+          for line in manifest_path.read_text(encoding="utf-8").splitlines():
+              match = manifest_re.fullmatch(line)
+              if match is None:
+                  raise SystemExit("SHA256SUMS contains an unsafe or malformed entry")
+              digest, relative = match.groups()
+              path = PurePosixPath(relative)
+              if path.is_absolute() or ".." in path.parts or "." in path.parts:
+                  raise SystemExit("SHA256SUMS contains path traversal")
+              if relative in checksums:
+                  raise SystemExit("SHA256SUMS contains a duplicate path")
+              checksums[relative] = digest
+
+          if set(checksums) != set(files) - {"SHA256SUMS"}:
+              raise SystemExit("SHA256SUMS must cover every subject exactly once")
+          for relative, expected_digest in checksums.items():
+              observed = sha256_file(files[relative])
+              if observed != expected_digest:
+                  raise SystemExit(f"subject digest mismatch: {relative}")
+
+          tag = os.environ["RELEASE_TAG"]
+          image_rows = [line.split("|", 1) for line in os.environ["RELEASE_IMAGE_ROWS"].splitlines()]
+          image_names = {name for name, _ in image_rows}
+          wheel_files = {name for name in files if name.endswith(".whl") and "/" not in name}
+          if len(wheel_files) != 1:
+              raise SystemExit("release must contain exactly one API wheel")
+          expected_files = {
+              "BUILD_ARTIFACT",
+              "BUILD_SHA256SUMS",
+              "RELEASE_SOURCE",
+              "SHA256SUMS",
+              "api-runtime.cdx.json",
+              "api-runtime-lock.txt",
+              "node-runtime.cdx.json",
+              "node-runtime-lock.json",
+              f"hallu-defense-{tag}.tar.gz",
+              "image-build-metadata.json",
+              "image-evidence.json",
+              "trivy-config.yaml",
+              "trivy-ignorefile",
+              "trivy/scan-status.json",
+              *wheel_files,
+          }
+          for name in image_names:
+              expected_files.update(
+                  {
+                      f"images/{name}.docker.tar",
+                      f"images/{name}.image-config-digest",
+                      f"trivy/{name}.json",
+                      f"trivy/{name}.stderr.log",
+                  }
+              )
+          if set(files) != expected_files:
+              raise SystemExit("release artifact contains missing or unexpected subjects")
+
+          build_checksums: dict[str, str] = {}
+          for line in files["BUILD_SHA256SUMS"].read_text(encoding="utf-8").splitlines():
+              match = manifest_re.fullmatch(line)
+              if match is None or match.group(2) in build_checksums:
+                  raise SystemExit("BUILD_SHA256SUMS contains an unsafe/duplicate entry")
+              build_checksums[match.group(2)] = match.group(1)
+          expected_build_files = {
+              "RELEASE_SOURCE",
+              "api-runtime.cdx.json",
+              "api-runtime-lock.txt",
+              "node-runtime.cdx.json",
+              "node-runtime-lock.json",
+              f"hallu-defense-{tag}.tar.gz",
+              "image-build-metadata.json",
+              *wheel_files,
+          }
+          for name in image_names:
+              expected_build_files.update(
+                  {f"images/{name}.docker.tar", f"images/{name}.image-config-digest"}
+              )
+          if set(build_checksums) != expected_build_files:
+              raise SystemExit("BUILD_SHA256SUMS coverage is not exact")
+          for relative, digest in build_checksums.items():
+              if checksums.get(relative) != digest:
+                  raise SystemExit("build subject changed after the immutable build upload")
+
+          parsed_size_limits = {
+              "RELEASE_SOURCE": 16 * 1024,
+              "BUILD_ARTIFACT": 16 * 1024,
+              "BUILD_SHA256SUMS": 1024 * 1024,
+              "image-build-metadata.json": 1024 * 1024,
+              "image-evidence.json": 1024 * 1024,
+              "trivy/scan-status.json": 1024 * 1024,
+              "api-runtime.cdx.json": 64 * 1024 * 1024,
+              "node-runtime.cdx.json": 64 * 1024 * 1024,
+              "node-runtime-lock.json": 64 * 1024 * 1024,
+              "api-runtime-lock.txt": 16 * 1024 * 1024,
+              "trivy-config.yaml": 16 * 1024,
+              "trivy-ignorefile": 16 * 1024,
+              **{f"images/{name}.image-config-digest": 128 for name in image_names},
+              **{f"trivy/{name}.json": 128 * 1024 * 1024 for name in image_names},
+          }
+          for relative, size_limit in parsed_size_limits.items():
+              if files[relative].stat().st_size > size_limit:
+                  raise SystemExit(f"parsed release subject exceeds size limit: {relative}")
+
+          source_lines = files["RELEASE_SOURCE"].read_text(encoding="utf-8").splitlines()
+          source: dict[str, str] = {}
+          for line in source_lines:
+              if "=" not in line:
+                  raise SystemExit("RELEASE_SOURCE contains a malformed field")
+              key, value = line.split("=", 1)
+              if key in source or not key or not value:
+                  raise SystemExit("RELEASE_SOURCE contains an invalid field")
+              source[key] = value
+          expected_source = {
+              "schema_version": "release-source.v1",
+              "release_tag": tag,
+              "tag_object_sha": os.environ["EXPECTED_TAG_OBJECT"],
+              "source_commit": os.environ["EXPECTED_SOURCE_COMMIT"],
+              "control_repository": os.environ["GITHUB_REPOSITORY"],
+              "control_ref": os.environ["GITHUB_REF"],
+              "control_commit": os.environ["GITHUB_SHA"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+          }
+          if source != expected_source:
+              raise SystemExit("RELEASE_SOURCE is not bound to signed/control metadata")
+          build_artifact_lines = files["BUILD_ARTIFACT"].read_text(
+              encoding="utf-8"
+          ).splitlines()
+          if build_artifact_lines != [
+              "schema_version=release-build-artifact.v1",
+              f"artifact_id={os.environ['BUILD_ARTIFACT_ID']}",
+              f"artifact_digest={os.environ['BUILD_ARTIFACT_DIGEST']}",
+          ]:
+              raise SystemExit("scanned subjects are not bound to the build artifact")
+          if checksums["api-runtime-lock.txt"] != os.environ["EXPECTED_API_LOCK_SHA256"]:
+              raise SystemExit("API SBOM lock subject is not bound to the signed source")
+          if checksums["node-runtime-lock.json"] != os.environ["EXPECTED_NODE_LOCK_SHA256"]:
+              raise SystemExit("Node SBOM lock subject is not bound to the signed source")
+          node_lock = json.loads(files["node-runtime-lock.json"].read_text(encoding="utf-8"))
+          if node_lock.get("lockfileVersion") != 3:
+              raise SystemExit("Node SBOM lock subject must use lockfileVersion 3")
+          for sbom_name in ("api-runtime.cdx.json", "node-runtime.cdx.json"):
+              sbom = json.loads(files[sbom_name].read_text(encoding="utf-8"))
+              if (
+                  sbom.get("bomFormat") != "CycloneDX"
+                  or not isinstance(sbom.get("specVersion"), str)
+                  or not isinstance(sbom.get("version"), int)
+              ):
+                  raise SystemExit(f"invalid CycloneDX SBOM: {sbom_name}")
+
+          dockerfile_hashes: dict[str, tuple[str, str]] = {}
+          metadata_path = Path(os.environ["EXPECTED_DOCKERFILE_METADATA"])
+          for line in metadata_path.read_text(encoding="utf-8").splitlines():
+              name, dockerfile, digest = line.split("\t")
+              dockerfile_hashes[name] = (dockerfile, digest)
+
+          build_metadata = json.loads(
+              files["image-build-metadata.json"].read_text(encoding="utf-8")
+          )
+          if (
+              build_metadata.get("schema_version") != "release-image-build.v1"
+              or build_metadata.get("release_tag") != tag
+              or build_metadata.get("source_commit") != source["source_commit"]
+              or build_metadata.get("archive_format")
+              != "buildx-type-docker-v1-uncompressed"
+          ):
+              raise SystemExit("image build metadata is not bound to the peeled commit")
+          built_images = build_metadata.get("images")
+          if not isinstance(built_images, list) or len(built_images) != len(image_names):
+              raise SystemExit("image build metadata coverage is invalid")
+          build_by_name = {
+              item.get("name"): item for item in built_images if isinstance(item, dict)
+          }
+          if set(build_by_name) != image_names:
+              raise SystemExit("image build metadata contains duplicate/unknown images")
+
+          evidence = json.loads(files["image-evidence.json"].read_text(encoding="utf-8"))
+          expected_policy = {
+              "scanners": ["vuln"],
+              "vulnerability_types": ["os", "library"],
+              "severity": ["CRITICAL", "HIGH"],
+              "ignore_unfixed": False,
+              "input_mode": "classic-docker-archive",
+              "config_sha256": hashlib.sha256(b"{}\n").hexdigest(),
+              "ignorefile_sha256": hashlib.sha256(b"").hexdigest(),
+          }
+          if files["trivy-config.yaml"].read_bytes() != b"{}\n":
+              raise SystemExit("Trivy config is not the trusted empty policy")
+          if files["trivy-ignorefile"].read_bytes() != b"":
+              raise SystemExit("Trivy ignore file must be empty")
+          if evidence.get("schema_version") != "release-image-evidence.v2":
+              raise SystemExit("release image evidence schema is invalid")
+          if evidence.get("release_tag") != tag or evidence.get("source_commit") != source["source_commit"]:
+              raise SystemExit("release image evidence is not bound to the signed source")
+          if evidence.get("scan_policy") != expected_policy:
+              raise SystemExit("release image scan policy was weakened")
+          images = evidence.get("images")
+          if (
+              not isinstance(images, list)
+              or len(images) != len(image_names)
+              or not all(isinstance(item, dict) for item in images)
+          ):
+              raise SystemExit("release image evidence does not cover exactly eight images")
+          evidence_by_name: dict[str, dict[str, object]] = {}
+          for item in images:
+              expected_item_fields = {
+                  "name",
+                  "dockerfile",
+                  "dockerfile_sha256",
+                  "image_reference",
+                  "digest_kind",
+                  "image_config_digest",
+                  "registry_manifest_digest",
+                  "archive",
+                  "trivy_report",
+                  "trivy_report_sha256",
+                  "trivy_report_image_config_digest",
+                  "trivy_artifact_name",
+                  "trivy_repo_tags",
+                  "trivy_diff_ids",
+                  "scan_return_code",
+              }
+              if set(item) != expected_item_fields:
+                  raise SystemExit("release image evidence entry shape is invalid")
+              name = item.get("name")
+              if not isinstance(name, str) or name not in image_names or name in evidence_by_name:
+                  raise SystemExit("release image evidence contains a duplicate/unknown image")
+              evidence_by_name[name] = item
+              dockerfile, dockerfile_digest = dockerfile_hashes[name]
+              if item.get("dockerfile") != dockerfile or item.get("dockerfile_sha256") != dockerfile_digest:
+                  raise SystemExit(f"{name}: Dockerfile is not bound to the signed source")
+              image_config_digest = item.get("image_config_digest")
+              if (
+                  item.get("digest_kind") != "docker-image-config"
+                  or item.get("registry_manifest_digest") is not None
+                  or not isinstance(image_config_digest, str)
+                  or re.fullmatch(r"sha256:[0-9a-f]{64}", image_config_digest) is None
+              ):
+                  raise SystemExit(f"{name}: immutable image config digest is invalid")
+              expected_image_reference = f"hallu-defense-{name}:{tag}"
+              if item.get("image_reference") != expected_image_reference:
+                  raise SystemExit(f"{name}: image reference binding is invalid")
+              if item != {**build_by_name[name], **{
+                  "registry_manifest_digest": None,
+                  "trivy_artifact_name": item.get("trivy_artifact_name"),
+                  "trivy_repo_tags": item.get("trivy_repo_tags"),
+                  "trivy_diff_ids": item.get("trivy_diff_ids"),
+                  "trivy_report": item.get("trivy_report"),
+                  "trivy_report_sha256": item.get("trivy_report_sha256"),
+                  "trivy_report_image_config_digest": item.get(
+                      "trivy_report_image_config_digest"
+                  ),
+                  "scan_return_code": item.get("scan_return_code"),
+              }}:
+                  raise SystemExit(f"{name}: scan evidence changed immutable build metadata")
+              digest_path = files[f"images/{name}.image-config-digest"]
+              if digest_path.read_text(encoding="utf-8").strip() != image_config_digest:
+                  raise SystemExit(f"{name}: image config digest file does not match evidence")
+              archive_path = files[f"images/{name}.docker.tar"]
+              archive_diff_ids = validate_docker_archive(
+                  archive_path,
+                  expected_config_digest=image_config_digest,
+                  expected_repo_tag=expected_image_reference,
+                  expected_revision=source["source_commit"],
+                  expected_version=tag,
+              )
+              report_name = f"trivy/{name}.json"
+              report = json.loads(files[report_name].read_text(encoding="utf-8"))
+              expected_archive = f"images/{name}.docker.tar"
+              try:
+                  validate_trivy_report_binding(
+                      report,
+                      expected_archive_path=expected_archive,
+                      expected_repo_tag=expected_image_reference,
+                      expected_image_config_digest=image_config_digest,
+                      expected_diff_ids=archive_diff_ids,
+                  )
+              except ValueError as exc:
+                  raise SystemExit(f"{name}: {exc}") from exc
+              if item.get("trivy_report") != report_name:
+                  raise SystemExit(f"{name}: Trivy report path binding is invalid")
+              if item.get("trivy_report_sha256") != checksums[report_name]:
+                  raise SystemExit(f"{name}: Trivy report digest binding is invalid")
+              if item.get("trivy_report_image_config_digest") != image_config_digest:
+                  raise SystemExit(f"{name}: Trivy report image binding is invalid")
+              if (
+                  item.get("trivy_artifact_name") != expected_archive
+                  or item.get("trivy_repo_tags") != [expected_image_reference]
+                  or item.get("trivy_diff_ids") != archive_diff_ids
+              ):
+                  raise SystemExit(f"{name}: Trivy evidence binding is invalid")
+              if item.get("archive") != expected_archive or item.get("scan_return_code") != 0:
+                  raise SystemExit(f"{name}: release image did not pass its exact scan")
+
+          scan_status = json.loads(files["trivy/scan-status.json"].read_text(encoding="utf-8"))
+          if scan_status.get("schema_version") != "release-image-scan-status.v2":
+              raise SystemExit("release image scan status schema is invalid")
+          if scan_status.get("scan_policy") != expected_policy:
+              raise SystemExit("release image scan status policy is invalid")
+          status_images = scan_status.get("images")
+          if not isinstance(status_images, list) or len(status_images) != len(image_names):
+              raise SystemExit("release image scan status coverage is invalid")
+          status_by_name: dict[str, dict[str, object]] = {}
+          for status_item in status_images:
+              if not isinstance(status_item, dict) or set(status_item) != {
+                  "name",
+                  "digest_kind",
+                  "image_config_digest",
+                  "return_code",
+                  "report",
+              }:
+                  raise SystemExit("release image scan status entry shape is invalid")
+              status_name = status_item.get("name")
+              if (
+                  not isinstance(status_name, str)
+                  or status_name not in image_names
+                  or status_name in status_by_name
+              ):
+                  raise SystemExit("release image scan status contains a duplicate/unknown image")
+              status_by_name[status_name] = status_item
+              evidence_item = evidence_by_name[status_name]
+              if (
+                  status_item.get("digest_kind") != "docker-image-config"
+                  or status_item.get("image_config_digest")
+                  != evidence_item.get("image_config_digest")
+                  or status_item.get("report") != evidence_item.get("trivy_report")
+                  or status_item.get("return_code") != 0
+              ):
+                  raise SystemExit("release image scan status binding is invalid")
+          if set(status_by_name) != image_names:
+              raise SystemExit("release image scan status coverage is invalid")
+          PY
+      - name: Attest immutable upload-artifact envelope
+        id: envelope-provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: github-actions-artifact-${{ env.RELEASE_ARTIFACT_ID }}
+          subject-digest: sha256:${{ env.RELEASE_ARTIFACT_DIGEST }}
+          push-to-registry: false
+      - name: Attest immutable build upload-artifact envelope
+        id: build-envelope-provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: github-actions-artifact-${{ env.BUILD_ARTIFACT_ID }}
+          subject-digest: sha256:${{ env.BUILD_ARTIFACT_DIGEST }}
+          push-to-registry: false
+      - name: Attest every checksummed release subject
+        id: subject-provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-checksums: attestation-input/release/SHA256SUMS
+          push-to-registry: false
+      - name: Attest API runtime SBOM
+        id: api-sbom
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+        with:
+          subject-path: attestation-input/release/api-runtime-lock.txt
+          sbom-path: attestation-input/release/api-runtime.cdx.json
+          push-to-registry: false
+      - name: Attest Node runtime SBOM
+        id: node-sbom
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+        with:
+          subject-path: attestation-input/release/node-runtime-lock.json
+          sbom-path: attestation-input/release/node-runtime.cdx.json
+          push-to-registry: false
+      - name: Upload immutable attested release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hallu-defense-${{ env.RELEASE_TAG }}-attested-evidence-${{ github.run_id }}
+          path: |
+            attestation-input/release/
+            ${{ steps.envelope-provenance.outputs.bundle-path }}
+            ${{ steps.build-envelope-provenance.outputs.bundle-path }}
+            ${{ steps.subject-provenance.outputs.bundle-path }}
+            ${{ steps.api-sbom.outputs.bundle-path }}
+            ${{ steps.node-sbom.outputs.bundle-path }}
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
+          retention-days: 30

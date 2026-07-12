@@ -1,0 +1,20 @@
+{
+  "schema_version": "release-encryption-replay-state.v1",
+  "trust_store_id": "release-trust-example",
+  "state_key_id": "state-epoch-1",
+  "bindings": [
+    {
+      "tenant_id": "tenant-example",
+      "environment": "production",
+      "highest_sequence": -1,
+      "highest_deployment_revision": 42,
+      "current_deployment_sha256": "invalid",
+      "highest_rotation_epoch": 7,
+      "current_rotation_phase": "stable",
+      "last_issued_at": "not-a-timestamp",
+      "recent_nonces": ["duplicate-nonce", "duplicate-nonce"],
+      "last_transition": null
+    }
+  ],
+  "state_mac": "invalid"
+}

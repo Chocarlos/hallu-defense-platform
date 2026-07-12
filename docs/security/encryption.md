@@ -36,4 +36,7 @@ claimed production-ready unless it satisfies this policy and passes the CI valid
 
 This baseline proves configuration intent and CI enforcement. It does not prove that local Docker
 services are running with TLS or encrypted volumes on this host. Runtime validation for Kubernetes,
-managed databases, object storage, and signed policy bundles remains tracked separately.
+managed databases, and object storage must be performed by a trusted deployment attestor. The
+release verifier described in `encryption-at-rest-and-transit.md` and
+`release-encryption-evidence.md` authenticates those structured observations and binds them to a
+deployment; it does not independently probe the live services.

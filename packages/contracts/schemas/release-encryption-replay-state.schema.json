@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/release-encryption-replay-state.schema.json",
+  "title": "ReleaseEncryptionReplayState",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "trust_store_id", "state_key_id", "bindings", "state_mac"],
+  "properties": {
+    "schema_version": {
+      "const": "release-encryption-replay-state.v1"
+    },
+    "trust_store_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "state_key_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+    },
+    "bindings": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tenant_id",
+          "environment",
+          "highest_sequence",
+          "highest_deployment_revision",
+          "current_deployment_sha256",
+          "highest_rotation_epoch",
+          "current_rotation_phase",
+          "last_issued_at",
+          "recent_nonces",
+          "last_transition"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+          },
+          "environment": {
+            "enum": ["staging", "production"]
+          },
+          "highest_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "highest_deployment_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "current_deployment_sha256": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "highest_rotation_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "current_rotation_phase": {
+            "type": ["string", "null"],
+            "enum": ["stable", "overlap", null]
+          },
+          "last_issued_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "recent_nonces": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32,64}$"
+            }
+          },
+          "last_transition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "bundle_id",
+                  "bundle_sha256",
+                  "previous_state_sha256"
+                ],
+                "properties": {
+                  "bundle_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$"
+                  },
+                  "bundle_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "previous_state_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "state_mac": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

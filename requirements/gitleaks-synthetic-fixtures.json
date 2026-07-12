@@ -1,0 +1,428 @@
+{
+  "schema_version": "gitleaks-synthetic-fixtures.v1",
+  "hash_algorithm": "sha256",
+  "fixtures": [
+    {
+      "path": ".env.example",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "75bc2ef6f4dbad2c2e35f00c34ac3b05dc7256a50e3bb37e2bb04db5c176c27e",
+      "purpose": "local runtime example DSN"
+    },
+    {
+      "path": ".github/workflows/live.yml",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "0bbba7020b5744af8d1042163e9d167cf50c889140fabd74d5fa63cdc27f6007",
+      "purpose": "ephemeral live-lane DSN fixture"
+    },
+    {
+      "path": ".github/workflows/live.yml",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "9d63bc5c5be7febcf13ab493be731ba311ede7caa7072235cbc7db548befb6b2",
+      "purpose": "ephemeral live-lane DSN fixture"
+    },
+    {
+      "path": "apps/api/tests/test_apply_postgres_migrations.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "64c705a6454a0bce38fe1a43e987396bb7da4651f7077aefe0928ccae7568ad0",
+      "purpose": "deterministic migration test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_apply_postgres_migrations.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "755f60994c923b7c6b4bfe5fe9a5d9a0c68fe6d9d667e092827334e9cf63a204",
+      "purpose": "deterministic migration test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_apply_postgres_migrations.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "d50062524933947053c7a945341ad7fbf205d97b26fbdafafb0587c7efe9653d",
+      "purpose": "deterministic migration test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_content_security_redaction.py",
+      "rule_id": "aws-access-token",
+      "match_sha256": "457643f44d19aed85fd756aa50cc0cd6b57376d4e8f5a72f9f85972a522002a3",
+      "purpose": "historical synthetic redaction access-key fixture"
+    },
+    {
+      "path": "apps/api/tests/test_gitleaks_gate.py",
+      "rule_id": "aws-access-token",
+      "match_sha256": "a93e68f8176af0b002093b5e3dcca96d24efa3a64b91924d0abd2c471f4713a8",
+      "purpose": "synthetic detector fixture"
+    },
+    {
+      "path": "apps/api/tests/test_gitleaks_gate.py",
+      "rule_id": "credential-assignment",
+      "match_sha256": "28dfbd1a68794fe77f450a87abe00ce2fe5258ac8871a0daf9e5d6b0b536fc8a",
+      "purpose": "synthetic detector fixture"
+    },
+    {
+      "path": "apps/api/tests/test_gitleaks_gate.py",
+      "rule_id": "credential-assignment",
+      "match_sha256": "48c3d410fe14bdeed8dd2efdd351601099a45100bf3e4ae646e74e63419dbc91",
+      "purpose": "synthetic exact-fingerprint detector fixture"
+    },
+    {
+      "path": "apps/api/tests/test_gitleaks_gate.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "d5b27c8ab7804261f0982053bce95605ba54fed823e573dbf6ccebae126b5e49",
+      "purpose": "synthetic detector fixture"
+    },
+    {
+      "path": "apps/api/tests/test_gitleaks_gate.py",
+      "rule_id": "generic-api-key",
+      "match_sha256": "0cc68357f518f2a5f435acc37085d5fc79d41522913ca34810ba840f531c91ee",
+      "purpose": "synthetic detector fixture"
+    },
+    {
+      "path": "apps/api/tests/test_gitleaks_gate.py",
+      "rule_id": "generic-api-key",
+      "match_sha256": "13d4a69b430da031858788b5b9b69a7587f9e51750f5be839cd07c68a32eb38b",
+      "purpose": "synthetic exact-fingerprint detector fixture"
+    },
+    {
+      "path": "apps/api/tests/test_live_hybrid_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "00a6983608e34bf22af4ca5d5f668d83c8adeff186b1b29ac609244a6d847825",
+      "purpose": "ephemeral hybrid RAG test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_hybrid_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "11f11108677af985d33c04ef4e956b56fcd41008d411bd1921594ff20cadbd4e",
+      "purpose": "ephemeral hybrid RAG test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_hybrid_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "84a8ff305b186c6a13df55cbe5c400dfc29827fc5954523af85bfbf4063e083c",
+      "purpose": "historical synthetic hybrid RAG test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_hybrid_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "9673020939ce0a31cf83452b84a10186b37eaf1a675546da2038029cf0fb18fd",
+      "purpose": "ephemeral hybrid RAG test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_hybrid_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "9dae39aced08e40d3e0260a4e0edc5cf1604206a83fbcd4a22a4d34216fafd67",
+      "purpose": "ephemeral hybrid RAG test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_hybrid_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "a977fc734a6fb55ea7cb640dcc998c219099d9d01a1f333409f19870239ad531",
+      "purpose": "ephemeral hybrid RAG test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_ingestion_worker_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "10361d961380834caa9aacd28ef885ba2e24da7b92cf10712fdf2e0e7a233ea4",
+      "purpose": "ephemeral ingestion worker test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_ingestion_worker_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "27eef6049089eaed5b8c767582af41af957932812b074c22b0e330c98a53d912",
+      "purpose": "ephemeral ingestion worker test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_ingestion_worker_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "c17bf28ed1b6f91a39d1316729d2eb24657dfe149735687b58473a5a9ce493d7",
+      "purpose": "ephemeral ingestion worker test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_kind_helm_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "2b6bbcf468b49283364a143e7c23687198e99110f86fbdbc5ebe296716039b5b",
+      "purpose": "ephemeral kind smoke DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_kind_helm_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "9f2fa13738459ed3aaf8819f6ca5e50e430cb5d2c0278fac1dc6c2a7edc1231d",
+      "purpose": "ephemeral kind smoke DSN on an audited branch"
+    },
+    {
+      "path": "apps/api/tests/test_live_kind_helm_smoke.py",
+      "rule_id": "jwt",
+      "match_sha256": "d6ebcada989e266c6566a9c6b9557c8c585d82a7f12d6795ad239f1dd39dddf4",
+      "purpose": "synthetic kind smoke JWT fixture"
+    },
+    {
+      "path": "apps/api/tests/test_live_kind_helm_smoke.py",
+      "rule_id": "jwt",
+      "match_sha256": "4718063b20c1e9c36d11ba928c43f83f7c07ea5eac45ac9cda4978c0ec76f702",
+      "purpose": "synthetic kind smoke JWT fixture"
+    },
+    {
+      "path": "apps/api/tests/test_live_pgvector_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "8397530c4aa2a66b84675c7e92ffaa46847591a7bdc470803a0ffaf486e62c3f",
+      "purpose": "ephemeral pgvector smoke DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_pgvector_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "8b4bf8cd8172793526d1252064a786c5e1fda3e8b1b9eae19e6610791792fa36",
+      "purpose": "ephemeral pgvector smoke DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_pgvector_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f73ce391b40a45ea31e53480914e31945009840a0aa60758ae7bd561e86117b8",
+      "purpose": "ephemeral pgvector smoke DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_postgres_persistence_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "cf379bc7d29daefe3963a9d7c04cd91bf786e6f6c80f259b5a0a5fab15c23ea4",
+      "purpose": "ephemeral PostgreSQL smoke DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_postgres_persistence_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f5b6f5990c462749df3435b7748283f8db969fd6ec5a1ed397bae91805d9a507",
+      "purpose": "ephemeral PostgreSQL smoke DSN"
+    },
+    {
+      "path": "apps/api/tests/test_live_provider_vault_smoke.py",
+      "rule_id": "credential-assignment",
+      "match_sha256": "b27a8593773dbb3c65caa098bfd1123fc2026632ba1a47f06c2c2c6b46f63840",
+      "purpose": "synthetic provider credential fixture"
+    },
+    {
+      "path": "apps/api/tests/test_prod_profile_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "0743dc57512eaf9ef89a706c7ab34f29d4e1940d1494512be6a14354cd91a7e9",
+      "purpose": "production-profile negative fixture on an audited branch"
+    },
+    {
+      "path": "apps/api/tests/test_prod_profile_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "55366346603d8effb8dd7a97a08438d6e6cca9d8a9c9173d21ee8e831ceede01",
+      "purpose": "production-profile negative fixture"
+    },
+    {
+      "path": "apps/api/tests/test_prod_profile_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f72998960fde14fec1b059636e2ec826adef5e347d730deb65b4170e94aa67e9",
+      "purpose": "production-profile render fixture"
+    },
+    {
+      "path": "apps/api/tests/test_rag_index_adapters.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "34efe9bbad17ee07881e2634098cfdc1ce1b09a16bcafa287527bb27624b1188",
+      "purpose": "deterministic RAG adapter test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_rag_index_adapters.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "59b4ef97cb290b90e1b98e0f08b4992bfb2a4dca2967668809d8717a5aae7803",
+      "purpose": "deterministic RAG adapter test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_rag_index_adapters.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "b613ec72cc94631ca921c7d268aace2699c16ef7cf0352d34b8971e5a5c57fbe",
+      "purpose": "deterministic RAG adapter test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_rag_index_adapters.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "d20fdcc984733b4b4f2502467a58e9a212fc59ee8c07fee05b6249d2c8b83687",
+      "purpose": "deterministic RAG adapter test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_rag_index_adapters.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "e3fafd1fecc67d8783ba518cae489b6f125c855f7933416109ff64cf620b90b3",
+      "purpose": "deterministic RAG adapter test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_rag_index_adapters.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f44800a7b9495fa990453a5d4ed70b1bce8d93a1e7d98a0d34536178caf60b57",
+      "purpose": "deterministic RAG adapter test DSN"
+    },
+    {
+      "path": "apps/api/tests/test_secret_manager.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "3d227877f97b59826ec124ae73d2040ca7853fb38345b8fe8ed64032fc9812f8",
+      "purpose": "synthetic secret-manager response fixture"
+    },
+    {
+      "path": "apps/api/tests/test_telemetry_sanitization.py",
+      "rule_id": "aws-access-token",
+      "match_sha256": "457643f44d19aed85fd756aa50cc0cd6b57376d4e8f5a72f9f85972a522002a3",
+      "purpose": "historical synthetic telemetry access-key fixture"
+    },
+    {
+      "path": "docker-compose.yml",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "75bc2ef6f4dbad2c2e35f00c34ac3b05dc7256a50e3bb37e2bb04db5c176c27e",
+      "purpose": "local-only Compose DSN"
+    },
+    {
+      "path": "docs/WORKLOG.md",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "b8ed33380942b5a39148a309b247069a1c75187d0ce5fd0592f360848d716572",
+      "purpose": "historical deterministic test command"
+    },
+    {
+      "path": "docs/WORKLOG.md",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "e01b298062af311b851289a54d7a973c0818ca92e7ebfbbd1fa523b799ac1ee0",
+      "purpose": "historical deterministic test command"
+    },
+    {
+      "path": "docs/rag/persistent-indexes.md",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "1d66fd9e537c298827ee6c977adba5f1ee725ce1e03280bf36aca2f881878a15",
+      "purpose": "documented local smoke fixture"
+    },
+    {
+      "path": "docs/rag/persistent-indexes.md",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "9d63bc5c5be7febcf13ab493be731ba311ede7caa7072235cbc7db548befb6b2",
+      "purpose": "documented local smoke fixture"
+    },
+    {
+      "path": "docs/security/audit-ledger.md",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "9fec0070e19962a5632bb2e0d27928a5d956cc424501ebb44d08bd9f0531e72c",
+      "purpose": "documented local audit fixture"
+    },
+    {
+      "path": "docs/security/auth-rbac.md",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "75bc2ef6f4dbad2c2e35f00c34ac3b05dc7256a50e3bb37e2bb04db5c176c27e",
+      "purpose": "documented local auth fixture"
+    },
+    {
+      "path": "infra/k8s/helm/hallu-defense/templates/redis-deployment.yaml",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "d69fa4446c4dce1ebe6c01dc587821f781fd488291a4f9ba77c94b14431b08c2",
+      "purpose": "synthetic chart validation guard"
+    },
+    {
+      "path": "packages/agent-adapters/tests/agent-adapters.test.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "cd294e78f06c87cd1b283d7505c39d728294256838a17d419d52a322c052574d",
+      "purpose": "historical synthetic adapter password fixture"
+    },
+    {
+      "path": "packages/agent-adapters/tests/agent-adapters.test.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "f7534937b174d23aad616c30494ddaaa082221a374dc0dfb90c21257713b030a",
+      "purpose": "synthetic redaction test fixture"
+    },
+    {
+      "path": "packages/mcp-server/tests/server.test.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "965623901ab43eeb8633986a8b0aacd0ddc43a208babc2364fc80f897598f90d",
+      "purpose": "synthetic MCP credential fixture"
+    },
+    {
+      "path": "scripts/ci/check_corpus_grants_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "e4ecb604d89419a67e70130d72e6cdaf4ce5c97e9757eb70a93b660cfcbc44bb",
+      "purpose": "static gate DSN fixture"
+    },
+    {
+      "path": "scripts/ci/check_helm_chart.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "2ee1bb6fca5b723710535d28275a25231dff40a94f7a07084be23de265874458",
+      "purpose": "historical chart render fixture"
+    },
+    {
+      "path": "scripts/ci/check_local_runtime_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "e4ecb604d89419a67e70130d72e6cdaf4ce5c97e9757eb70a93b660cfcbc44bb",
+      "purpose": "static local-runtime gate DSN fixture"
+    },
+    {
+      "path": "scripts/ci/check_local_runtime_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f72998960fde14fec1b059636e2ec826adef5e347d730deb65b4170e94aa67e9",
+      "purpose": "static local-runtime render fixture"
+    },
+    {
+      "path": "scripts/ci/check_prod_profile_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "2ee1bb6fca5b723710535d28275a25231dff40a94f7a07084be23de265874458",
+      "purpose": "historical production-profile render fixture"
+    },
+    {
+      "path": "scripts/ci/check_rag_persistence_config.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "e4ecb604d89419a67e70130d72e6cdaf4ce5c97e9757eb70a93b660cfcbc44bb",
+      "purpose": "static RAG persistence gate DSN fixture"
+    },
+    {
+      "path": "scripts/dev/live_kind_helm_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "b14414ea1a52b25bd212dbc5849d681dc2bd78a1d6a0f93c15e0309c353b0037",
+      "purpose": "ephemeral kind smoke DSN"
+    },
+    {
+      "path": "scripts/dev/live_kind_helm_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f605c2cb2d990cb42153b7393fe7d65be8e29024238c054d5904e9cd64840139",
+      "purpose": "historical ephemeral kind smoke DSN"
+    },
+    {
+      "path": "scripts/dev/live_kind_helm_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "f68800b37b4a8efe64bd1e3420dc507d72050cd3054370ce3ef1cec568b9e72c",
+      "purpose": "ephemeral kind smoke DSN on an audited branch"
+    },
+    {
+      "path": "scripts/dev/live_pgvector_rag_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "03bff848b26923b2c392e795032d03d6fe92980c4ac0baf05c77983caa430f0a",
+      "purpose": "ephemeral pgvector smoke DSN"
+    },
+    {
+      "path": "scripts/dev/live_postgres_persistence_smoke.py",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "03bff848b26923b2c392e795032d03d6fe92980c4ac0baf05c77983caa430f0a",
+      "purpose": "ephemeral PostgreSQL smoke DSN"
+    }
+  ],
+  "secret_scan_fixtures": [
+    {
+      "path": "apps/console/e2e/approval-queue.spec.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "0fc237a2a39cf79162792f24fd31af5d1fc7acd42536eb3a100596aa9bbae1ba",
+      "purpose": "synthetic browser approval credential fixture"
+    },
+    {
+      "path": "apps/api/tests/test_auth.py",
+      "rule_id": "credential-assignment",
+      "match_sha256": "a090db3ce25a58cf426f33400b0b85c38e98055adb6c64d93551a452e4eccd6a",
+      "purpose": "synthetic metrics bearer token fixture"
+    },
+    {
+      "path": "packages/agent-adapters/tests/agent-adapters.test.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "5fa9018ad208175b3a5b8007433a672da4330ac94d7d19a5f1df9ba49314235c",
+      "purpose": "synthetic adapter redaction fixture"
+    },
+    {
+      "path": "packages/agent-adapters/tests/agent-adapters.test.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "cd294e78f06c87cd1b283d7505c39d728294256838a17d419d52a322c052574d",
+      "purpose": "synthetic adapter redaction fixture"
+    },
+    {
+      "path": "packages/sdk/tests/client.test.ts",
+      "rule_id": "credential-assignment",
+      "match_sha256": "d202eef7491fdf82c563ad14b9b7555bab27d4fb325f8f555469876cb77f775a",
+      "purpose": "synthetic SDK bearer token fixture"
+    }
+  ]
+}

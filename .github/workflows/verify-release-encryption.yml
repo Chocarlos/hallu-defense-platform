@@ -1,0 +1,279 @@
+name: verify release encryption evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Workflow run ID that owns the immutable evidence artifact
+        required: true
+        type: string
+      artifact_id:
+        description: Immutable artifact ID containing release-encryption-evidence.json
+        required: true
+        type: string
+      phase:
+        description: Prepare an external CAS update or finalize it after the controller CAS
+        required: true
+        type: choice
+        options:
+          - prepare
+          - finalize
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-encryption-anchor
+  cancel-in-progress: false
+
+jobs:
+  verify-evidence:
+    if: >-
+      github.ref_protected && github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release-encryption-verification
+    outputs:
+      phase_result: ${{ steps.verify.outputs.phase_result }}
+    steps:
+      - name: Validate protected control-plane invocation
+        shell: bash
+        env:
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_PROTECTED}" = "true"
+          test "${GITHUB_REF_TYPE}" = "branch"
+          test "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}"
+          [[ "${ARTIFACT_RUN_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "${ARTIFACT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+
+      - name: Check out protected verifier control code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+          pip-version: "26.1.2"
+
+      - name: Install exact verifier dependencies before loading trust material
+        run: |
+          python scripts/ci/install_python_lock.py dev
+          python scripts/ci/check_release_encryption_workflow.py
+
+      - name: Download the immutable evidence artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.artifact_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/untrusted-release-encryption-artifact
+
+      - name: Require the exact evidence bundle artifact shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="${RUNNER_TEMP}/untrusted-release-encryption-artifact"
+          bundle_path="${bundle_dir}/release-encryption-evidence.json"
+          test -d "${bundle_dir}"
+          test "$(find "${bundle_dir}" -mindepth 1 -print | wc -l)" -eq 1
+          test -f "${bundle_path}"
+          test ! -L "${bundle_path}"
+          echo "BUNDLE_PATH=${bundle_path}" >> "${GITHUB_ENV}"
+
+      - name: Materialize externally protected verification inputs
+        id: materialize
+        shell: bash
+        env:
+          DEPLOYMENT_SUBJECT_B64: ${{ secrets.RELEASE_ENCRYPTION_DEPLOYMENT_SUBJECT_B64 }}
+          TRUST_STORE_B64: ${{ secrets.RELEASE_ENCRYPTION_TRUST_STORE_B64 }}
+          KEYRING_B64: ${{ secrets.RELEASE_ENCRYPTION_KEYRING_B64 }}
+          REPLAY_STATE_B64: ${{ secrets.RELEASE_ENCRYPTION_REPLAY_STATE_B64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          control_dir="${RUNNER_TEMP}/release-encryption-control"
+          report_dir="${RUNNER_TEMP}/release-encryption-report"
+          output_dir="${RUNNER_TEMP}/release-encryption-output"
+          install -d -m 0700 "${control_dir}" "${report_dir}" "${output_dir}"
+          complete=false
+          cleanup_on_error() {
+            if [[ "${complete}" != "true" ]]; then
+              rm -rf -- "${control_dir}" "${report_dir}" "${output_dir}"
+            fi
+          }
+          trap cleanup_on_error EXIT
+          decode_secret() {
+            local value="$1"
+            local target="$2"
+            test -n "${value}"
+            printf '%s' "${value}" | base64 --decode > "${target}"
+            test -s "${target}"
+            chmod 0600 "${target}"
+          }
+          decode_secret "${DEPLOYMENT_SUBJECT_B64}" "${control_dir}/deployment-subject.json"
+          decode_secret "${TRUST_STORE_B64}" "${control_dir}/trust-store.json"
+          decode_secret "${KEYRING_B64}" "${control_dir}/keyring.json"
+          decode_secret "${REPLAY_STATE_B64}" "${control_dir}/replay-state.json"
+          {
+            echo "HALLU_DEFENSE_RELEASE_DEPLOYMENT_SUBJECT_PATH=${control_dir}/deployment-subject.json"
+            echo "HALLU_DEFENSE_RELEASE_TRUST_STORE_PATH=${control_dir}/trust-store.json"
+            echo "HALLU_DEFENSE_RELEASE_KEYRING_PATH=${control_dir}/keyring.json"
+            echo "HALLU_DEFENSE_RELEASE_REPLAY_STATE_PATH=${control_dir}/replay-state.json"
+            echo "RELEASE_ENCRYPTION_REPORT_PATH=${report_dir}/verification-report.json"
+            echo "RELEASE_ENCRYPTION_OUTPUT_DIR=${output_dir}"
+          } >> "${GITHUB_ENV}"
+          complete=true
+
+      - name: Verify evidence and enforce the selected CAS phase contract
+        id: verify
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/apps/api/src
+          HALLU_DEFENSE_RELEASE_EXPECTED_TENANT_ID: ${{ secrets.RELEASE_ENCRYPTION_EXPECTED_TENANT_ID }}
+          HALLU_DEFENSE_RELEASE_EXPECTED_ENVIRONMENT: ${{ secrets.RELEASE_ENCRYPTION_EXPECTED_ENVIRONMENT }}
+          HALLU_DEFENSE_RELEASE_EXPECTED_TRUST_STORE_ID: ${{ secrets.RELEASE_ENCRYPTION_EXPECTED_TRUST_STORE_ID }}
+          HALLU_DEFENSE_RELEASE_EXPECTED_TRUST_ROOT_ID: ${{ secrets.RELEASE_ENCRYPTION_EXPECTED_TRUST_ROOT_ID }}
+          HALLU_DEFENSE_RELEASE_EXPECTED_REPLAY_STATE_SHA256: ${{ secrets.RELEASE_ENCRYPTION_REPLAY_ANCHOR_SHA256 }}
+          REQUESTED_PHASE: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            rm -rf -- "${RUNNER_TEMP}/release-encryption-control" \
+              "${RUNNER_TEMP}/release-encryption-report"
+          }
+          trap cleanup EXIT
+          set +e
+          python scripts/ci/verify_release_encryption_evidence.py \
+            --bundle "${BUNDLE_PATH}" \
+            --report "${RELEASE_ENCRYPTION_REPORT_PATH}"
+          verifier_status=$?
+          set -e
+          export VERIFIER_STATUS="${verifier_status}"
+          export GITHUB_OUTPUT_PATH="${GITHUB_OUTPUT}"
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.ci import verify_release_encryption_evidence as verifier
+
+          phase = os.environ["REQUESTED_PHASE"]
+          status = int(os.environ["VERIFIER_STATUS"])
+          report_path = Path(os.environ["RELEASE_ENCRYPTION_REPORT_PATH"])
+          replay_path = Path(os.environ[verifier.ENV_REPLAY_STATE_PATH])
+          keyring_path = Path(os.environ[verifier.ENV_KEYRING_PATH])
+          bundle_path = Path(os.environ["BUNDLE_PATH"])
+          expected_anchor = os.environ[verifier.ENV_EXPECTED_REPLAY_STATE_SHA256]
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          keyring = json.loads(keyring_path.read_text(encoding="utf-8"))
+          authenticator = report.get("report_authenticator")
+          if not isinstance(authenticator, dict):
+              raise SystemExit("verification report is not externally authenticated")
+          key_id = authenticator.get("key_id")
+          matches = [
+              item
+              for item in keyring.get("keys", [])
+              if item.get("key_id") == key_id
+              and item.get("purpose") == "verification-report-hmac-sha256"
+          ]
+          if len(matches) != 1:
+              raise SystemExit("verification report key is not externally bound")
+          try:
+              report_key = base64.b64decode(matches[0]["material"], validate=True)
+          except (KeyError, TypeError, ValueError) as exc:
+              raise SystemExit("verification report key is invalid") from exc
+          if not verifier.report_authenticator_is_valid(
+              report,
+              key_id=str(key_id),
+              key_material=report_key,
+          ):
+              raise SystemExit("verification report authentication failed")
+          replay_sha256 = hashlib.sha256(replay_path.read_bytes()).hexdigest()
+          bundle_sha256 = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+          if report.get("bundle_sha256") != bundle_sha256:
+              raise SystemExit("verification report is not bound to the downloaded bundle")
+          if report.get("replay_state_next_sha256") != replay_sha256:
+              raise SystemExit("verification report is not bound to the exported replay state")
+          if phase == "prepare":
+              valid = (
+                  status == 1
+                  and report.get("compliance_asserted") is False
+                  and report.get("anchor_update_required") is True
+                  and report.get("anchor_finalized") is False
+                  and report.get("replay_state_previous_sha256") == expected_anchor
+                  and report.get("failure_codes") == ["anchor.update_required"]
+              )
+              phase_result = "anchor-update-required"
+          elif phase == "finalize":
+              valid = (
+                  status == 0
+                  and report.get("compliance_asserted") is True
+                  and report.get("anchor_update_required") is False
+                  and report.get("anchor_finalized") is True
+                  and replay_sha256 == expected_anchor
+                  and report.get("failure_codes") == []
+              )
+              phase_result = "finalized"
+          else:
+              valid = False
+              phase_result = "invalid"
+          if not valid:
+              raise SystemExit("verifier result does not match the selected external CAS phase")
+          output = Path(os.environ["GITHUB_OUTPUT_PATH"])
+          with output.open("a", encoding="utf-8", newline="\n") as handle:
+              handle.write(f"phase_result={phase_result}\n")
+          PY
+          install -m 0600 "${RELEASE_ENCRYPTION_REPORT_PATH}" \
+            "${RELEASE_ENCRYPTION_OUTPUT_DIR}/verification-report.json"
+          install -m 0600 "${HALLU_DEFENSE_RELEASE_REPLAY_STATE_PATH}" \
+            "${RELEASE_ENCRYPTION_OUTPUT_DIR}/replay-state.json"
+          (
+            cd "${RELEASE_ENCRYPTION_OUTPUT_DIR}"
+            sha256sum replay-state.json verification-report.json > SHA256SUMS
+            chmod 0600 SHA256SUMS
+          )
+
+      - name: Upload authenticated report and replay-state transition
+        if: ${{ success() && steps.verify.outputs.phase_result != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-encryption-${{ inputs.artifact_id }}-${{ inputs.phase }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-encryption-output/
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 30
+
+  enforce-compliance:
+    if: ${{ always() }}
+    needs: verify-evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail closed until the external CAS is finalized
+        shell: bash
+        env:
+          VERIFY_JOB_RESULT: ${{ needs.verify-evidence.result }}
+          PHASE_RESULT: ${{ needs.verify-evidence.outputs.phase_result }}
+          REQUESTED_PHASE: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+          if [[ "${VERIFY_JOB_RESULT}" == "success" \
+            && "${REQUESTED_PHASE}" == "finalize" \
+            && "${PHASE_RESULT}" == "finalized" ]]; then
+            exit 0
+          fi
+          echo "Release encryption compliance remains false until external CAS finalization." >&2
+          exit 1

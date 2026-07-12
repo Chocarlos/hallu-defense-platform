@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hallu-defense.local/schemas/release-encryption-verification-report.schema.json",
+  "title": "ReleaseEncryptionVerificationReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "verified_at",
+    "bundle_sha256",
+    "bundle_id",
+    "replay_state_previous_sha256",
+    "replay_state_next_sha256",
+    "anchor_update_required",
+    "anchor_finalized",
+    "report_authenticator",
+    "compliance_asserted",
+    "checks",
+    "failure_codes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "release-encryption-verification-report.v1"
+    },
+    "verified_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bundle_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "bundle_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$"
+    },
+    "replay_state_previous_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "replay_state_next_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "anchor_update_required": {
+      "type": "boolean"
+    },
+    "anchor_finalized": {
+      "type": "boolean"
+    },
+    "report_authenticator": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "key_id", "value"],
+          "properties": {
+            "algorithm": {
+              "const": "hmac-sha256"
+            },
+            "key_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "compliance_asserted": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_valid",
+        "external_inputs_bound",
+        "tenant_environment_bound",
+        "timestamps_valid",
+        "provenance_valid",
+        "controls_attested",
+        "rotation_valid",
+        "commitments_valid",
+        "authenticators_valid",
+        "replay_rollback_safe"
+      ],
+      "properties": {
+        "schema_valid": {"type": "boolean"},
+        "external_inputs_bound": {"type": "boolean"},
+        "tenant_environment_bound": {"type": "boolean"},
+        "timestamps_valid": {"type": "boolean"},
+        "provenance_valid": {"type": "boolean"},
+        "controls_attested": {"type": "boolean"},
+        "rotation_valid": {"type": "boolean"},
+        "commitments_valid": {"type": "boolean"},
+        "authenticators_valid": {"type": "boolean"},
+        "replay_rollback_safe": {"type": "boolean"}
+      }
+    },
+    "failure_codes": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{2,127}$"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "compliance_asserted": {"const": true}
+        },
+        "required": ["compliance_asserted"]
+      },
+      "then": {
+        "properties": {
+          "failure_codes": {"maxItems": 0},
+          "checks": {
+            "properties": {
+              "schema_valid": {"const": true},
+              "external_inputs_bound": {"const": true},
+              "tenant_environment_bound": {"const": true},
+              "timestamps_valid": {"const": true},
+              "provenance_valid": {"const": true},
+              "controls_attested": {"const": true},
+              "rotation_valid": {"const": true},
+              "commitments_valid": {"const": true},
+              "authenticators_valid": {"const": true},
+              "replay_rollback_safe": {"const": true}
+            }
+          },
+          "replay_state_previous_sha256": {
+            "type": "string"
+          },
+          "replay_state_next_sha256": {
+            "type": "string"
+          },
+          "anchor_update_required": {
+            "const": false
+          },
+          "anchor_finalized": {
+            "const": true
+          },
+          "report_authenticator": {
+            "type": "object"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "failure_codes": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "anchor_update_required": {"const": true}
+        },
+        "required": ["anchor_update_required"]
+      },
+      "then": {
+        "properties": {
+          "compliance_asserted": {"const": false},
+          "anchor_finalized": {"const": false},
+          "replay_state_previous_sha256": {"type": "string"},
+          "replay_state_next_sha256": {"type": "string"},
+          "report_authenticator": {"type": "object"},
+          "failure_codes": {
+            "maxItems": 1,
+            "prefixItems": [
+              {"const": "anchor.update_required"}
+            ]
+          },
+          "checks": {
+            "properties": {
+              "schema_valid": {"const": true},
+              "external_inputs_bound": {"const": true},
+              "tenant_environment_bound": {"const": true},
+              "timestamps_valid": {"const": true},
+              "provenance_valid": {"const": true},
+              "controls_attested": {"const": true},
+              "rotation_valid": {"const": true},
+              "commitments_valid": {"const": true},
+              "authenticators_valid": {"const": true},
+              "replay_rollback_safe": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "anchor_finalized": {"const": true}
+        },
+        "required": ["anchor_finalized"]
+      },
+      "then": {
+        "properties": {
+          "compliance_asserted": {"const": true},
+          "anchor_update_required": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failure_codes": {
+            "contains": {"const": "anchor.update_required"}
+          }
+        },
+        "required": ["failure_codes"]
+      },
+      "then": {
+        "properties": {
+          "anchor_update_required": {"const": true}
+        }
+      }
+    }
+  ]
+}

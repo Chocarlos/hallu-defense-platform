@@ -4,6 +4,8 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
+import yaml  # type: ignore[import-untyped]
+
 ROOT = Path(__file__).resolve().parents[2]
 SANDBOX_EXEC_PATH = (
     ROOT / "apps" / "api" / "src" / "hallu_defense" / "services" / "sandbox_exec.py"
@@ -93,6 +95,13 @@ REQUIRED_MAKE_TARGETS = (
     "sandbox-isolation-config:",
     "sandbox-live-smoke:",
 )
+SANDBOX_MATRIX_ROW = {
+    "name": "sandbox",
+    "dockerfile": "infra/docker/sandbox.Dockerfile",
+}
+SANDBOX_MATRIX_IMAGE_REF = "hallu-defense-${{ matrix.name }}:ci"
+TRIVY_ACTION = "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25"
+TRIVY_VERSION = "v0.72.0"
 
 
 class SandboxIsolationConfigError(ValueError):
@@ -541,18 +550,7 @@ def _validate_wiring(
     security_section = makefile_text.partition("security-check:")[2]
     if "scripts/ci/check_sandbox_isolation_config.py" not in security_section:
         errors.append("security-check must include check_sandbox_isolation_config.py")
-    if (
-        "python scripts/ci/check_sandbox_isolation_config.py"
-        not in security_workflow_text
-    ):
-        errors.append("security workflow must run check_sandbox_isolation_config.py")
-    if (
-        "docker build -f infra/docker/sandbox.Dockerfile -t hallu-defense-sandbox:ci ."
-        not in security_workflow_text
-    ):
-        errors.append("security workflow must build hallu-defense-sandbox:ci")
-    if "image-ref: hallu-defense-sandbox:ci" not in security_workflow_text:
-        errors.append("security workflow must scan hallu-defense-sandbox:ci")
+    _validate_security_workflow(security_workflow_text, errors)
     if "sandbox-live:" not in live_workflow_text:
         errors.append("live workflow must include sandbox-live job")
     if "needs: [postgres-live, keycloak-live]" not in live_workflow_text:
@@ -644,6 +642,142 @@ def _typescript_integer_constant(text: str, name: str) -> int | None:
     return None if match is None else int(match.group(1).replace("_", ""))
 
 
+def _validate_security_workflow(workflow_text: str, errors: list[str]) -> None:
+    try:
+        workflow = yaml.safe_load(workflow_text)
+    except yaml.YAMLError as exc:
+        errors.append(f"security workflow must be valid YAML: {exc}")
+        return
+    if not isinstance(workflow, Mapping):
+        errors.append("security workflow must be a YAML mapping")
+        return
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, Mapping):
+        errors.append("security workflow must define jobs")
+        return
+
+    security_job = jobs.get("security-check")
+    security_steps = (
+        security_job.get("steps") if isinstance(security_job, Mapping) else None
+    )
+    checker_command = "python scripts/ci/check_sandbox_isolation_config.py"
+    checker_steps = (
+        [
+            step
+            for step in security_steps
+            if isinstance(step, Mapping)
+            and isinstance(step.get("run"), str)
+            and " ".join(str(step["run"]).split()) == checker_command
+        ]
+        if isinstance(security_steps, list)
+        else []
+    )
+    if len(checker_steps) != 1:
+        errors.append("security workflow must run check_sandbox_isolation_config.py")
+    elif "if" in checker_steps[0] or "continue-on-error" in checker_steps[0]:
+        errors.append("security workflow sandbox checker must run unconditionally")
+
+    image_job = jobs.get("first-party-images")
+    if not isinstance(image_job, Mapping):
+        errors.append("security workflow must define the first-party image matrix")
+        return
+    if "continue-on-error" in image_job:
+        errors.append("sandbox image matrix job must not weaken failures")
+    if "if" in image_job:
+        errors.append("sandbox image matrix job must run unconditionally")
+    strategy = image_job.get("strategy")
+    if not isinstance(strategy, Mapping):
+        errors.append("sandbox image matrix must define a strategy")
+        return
+    if strategy.get("fail-fast") is not False:
+        errors.append("sandbox image matrix must set fail-fast: false")
+    if strategy.get("max-parallel") != 1:
+        errors.append(
+            "sandbox image matrix must serialize Docker work with max-parallel: 1"
+        )
+    matrix = strategy.get("matrix")
+    if isinstance(matrix, Mapping) and set(matrix) != {"include"}:
+        errors.append("sandbox image matrix must not exclude or override approved rows")
+    include = matrix.get("include") if isinstance(matrix, Mapping) else None
+    if not isinstance(include, list):
+        errors.append("sandbox image matrix must define an include list")
+        return
+    sandbox_rows = [
+        dict(row)
+        for row in include
+        if isinstance(row, Mapping)
+        and (
+            row.get("name") == "sandbox"
+            or row.get("dockerfile") == SANDBOX_MATRIX_ROW["dockerfile"]
+        )
+    ]
+    if sandbox_rows != [SANDBOX_MATRIX_ROW]:
+        errors.append(
+            "sandbox image matrix must bind exactly one sandbox row to "
+            "infra/docker/sandbox.Dockerfile"
+        )
+
+    steps = image_job.get("steps")
+    if not isinstance(steps, list):
+        errors.append("sandbox image matrix must define build and scan steps")
+        return
+    if any(isinstance(step, Mapping) and "continue-on-error" in step for step in steps):
+        errors.append("sandbox image matrix steps must not weaken failures")
+
+    build_steps = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and isinstance(step.get("run"), str)
+        and re.search(r"\bdocker\s+build\b", str(step["run"]))
+    ]
+    build_commands = [" ".join(str(step["run"]).split()) for step in build_steps]
+    expected_build = (
+        'docker build -f "${{ matrix.dockerfile }}" '
+        f'-t "{SANDBOX_MATRIX_IMAGE_REF}" .'
+    )
+    if build_commands != [expected_build]:
+        errors.append(
+            "sandbox image matrix must build its exact Dockerfile with the "
+            "name-derived hallu-defense sandbox tag"
+        )
+    elif "if" in build_steps[0]:
+        errors.append("sandbox image matrix build must run unconditionally")
+
+    scans = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    ]
+    if len(scans) != 1:
+        errors.append("sandbox image matrix must contain exactly one Trivy scan")
+        return
+    scan = scans[0]
+    if scan.get("uses") != TRIVY_ACTION:
+        errors.append(f"sandbox image matrix must pin Trivy action {TRIVY_ACTION}")
+    if "if" in scan:
+        errors.append("sandbox image matrix Trivy scan must be unconditional")
+    inputs = scan.get("with")
+    if not isinstance(inputs, Mapping):
+        errors.append("sandbox image matrix Trivy scan must define fail-closed inputs")
+        return
+    expected_inputs = {
+        "version": TRIVY_VERSION,
+        "image-ref": SANDBOX_MATRIX_IMAGE_REF,
+        "exit-code": "1",
+        "vuln-type": "os,library",
+        "severity": "CRITICAL,HIGH",
+    }
+    for key, expected in expected_inputs.items():
+        if str(inputs.get(key, "")) != expected:
+            errors.append(f"sandbox image matrix Trivy scan must set {key}: {expected}")
+    if "ignore-unfixed" in inputs:
+        errors.append(
+            "sandbox image matrix Trivy scan must not ignore unfixed findings"
+        )
+
+
 def _validate_docs(
     *,
     sandbox_adr_text: str,
@@ -675,6 +809,8 @@ def _validate_docs(
     for marker in (
         "hallu-defense-sandbox:ci",
         "infra/docker/sandbox.Dockerfile",
+        "`sandbox`",
+        "all eight first-party images",
     ):
         if marker not in container_scanning_doc_text:
             errors.append(f"container scanning docs must mention {marker}")

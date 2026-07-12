@@ -1,0 +1,12 @@
+{
+  "schema_version": "release-encryption-keyring.v1",
+  "trust_store_id": "release-trust-example",
+  "keys": [
+    {
+      "key_id": "auth-epoch-7",
+      "purpose": "private-key",
+      "encoding": "plain-text",
+      "material": "secret"
+    }
+  ]
+}

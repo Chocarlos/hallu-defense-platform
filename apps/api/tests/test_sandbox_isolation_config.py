@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from scripts.ci.check_sandbox_isolation_config import (
@@ -20,6 +22,159 @@ def test_sandbox_isolation_config_rejects_missing_network_none_flag() -> None:
     )
 
     with pytest.raises(SandboxIsolationConfigError, match="--network=none"):
+        validate_sandbox_isolation_config(**config)
+
+
+@pytest.mark.parametrize(
+    "resource_flag",
+    ('"--pids-limit"', '"--memory"', '"--cpus"'),
+)
+def test_sandbox_isolation_config_rejects_missing_runtime_limit(
+    resource_flag: str,
+) -> None:
+    config = dict(load_current_config())
+    config["sandbox_exec_text"] = config["sandbox_exec_text"].replace(
+        resource_flag,
+        '"disabled-runtime-limit"',
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match=re.escape(resource_flag)):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_exact_sandbox_matrix_row() -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        "          - name: sandbox\n            dockerfile: infra/docker/sandbox.Dockerfile",
+        "          - name: sandbox\n            dockerfile: infra/docker/api.Dockerfile",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="exactly one sandbox row"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_matrix_exclusion_bypass() -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        "      matrix:\n        include:",
+        "      matrix:\n        exclude:\n          - name: sandbox\n        include:",
+        1,
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="must not exclude"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_requires_matrix_derived_build_tag() -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        '-t "hallu-defense-${{ matrix.name }}:ci" .',
+        '-t "hallu-defense-api:ci" .',
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="name-derived"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_conditional_matrix_build() -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        "      - name: Build current first-party image\n        run:",
+        "      - name: Build current first-party image\n        if: false\n        run:",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="build must run unconditionally"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_skipped_image_matrix_job() -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        "  first-party-images:\n    runs-on:",
+        "  first-party-images:\n    if: false\n    runs-on:",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="job must run unconditionally"):
+        validate_sandbox_isolation_config(**config)
+
+
+def test_sandbox_isolation_config_rejects_skipped_checker_step() -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        "      - run: python scripts/ci/check_sandbox_isolation_config.py",
+        "      - run: python scripts/ci/check_sandbox_isolation_config.py\n"
+        "        continue-on-error: true",
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match="checker must run unconditionally"):
+        validate_sandbox_isolation_config(**config)
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "error"),
+    (
+        (
+            "image-ref: hallu-defense-${{ matrix.name }}:ci",
+            "image-ref: hallu-defense-api:ci",
+            "image-ref",
+        ),
+        ('exit-code: "1"', 'exit-code: "0"', "exit-code"),
+        (
+            "version: v0.72.0",
+            "version: v0.71.0",
+            "version",
+        ),
+    ),
+)
+def test_sandbox_isolation_config_requires_fail_closed_matrix_scan(
+    original: str,
+    replacement: str,
+    error: str,
+) -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        original,
+        replacement,
+        1,
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match=error):
+        validate_sandbox_isolation_config(**config)
+
+
+@pytest.mark.parametrize(
+    ("target", "replacement", "error"),
+    (
+        (
+            "        with:\n          version: v0.72.0\n",
+            "        continue-on-error: true\n        with:\n          version: v0.72.0\n",
+            "must not weaken failures",
+        ),
+        (
+            "        with:\n          version: v0.72.0\n",
+            "        if: success()\n        with:\n          version: v0.72.0\n",
+            "must be unconditional",
+        ),
+        (
+            "          version: v0.72.0\n",
+            "          version: v0.72.0\n          ignore-unfixed: true\n",
+            "must not ignore unfixed",
+        ),
+    ),
+)
+def test_sandbox_isolation_config_rejects_matrix_scan_bypasses(
+    target: str,
+    replacement: str,
+    error: str,
+) -> None:
+    config = dict(load_current_config())
+    config["security_workflow_text"] = config["security_workflow_text"].replace(
+        target,
+        replacement,
+        1,
+    )
+
+    with pytest.raises(SandboxIsolationConfigError, match=error):
         validate_sandbox_isolation_config(**config)
 
 

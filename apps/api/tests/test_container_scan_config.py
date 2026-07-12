@@ -6,6 +6,7 @@ import pytest
 
 from scripts.ci.check_container_scan_config import (
     ContainerScanConfigError,
+    IMAGE_REFS,
     OPENSEARCH_ENTRYPOINT_PATH,
     SEAWEEDFS_LAUNCHER_PATH,
     load_current_config,
@@ -41,22 +42,21 @@ def test_container_scan_config_validates_required_images() -> None:
         workflow_text=workflow_text,
         dockerfile_texts=dockerfile_texts,
     )
-    assert "infra/docker/sandbox.Dockerfile" in workflow_text
-    assert "hallu-defense-sandbox:ci" in workflow_text
-    assert "infra/docker/pgvector.Dockerfile" in workflow_text
-    assert "hallu-defense-pgvector:ci" in workflow_text
-    assert "infra/docker/keycloak.Dockerfile" in workflow_text
-    assert "hallu-defense-keycloak:ci" in workflow_text
-    assert "infra/docker/grafana.Dockerfile" in workflow_text
-    assert "hallu-defense-grafana:ci" in workflow_text
-    assert "infra/docker/opensearch.Dockerfile" in workflow_text
-    assert "hallu-defense-opensearch:ci" in workflow_text
-    assert "infra/docker/seaweedfs.Dockerfile" in workflow_text
-    assert "hallu-defense-seaweedfs:ci" in workflow_text
+    for name in IMAGE_REFS:
+        assert f"infra/docker/{name}.Dockerfile" in workflow_text
+    assert "fail-fast: false" in workflow_text
+    assert workflow_text.count("max-parallel: 1") == 2
+    assert "image-ref: hallu-defense-${{ matrix.name }}:ci" in workflow_text
+    assert (
+        workflow_text.count("trivy-config: ${{ runner.temp }}/hallu-trivy-policy/trivy.yaml") == 2
+    )
+    assert (
+        workflow_text.count("trivyignores: ${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore")
+        == 2
+    )
     assert (
         "redis:7-alpine@sha256:"
-        "6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
-        in workflow_text
+        "6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" in workflow_text
     )
     assert "sandbox" in dockerfile_texts
 
@@ -64,9 +64,11 @@ def test_container_scan_config_validates_required_images() -> None:
 def test_container_scan_config_rejects_missing_trivy_scan() -> None:
     workflow_text, dockerfile_texts = load_current_config()
 
-    with pytest.raises(ContainerScanConfigError, match="first-party scans"):
+    with pytest.raises(ContainerScanConfigError, match="matrix scan"):
         validate_container_scan_config(
-            workflow_text=workflow_text.replace("aquasecurity/trivy-action@", "disabled-trivy-action@"),
+            workflow_text=workflow_text.replace(
+                "aquasecurity/trivy-action@", "disabled-trivy-action@"
+            ),
             dockerfile_texts=dockerfile_texts,
         )
 
@@ -81,83 +83,41 @@ def test_container_scan_config_rejects_non_failing_scan() -> None:
         )
 
 
-def test_container_scan_config_rejects_missing_sandbox_scan() -> None:
-    workflow_text, dockerfile_texts = load_current_config()
-
-    with pytest.raises(ContainerScanConfigError, match="hallu-defense-sandbox:ci"):
-        validate_container_scan_config(
-            workflow_text=workflow_text.replace("image-ref: hallu-defense-sandbox:ci", ""),
-            dockerfile_texts=dockerfile_texts,
-        )
-
-
-def test_container_scan_config_rejects_missing_pgvector_scan() -> None:
-    workflow_text, dockerfile_texts = load_current_config()
-
-    with pytest.raises(ContainerScanConfigError, match="hallu-defense-pgvector:ci"):
-        validate_container_scan_config(
-            workflow_text=workflow_text.replace(
-                "image-ref: hallu-defense-pgvector:ci",
-                "image-ref: removed-pgvector:ci",
-            ),
-            dockerfile_texts=dockerfile_texts,
-        )
-
-
-def test_container_scan_config_rejects_missing_keycloak_scan() -> None:
-    workflow_text, dockerfile_texts = load_current_config()
-
-    with pytest.raises(ContainerScanConfigError, match="hallu-defense-keycloak:ci"):
-        validate_container_scan_config(
-            workflow_text=workflow_text.replace(
-                "image-ref: hallu-defense-keycloak:ci",
-                "image-ref: removed-keycloak:ci",
-            ),
-            dockerfile_texts=dockerfile_texts,
-        )
-
-
-def test_container_scan_config_rejects_missing_seaweedfs_scan() -> None:
-    workflow_text, dockerfile_texts = load_current_config()
-
-    with pytest.raises(ContainerScanConfigError, match="hallu-defense-seaweedfs:ci"):
-        validate_container_scan_config(
-            workflow_text=workflow_text.replace(
-                "image-ref: hallu-defense-seaweedfs:ci",
-                "image-ref: removed-seaweedfs:ci",
-            ),
-            dockerfile_texts=dockerfile_texts,
-        )
-
-
 @pytest.mark.parametrize(
-    "image_ref",
-    ["hallu-defense-grafana:ci", "hallu-defense-opensearch:ci"],
+    "name",
+    tuple(IMAGE_REFS),
 )
-def test_container_scan_config_rejects_missing_hardened_service_scan(
-    image_ref: str,
+def test_container_scan_config_rejects_missing_first_party_matrix_member(
+    name: str,
 ) -> None:
     workflow_text, dockerfile_texts = load_current_config()
+    row = f"          - name: {name}\n            dockerfile: infra/docker/{name}.Dockerfile\n"
+    insecure = workflow_text.replace(row, "", 1)
+    assert insecure != workflow_text
 
-    with pytest.raises(ContainerScanConfigError, match=image_ref):
+    with pytest.raises(ContainerScanConfigError, match="every approved Dockerfile"):
         validate_container_scan_config(
-            workflow_text=workflow_text.replace(
-                f"image-ref: {image_ref}",
-                "image-ref: removed-hardened-service:ci",
-            ),
+            workflow_text=insecure,
             dockerfile_texts=dockerfile_texts,
         )
 
 
 def test_container_scan_config_rejects_commented_scan_marker_and_duplicate_ref() -> None:
     workflow_text, dockerfile_texts = load_current_config()
+    expected = (
+        "          - name: grafana\n            dockerfile: infra/docker/grafana.Dockerfile\n"
+    )
     insecure = workflow_text.replace(
-        "image-ref: hallu-defense-grafana:ci",
-        "image-ref: hallu-defense-api:ci\n          # image-ref: hallu-defense-grafana:ci",
+        expected,
+        "          - name: api\n"
+        "            dockerfile: infra/docker/api.Dockerfile\n"
+        "          # - name: grafana\n"
+        "          #   dockerfile: infra/docker/grafana.Dockerfile\n",
         1,
     )
+    assert insecure != workflow_text
 
-    with pytest.raises(ContainerScanConfigError, match="image-ref multiset"):
+    with pytest.raises(ContainerScanConfigError, match="every approved Dockerfile"):
         validate_container_scan_config(
             workflow_text=insecure,
             dockerfile_texts=dockerfile_texts,
@@ -166,20 +126,111 @@ def test_container_scan_config_rejects_commented_scan_marker_and_duplicate_ref()
 
 def test_container_scan_config_rejects_wrong_dockerfile_with_commented_build() -> None:
     workflow_text, dockerfile_texts = load_current_config()
-    expected = (
-        "docker build -f infra/docker/grafana.Dockerfile "
-        "-t hallu-defense-grafana:ci ."
-    )
     insecure = workflow_text.replace(
-        f"run: {expected}",
-        "run: |\n"
-        "          docker build -f infra/docker/api.Dockerfile "
-        "-t hallu-defense-grafana:ci .\n"
-        f"          # {expected}",
+        "            dockerfile: infra/docker/grafana.Dockerfile",
+        "            dockerfile: infra/docker/api.Dockerfile\n"
+        "          # dockerfile: infra/docker/grafana.Dockerfile",
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="every approved Dockerfile"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_requires_non_short_circuiting_first_party_matrix() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace("      fail-fast: false", "      fail-fast: true", 1)
+
+    with pytest.raises(ContainerScanConfigError, match="first-party.*fail-fast: false"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+@pytest.mark.parametrize("occurrence", [1, 2])
+def test_container_scan_config_requires_serial_docker_work(occurrence: int) -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    marker = "      max-parallel: 1"
+    offset = 0
+    index = -1
+    for _ in range(occurrence):
+        index = workflow_text.find(marker, offset)
+        assert index >= 0
+        offset = index + len(marker)
+    insecure = (
+        workflow_text[:index] + marker.replace("1", "4") + workflow_text[index + len(marker) :]
+    )
+
+    with pytest.raises(ContainerScanConfigError, match="serialize"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_static_first_party_build() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        'docker build -f "${{ matrix.dockerfile }}"',
+        "docker build -f infra/docker/api.Dockerfile",
         1,
     )
 
-    with pytest.raises(ContainerScanConfigError, match="exactly once from"):
+    with pytest.raises(ContainerScanConfigError, match="exact current Dockerfile"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_second_tag_overwrite_build() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        "      - name: Scan current first-party image",
+        "      - name: Overwrite scanned tag\n"
+        "        run: >-\n"
+        "          docker build -f infra/docker/api.Dockerfile\n"
+        '          -t "hallu-defense-${{ matrix.name }}:ci" .\n'
+        "      - name: Scan current first-party image",
+        1,
+    )
+
+    with pytest.raises(ContainerScanConfigError, match="contain only its exact"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_requires_scan_inside_first_party_matrix() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        "image-ref: hallu-defense-${{ matrix.name }}:ci",
+        "image-ref: ${{ matrix.image }}",
+        1,
+    )
+
+    with pytest.raises(ContainerScanConfigError, match="first-party matrix.*image"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_conditional_continue_on_error() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        "      - name: Scan current first-party image",
+        "      - name: Scan current first-party image\n        continue-on-error: ${{ always() }}",
+        1,
+    )
+
+    with pytest.raises(ContainerScanConfigError, match="must not weaken failures"):
         validate_container_scan_config(
             workflow_text=insecure,
             dockerfile_texts=dockerfile_texts,
@@ -332,8 +383,8 @@ def test_container_scan_config_rejects_point_runtime_code_chown(
         "golang:1.26.4-alpine3.24@sha256:3ad57304",
         "ARG SEAWEEDFS_COMMIT=1355c7a102194d6c461baf090eff50367b575afb",
         "ARG SEAWEEDFS_SOURCE_SHA256=d4ec97a7",
-        'addr := fmt.Sprintf(\"127.0.0.1:%d\", *options.port)',
-        'net.Listen(\"tcp\", fmt.Sprintf(\"127.0.0.1:%d\", port))',
+        'addr := fmt.Sprintf("127.0.0.1:%d", *options.port)',
+        'net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))',
         "github.com/apache/thrift@v0.23.0",
         "golang.org/x/net@v0.55.0",
         "cmp /out/weed.first /out/weed.second",
@@ -428,12 +479,34 @@ def test_container_scan_config_rejects_missing_pinned_redis_scan() -> None:
         )
 
 
+def test_container_scan_config_rejects_duplicate_third_party_matrix_row() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    reference = (
+        "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
+    )
+    insecure = workflow_text.replace(
+        f"          - {reference}",
+        f"          - {reference}\n          - {reference}",
+        1,
+    )
+
+    with pytest.raises(ContainerScanConfigError, match="image matrix drift"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
 def test_container_scan_config_rejects_vulnerable_action_and_ignored_findings() -> None:
     workflow_text, dockerfile_texts = load_current_config()
     insecure = workflow_text.replace(
         "ed142fd0673e97e23eac54620cfb913e5ce36c25",
         "915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2",
-    ).replace("          vuln-type: os,library", "          ignore-unfixed: true\n          vuln-type: os,library", 1)
+    ).replace(
+        "          vuln-type: os,library",
+        "          ignore-unfixed: true\n          vuln-type: os,library",
+        1,
+    )
 
     with pytest.raises(
         ContainerScanConfigError,
@@ -451,6 +524,167 @@ def test_container_scan_config_requires_exact_trivy_binary_version() -> None:
     with pytest.raises(ContainerScanConfigError, match="version: v0.72.0"):
         validate_container_scan_config(
             workflow_text=workflow_text.replace("version: v0.72.0", "version: latest"),
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+@pytest.mark.parametrize(
+    ("trusted", "untrusted"),
+    (
+        (
+            "trivy-config: ${{ runner.temp }}/hallu-trivy-policy/trivy.yaml",
+            "trivy-config: trivy.yaml",
+        ),
+        (
+            "trivyignores: ${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore",
+            "trivyignores: .trivyignore",
+        ),
+    ),
+)
+def test_container_scan_config_rejects_repository_authored_trivy_policy(
+    trusted: str,
+    untrusted: str,
+) -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(trusted, untrusted, 1)
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="every Trivy scan must set"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_missing_external_empty_trivy_policy() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        "      - name: Create empty external Trivy policy",
+        "      - name: Trust repository Trivy policy",
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(
+        ContainerScanConfigError,
+        match="external empty Trivy policy|exact policy",
+    ):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_refilling_external_trivy_ignore_file() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    marker = '          : > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"'
+    insecure = workflow_text.replace(
+        marker,
+        marker
+        + "\n"
+        + "          printf 'CVE-2026-9999\\n' >> "
+        + '"${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"',
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="exact empty fail-closed"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_trivy_policy_step_environment_override() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        "      - name: Create empty external Trivy policy\n        shell: bash",
+        "      - name: Create empty external Trivy policy\n"
+        "        env:\n"
+        "          TRIVY_CONFIG: .trivy.yaml\n"
+        "        shell: bash",
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="exact trusted metadata"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_additional_trivy_suppression_input() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = workflow_text.replace(
+        "          vuln-type: os,library",
+        "          skip-dirs: /usr/local/lib\n          vuln-type: os,library",
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="only the exact fail-closed"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+@pytest.mark.parametrize(
+    "injection",
+    (
+        "        if: ${{ false }}\n",
+        '        env:\n          TRIVY_IGNORE_UNFIXED: "true"\n',
+    ),
+)
+def test_container_scan_config_rejects_neutralized_third_party_scan(
+    injection: str,
+) -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    marker = "      - name: Scan immutable third-party image\n"
+    insecure = workflow_text.replace(marker, marker + injection, 1)
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="exact trusted metadata"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_third_party_matrix_exclusion() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    marker = "      matrix:\n        image:\n"
+    insecure = workflow_text.replace(
+        marker,
+        "      matrix:\n"
+        "        exclude:\n"
+        "          - image: prom/prometheus:excluded\n"
+        "        image:\n",
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="exact immutable image list"):
+        validate_container_scan_config(
+            workflow_text=insecure,
+            dockerfile_texts=dockerfile_texts,
+        )
+
+
+def test_container_scan_config_rejects_extra_action_before_third_party_scan() -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    marker = "      - name: Scan immutable third-party image\n"
+    insecure = workflow_text.replace(
+        marker,
+        "      - name: Overwrite scanner policy\n        uses: ./attacker-action\n" + marker,
+        1,
+    )
+    assert insecure != workflow_text
+
+    with pytest.raises(ContainerScanConfigError, match="exactly policy then Trivy"):
+        validate_container_scan_config(
+            workflow_text=insecure,
             dockerfile_texts=dockerfile_texts,
         )
 
