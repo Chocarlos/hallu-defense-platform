@@ -4,6 +4,13 @@ Statuses: `not_started`, `designed`, `implemented`, `tested`, `documented`, `acc
 
 No item may be marked `accepted` without implementation, tests, documentation, and evidence.
 
+The 2026-07-13 mass-QA acceptance decision is recorded in
+`docs/qa/2026-07-13-mass-qa-acceptance.md`. It accepts the named gate executions
+and live capabilities in that ledger; requirement rows remain at `tested` until
+their individual residual risks are closed. In particular, a green offline test
+does not convert an external-infrastructure or unresolved semantic requirement
+to `accepted`.
+
 | ID | Description | Files / modules affected | Related contracts | Related endpoints | Tests required | Evidence of validation | Status | Risks / notes |
 |---|---|---|---|---|---|---|---|---|
 | FND-001 | Root agent instructions exist and define working loop | `AGENTS.md`, `scripts/ci/check_foundation_docs.py`, `apps/api/tests/test_foundation_docs.py` | n/a | n/a | foundation docs validator, focused negative tests | `check_foundation_docs.py` validates required AGENTS working-loop, non-negotiable, architecture, and command markers; `test_foundation_docs.py`: 6 passed | tested | Must keep updated as workflow evolves |
