@@ -12,7 +12,7 @@ risks in the traceability matrix.
 - `make lint`: Ruff and ESLint passed with zero lint errors.
 - `make typecheck`: mypy passed 59 Python source files; every TypeScript
   workspace passed type generation/typecheck.
-- `make test`: 2,722 Python tests passed with 27 platform/live deselections;
+- `make test`: 2,729 Python tests passed with 27 platform/live deselections;
   SDK 17, agent adapters 11, MCP 41, and Console 101 tests passed.
 - `make build`, contracts, OpenAPI, policy, eval smoke, and the 21-scenario eval
   suite passed during this campaign.
@@ -38,12 +38,20 @@ risks in the traceability matrix.
   with tenant isolation and window expiry.
 - S3-compatible encrypted backup/restore: tenant-scoped live drill passed.
 
+## Accepted GitHub PR gates
+
+- Commit `3bb45a548e4288934937f9397ce89710c53e7504` completed GitHub Actions
+  `ci` run 29228234027 and `evals` run 29228234026 successfully.
+- `security` run 29228234055 completed its main fail-closed gate, both immutable
+  third-party image scans, and all ten exact first-party builds plus Trivy
+  HIGH/CRITICAL scans successfully. This accepts `SEC-011` for that commit.
+
 ## Rejected or pending
 
 - The ingestion worker crash/restart live smoke is not accepted. Its 15 focused
   tests pass, but the Windows execution timed out and a Linux-container replay
   exited before claiming the job. This remains a live defect/investigation.
-- Kind/Helm cluster execution, current Trivy scans of all ten built images,
-  deployed production profile, managed services, external OIDC/provider lanes
-  and other authority-dependent checks were not executed locally. Static gates
-  for these areas passed, but they remain `tested` or pending—not accepted.
+- Kind/Helm cluster execution, deployed production profile, managed services,
+  external OIDC/provider lanes and other authority-dependent checks were not
+  executed locally. Static gates for these areas passed, but they remain
+  `tested` or pending—not accepted.

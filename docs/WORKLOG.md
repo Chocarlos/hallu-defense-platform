@@ -7608,3 +7608,32 @@ Remaining risks:
 
 - The replacement PR SHA must complete its full remote security matrix before
   the image scan requirement can move from tested evidence to accepted.
+
+## 2026-07-13 - Final GitHub QA acceptance decision
+
+Slice selected:
+
+- Record the exact remote evidence after all replacement-SHA workflows and the
+  complete image matrix finished, without promoting unresolved live lanes.
+
+Implementation:
+
+- Updated the mass-QA ledger and `SEC-011` traceability row with the immutable
+  commit and GitHub Actions run identifiers.
+- Kept the ingestion worker crash/restart lane and other unexecuted external
+  infrastructure lanes explicitly rejected or pending.
+
+Validation:
+
+- Commit `3bb45a548e4288934937f9397ce89710c53e7504`: `ci` run 29228234027,
+  `evals` run 29228234026, and `security` run 29228234055 all completed with
+  conclusion `success`.
+- The security run passed its main gate, both immutable third-party scans, and
+  every one of the ten exact first-party build/Trivy rows, including Grafana,
+  minimal OTel, and rebuilt Vault.
+
+Remaining risks:
+
+- Acceptance is commit- and inventory-specific. Multi-architecture release
+  publication, managed services, and the rejected ingestion recovery lane need
+  separate current evidence before their own promotion.
