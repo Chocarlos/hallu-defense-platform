@@ -119,6 +119,17 @@ def test_eval_thresholds_config_rejects_missing_evals_workflow_wiring() -> None:
         validate_supporting_files(**texts)
 
 
+def test_eval_thresholds_config_rejects_missing_api_source_path() -> None:
+    texts = _supporting_texts()
+    texts["evals_workflow_text"] = texts["evals_workflow_text"].replace(
+        "PYTHONPATH: ${{ github.workspace }}/apps/api/src",
+        "PYTHONPATH: apps/missing/src",
+    )
+
+    with pytest.raises(EvalThresholdsConfigError, match="API source through PYTHONPATH"):
+        validate_supporting_files(**texts)
+
+
 def test_eval_thresholds_config_rejects_missing_makefile_wiring() -> None:
     texts = _supporting_texts()
     texts["makefile_text"] = texts["makefile_text"].replace("eval-thresholds-config:", "")

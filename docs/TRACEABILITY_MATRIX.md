@@ -11,6 +11,11 @@ their individual residual risks are closed. In particular, a green offline test
 does not convert an external-infrastructure or unresolved semantic requirement
 to `accepted`.
 
+PR validation follow-up: the first GitHub `evals` run exposed a missing API
+source path on clean Linux runners. The workflow now exports the exact
+`${{ github.workspace }}/apps/api/src` path, and the config gate rejects its
+removal before the smoke and 21-scenario runners execute.
+
 | ID | Description | Files / modules affected | Related contracts | Related endpoints | Tests required | Evidence of validation | Status | Risks / notes |
 |---|---|---|---|---|---|---|---|---|
 | FND-001 | Root agent instructions exist and define working loop | `AGENTS.md`, `scripts/ci/check_foundation_docs.py`, `apps/api/tests/test_foundation_docs.py` | n/a | n/a | foundation docs validator, focused negative tests | `check_foundation_docs.py` validates required AGENTS working-loop, non-negotiable, architecture, and command markers; `test_foundation_docs.py`: 6 passed | tested | Must keep updated as workflow evolves |

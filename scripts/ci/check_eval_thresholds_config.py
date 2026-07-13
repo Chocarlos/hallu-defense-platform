@@ -115,6 +115,8 @@ def validate_supporting_files(
         errors.append("CI workflow must run check_eval_thresholds_config.py")
     if required_script not in evals_workflow_text:
         errors.append("evals workflow must run check_eval_thresholds_config.py")
+    if "PYTHONPATH: ${{ github.workspace }}/apps/api/src" not in evals_workflow_text:
+        errors.append("evals workflow must expose the API source through PYTHONPATH")
 
     if errors:
         raise EvalThresholdsConfigError("\n".join(errors))
