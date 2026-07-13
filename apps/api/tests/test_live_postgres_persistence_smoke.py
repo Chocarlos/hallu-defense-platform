@@ -11,6 +11,14 @@ import pytest
 
 from scripts.dev import live_postgres_persistence_smoke as smoke
 
+
+def test_live_workflow_waits_for_postgres_init_scripts_before_readiness() -> None:
+    workflow = (smoke.ROOT / ".github" / "workflows" / "live.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert workflow.count("PostgreSQL init process complete; ready for start up") == 4
+
 # A short placeholder password (never a real secret) proves DSN redaction: it
 # must never survive into any emitted result. Kept < 16 chars so the secret
 # scanner does not flag this test file.
