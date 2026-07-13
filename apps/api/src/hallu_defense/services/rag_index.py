@@ -2254,11 +2254,15 @@ def _validate_opensearch_schema_mappings(
 ) -> None:
     metadata = mappings.get("_meta")
     properties = mappings.get("properties")
+    dynamic = mappings.get("dynamic")
+    dynamic_is_disabled = dynamic is False or (
+        not configuration_error and dynamic == "false"
+    )
     valid = (
         isinstance(metadata, Mapping)
         and metadata.get("schema_version") == OPENSEARCH_TEMPLATE_SCHEMA_VERSION
         and isinstance(properties, Mapping)
-        and mappings.get("dynamic") is False
+        and dynamic_is_disabled
     )
     if valid:
         assert isinstance(properties, Mapping)

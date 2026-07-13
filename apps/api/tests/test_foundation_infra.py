@@ -210,6 +210,18 @@ def test_foundation_infra_rejects_make_lint_without_typescript() -> None:
         validate_foundation_infra(**inputs)
 
 
+def test_foundation_infra_rejects_non_executable_windows_venv_path() -> None:
+    inputs = _current_inputs()
+    inputs["makefile_text"] = str(inputs["makefile_text"]).replace(
+        ".venv/Scripts/python.exe",
+        ".venv/Scripts/python",
+        1,
+    )
+
+    with pytest.raises(FoundationInfraError, match="executable Windows virtualenv Python path"):
+        validate_foundation_infra(**inputs)
+
+
 def test_foundation_infra_rejects_missing_workflow_file() -> None:
     inputs = _current_inputs()
     workflow_files = set(inputs["workflow_files"])

@@ -48,7 +48,7 @@ test.describe("replay console flow", () => {
     await replayPanel.getByLabel("Trace a reproducir").fill("tr_e2e_missing_trace");
     await replayPanel.getByRole("button", { name: /^(Replay|Reproduciendo)$/ }).click();
 
-    await expect(replayPanel.getByRole("alert")).toContainText("was not found", {
+    await expect(replayPanel.getByRole("alert")).toHaveText("No se pudo ejecutar replay.", {
       timeout: 30_000
     });
   });

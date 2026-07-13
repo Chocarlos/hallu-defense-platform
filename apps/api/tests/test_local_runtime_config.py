@@ -380,7 +380,22 @@ def test_local_runtime_config_rejects_vault_latest_image() -> None:
     vault["image"] = "hashicorp/vault:latest"
     inputs["compose"] = compose
 
-    with pytest.raises(LocalRuntimeConfigError, match="must equal hashicorp/vault"):
+    with pytest.raises(LocalRuntimeConfigError, match="first-party Vault image"):
+        validate_local_runtime_config(**inputs)
+
+
+def test_local_runtime_config_rejects_wrong_vault_dockerfile() -> None:
+    inputs = _current_inputs()
+    compose = copy.deepcopy(inputs["compose"])
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    assert isinstance(services, dict)
+    vault = services["vault"]
+    assert isinstance(vault, dict)
+    vault["build"] = {"context": ".", "dockerfile": "infra/docker/api.Dockerfile"}
+    inputs["compose"] = compose
+
+    with pytest.raises(LocalRuntimeConfigError, match="hardened Vault Dockerfile"):
         validate_local_runtime_config(**inputs)
 
 

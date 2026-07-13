@@ -39,6 +39,7 @@ SENSITIVE_ATTRIBUTE_KEY_FRAGMENTS = (
     "tool_input",
     "tool_output",
 )
+SAFE_AGGREGATE_ATTRIBUTE_KEYS = frozenset({"verification.tool_output_count"})
 
 
 class LiveOtelExportCheckError(RuntimeError):
@@ -345,6 +346,8 @@ def _sensitive_attribute_keys(content: str) -> set[str]:
 
 def _sensitive_attribute_key(key: str) -> bool:
     normalized = key.lower()
+    if normalized in SAFE_AGGREGATE_ATTRIBUTE_KEYS:
+        return False
     return any(fragment in normalized for fragment in SENSITIVE_ATTRIBUTE_KEY_FRAGMENTS)
 
 

@@ -810,7 +810,7 @@ def _validate_docs(
         "hallu-defense-sandbox:ci",
         "infra/docker/sandbox.Dockerfile",
         "`sandbox`",
-        "all eight first-party images",
+        "all ten first-party images",
     ):
         if marker not in container_scanning_doc_text:
             errors.append(f"container scanning docs must mention {marker}")

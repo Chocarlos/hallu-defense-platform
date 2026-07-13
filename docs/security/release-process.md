@@ -63,8 +63,9 @@ credentials or tag fetching. It compares `HEAD` to that SHA before running pinne
 security, test, and build tooling. This ensures signing trust material and Environment
 access are gone before any subject code runs.
 
-The build job builds the eight current first-party Dockerfiles: API, console, sandbox,
-pgvector, Keycloak, Grafana, OpenSearch, and SeaweedFS. Builds and scans run sequentially;
+The build job builds the ten current first-party Dockerfiles: API, console, sandbox,
+pgvector, Keycloak, Grafana, OpenSearch, SeaweedFS, OpenTelemetry Collector, and Vault.
+Builds and scans run sequentially;
 the release workflow contains no Docker matrix or background builds. Each built image is
 exported as a classic, uncompressed Docker archive with an explicit `--tag`, exporter
 `name`, and `oci-mediatypes=false`. This removes Docker/OCI exporter ambiguity and makes
@@ -89,7 +90,7 @@ build artifact therefore cannot inject repository config, ignore rules, credenti
 home-directory override. Every image is scanned by archive `--input` for HIGH/CRITICAL OS
 and library vulnerabilities without an `ignore-unfixed` waiver. Each scan writes
 machine-readable Trivy JSON. A controller loop records every return code and continues
-through all eight scans so one finding cannot hide later results; it then fails the job if
+through all ten scans so one finding cannot hide later results; it then fails the job if
 any scan failed. For Trivy 0.72.0 Docker-archive input, the raw `ArtifactName` must equal
 the exact normalized relative archive path `images/<name>.docker.tar`. Absolute paths,
 backslashes, traversal, dot segments, alternate names, and alternate extensions are
@@ -103,7 +104,7 @@ privileged consumer revalidates all four bindings from downloaded bytes.
 source/tag OCI labels, archive, scan report, scan-report digest, and exact scan policy.
 `SHA256SUMS` covers the release source statement, nested build checksum manifest and
 artifact ID/digest binding, wheel/source archive, API and Node SBOMs, both exact runtime
-locks used as SBOM subjects, all eight image archives and digests, trusted Trivy policy
+locks used as SBOM subjects, all ten image archives and digests, trusted Trivy policy
 inputs, every Trivy result/status file, and the binding manifests. The scan upload runs even
 after a failed scan so machine-readable diagnostics survive, but a failed scan job cannot
 reach attestation.

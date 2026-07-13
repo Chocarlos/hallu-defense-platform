@@ -77,10 +77,19 @@ def test_preflight_accepts_multiline_ca_without_one_line_secret_parsing(
         "lstat",
         lambda path: _safe_lstat(path, secret_parent=tmp_path.resolve()),
     )
+    one_line_reads: list[str] = []
+
+    def record_one_line_read(_path: str, *, variable_name: str) -> str:
+        one_line_reads.append(variable_name)
+        return "one-line-secret"
+
+    monkeypatch.setattr(preflight, "read_runtime_secret_file", record_one_line_read)
 
     validated = preflight.validate_runtime_secret_paths(environ)
 
     assert len(validated) == len(preflight.SECRET_FILE_ENVIRONMENTS)
+    assert set(one_line_reads) == preflight.ONE_LINE_SECRET_FILE_ENVIRONMENTS
+    assert "HALLU_DEFENSE_POSTGRES_CA_CERT_HOST_PATH" not in one_line_reads
 
 
 def test_preflight_validates_both_postgres_dsns_against_host_ca(
@@ -97,6 +106,8 @@ def test_preflight_validates_both_postgres_dsns_against_host_ca(
     migration_dsn = (tmp_path / "migration-dsn").resolve()
     runtime_dsn.write_text(dsn, encoding="utf-8")
     migration_dsn.write_text(dsn, encoding="utf-8")
+    runtime_dsn.chmod(0o400)
+    migration_dsn.chmod(0o400)
 
     preflight.validate_postgres_tls_inputs(
         {
@@ -122,6 +133,8 @@ def test_preflight_rejects_postgres_dsn_without_verify_full(tmp_path: Path) -> N
         "&ssl_min_protocol_version=TLSv1.3&gssencmode=disable",
         encoding="utf-8",
     )
+    runtime_dsn.chmod(0o400)
+    migration_dsn.chmod(0o400)
 
     with pytest.raises(preflight.RuntimeSecretPreflightError, match="verify-full"):
         preflight.validate_postgres_tls_inputs(

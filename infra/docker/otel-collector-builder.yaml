@@ -1,0 +1,22 @@
+dist:
+  module: github.com/openai/hallu-defense/otelcol
+  name: otelcol-contrib
+  description: Minimal OpenTelemetry Collector for hallu-defense
+  version: 0.156.0
+  output_path: ./_build
+  build_tags: grpcnotrace
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.156.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.156.0
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.156.0
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.156.0
+
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.62.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.62.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.62.0

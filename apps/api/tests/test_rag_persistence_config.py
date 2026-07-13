@@ -260,6 +260,26 @@ def test_rag_persistence_config_requires_opensearch_bootstrap_dry_run() -> None:
         )
 
 
+def test_rag_persistence_config_requires_security_api_source_path() -> None:
+    config = list(load_current_config())
+    config[7] = config[7].replace(
+        "PYTHONPATH: ${{ github.workspace }}/apps/api/src",
+        "PYTHONPATH: apps/missing/src",
+    )
+
+    with pytest.raises(RagPersistenceConfigError, match="API source through PYTHONPATH"):
+        validate_rag_persistence_config(
+            migration_sql=config[0],
+            opensearch_template=config[1],
+            compose_text=config[2],
+            env_example_text=config[3],
+            docs_text=config[4],
+            makefile_text=config[5],
+            ci_workflow_text=config[6],
+            security_workflow_text=config[7],
+        )
+
+
 def test_rag_persistence_config_requires_live_smoke_makefile_target() -> None:
     config = list(load_current_config())
     config[5] = config[5].replace(

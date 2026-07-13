@@ -54,10 +54,8 @@ REQUIRED_PORTS = {
     "vault": "127.0.0.1:8200:8200",
 }
 PINNED_IMAGES = {
-    "prometheus": "prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc",
-    "otel-collector": "otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108",
+    "prometheus": "prom/prometheus:v3.13.1-distroless@sha256:214f8427c8fba80c327bb94a75feb802ae12f2d6ca30812aa6e7d22f09bbea80",
     "redis": "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
-    "vault": "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54",
 }
 REQUIRED_KEYCLOAK_REALM_ROLES = {
     "verifier",
@@ -275,6 +273,8 @@ def _validate_service_image_or_build(
         "postgres",
         "keycloak",
         "minio",
+        "otel-collector",
+        "vault",
     }:
         build = _mapping(service.get("build"), f"{service_name}.build", errors)
         dockerfile = build.get("dockerfile")
@@ -316,6 +316,20 @@ def _validate_service_image_or_build(
                 errors.append("service minio must use the hardened SeaweedFS Dockerfile")
             if service.get("image") != "hallu-defense-seaweedfs:ci":
                 errors.append("service minio must tag the first-party SeaweedFS image")
+        if service_name == "otel-collector":
+            if dockerfile != "infra/docker/otel-collector.Dockerfile":
+                errors.append(
+                    "service otel-collector must use the hardened OTel Dockerfile"
+                )
+            if service.get("image") != "hallu-defense-otel-collector:ci":
+                errors.append(
+                    "service otel-collector must tag the first-party OTel image"
+                )
+        if service_name == "vault":
+            if dockerfile != "infra/docker/vault.Dockerfile":
+                errors.append("service vault must use the hardened Vault Dockerfile")
+            if service.get("image") != "hallu-defense-vault:ci":
+                errors.append("service vault must tag the first-party Vault image")
         return
 
     image = service.get("image")
@@ -655,7 +669,7 @@ def _validate_opensearch(services: Mapping[str, object], errors: list[str]) -> N
         required_tmpfs=(
             "/tmp:rw,noexec,nosuid,nodev,size=64m",
             "/usr/share/opensearch/config:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=0700",
-            "/usr/share/opensearch/logs:rw,noexec,nosuid,nodev,size=64m",
+            "/usr/share/opensearch/logs:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700",
         ),
         expected_user="1000:1000",
         allowed_volumes=("opensearch-data:/usr/share/opensearch/data",),

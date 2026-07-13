@@ -261,6 +261,44 @@ def test_gitleaks_config_rejects_toml_allowlists() -> None:
             security_workflow_text=(ROOT / ".github/workflows/security.yml").read_text(
                 encoding="utf-8"
             ),
+            live_workflow_text=(ROOT / ".github/workflows/live.yml").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+
+def test_gitleaks_config_rejects_literal_live_backup_encryption_key() -> None:
+    live_workflow_text = (ROOT / ".github/workflows/live.yml").read_text(
+        encoding="utf-8"
+    )
+    runtime_assignment = next(
+        line
+        for line in live_workflow_text.splitlines()
+        if 'HALLU_DEFENSE_SECRET_BACKUP_ENCRYPTION_KEY="$(python -c' in line
+    )
+    unsafe_workflow_text = live_workflow_text.replace(
+        runtime_assignment,
+        "          HALLU_DEFENSE_SECRET_BACKUP_ENCRYPTION_KEY: " + "A" * 44,
+    )
+
+    with pytest.raises(
+        GitleaksConfigError,
+        match="must (generate.*ephemerally|not commit a literal)",
+    ):
+        validate_gitleaks_config(
+            config_text=CONFIG_PATH.read_text(encoding="utf-8"),
+            runner_text=(ROOT / "scripts/ci/run_gitleaks.py").read_text(
+                encoding="utf-8"
+            ),
+            test_text=Path(__file__).read_text(encoding="utf-8"),
+            makefile_text=(ROOT / "Makefile").read_text(encoding="utf-8"),
+            ci_workflow_text=(ROOT / ".github/workflows/ci.yml").read_text(
+                encoding="utf-8"
+            ),
+            security_workflow_text=(ROOT / ".github/workflows/security.yml").read_text(
+                encoding="utf-8"
+            ),
+            live_workflow_text=unsafe_workflow_text,
         )
 
 

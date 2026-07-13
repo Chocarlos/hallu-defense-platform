@@ -7388,3 +7388,252 @@ Remaining risks:
   continue using their existing bounded provider-specific transports. Future
   Starlette/httpx2 upgrades still require normal lock regeneration and the same
   strict full-suite validation.
+
+## 2026-07-13 - Mass QA acceptance and live runtime repair
+
+Slice selected:
+
+- Execute repository-wide QA, repair reproducible failures without weakening
+  controls, and record an explicit acceptance decision for gates and live
+  capabilities that have current evidence.
+
+Implementation:
+
+- Fixed Windows virtualenv selection, MCP child-process shutdown, runtime
+  Gitleaks synthetic-secret generation, PostgreSQL readiness, OpenSearch 3.7
+  mapping compatibility, hybrid-RAG fencing, Console logout verification,
+  Linux patch/shell line endings, OpenSearch tmpfs ownership, and OTel safe
+  aggregate-key classification.
+- Promoted `jsonschema` from dev-only to API runtime dependency, regenerated the
+  hashed Python locks with CPython 3.12.13 and pip-tools 7.5.3, and updated the
+  gates to require it in runtime.
+- Added regression coverage for each repaired failure and recorded the reviewed
+  acceptance ledger in `docs/qa/2026-07-13-mass-qa-acceptance.md`.
+
+Validation:
+
+- Final sequential gates passed: `make lint`, `make typecheck`, and `make test`;
+  Python reported 2,722 passed / 27 platform-live deselected, plus SDK 17,
+  adapters 11, MCP 41, and Console 101 passed.
+- `make security-check` passed with native Gitleaks 8.30.1, no known Python lock
+  vulnerabilities, npm audit 0 vulnerabilities, 14 migrations, Helm, auth,
+  release, backup, RAG, sandbox, container and observability validators.
+- Live Docker evidence passed for sandbox, PostgreSQL, hybrid RAG, Keycloak API
+  and Console OIDC/BFF, Vault, OTel/Prometheus/Grafana, Redis concurrency and
+  encrypted S3-compatible backup/restore. All resources used unique scratch
+  projects and were removed with their volumes.
+
+Remaining risks:
+
+- The ingestion crash/restart live smoke is rejected pending root-cause repair:
+  15 focused tests pass, Windows timed out, and Linux-container replay exited
+  before job claim. Kind, full Trivy image scans, deployed production and
+  authority-dependent external lanes were not accepted by this local campaign.
+- Host npm emitted `strict-allow-scripts` compatibility warnings; commands still
+  passed, but the exact pinned Node/npm lane remains the authoritative CI lane.
+
+## 2026-07-13 - GitHub eval runner source-path follow-up
+
+Slice selected:
+
+- Repair the first clean GitHub Actions failure found after publishing the mass
+  QA pull request, without rewriting the existing atomic commit history.
+
+Implementation:
+
+- Added the exact API source directory to the eval workflow `PYTHONPATH` and
+  extended the eval-threshold configuration gate with a negative regression
+  test that rejects missing or redirected source paths.
+
+Validation:
+
+- `test_eval_thresholds_config.py`: 13 passed; the standalone gate validates 26
+  thresholds. With the exact source path, smoke evals passed 2/2 and scenario
+  evals passed 21/21. Variable generated reports were restored before commit.
+
+Remaining risks:
+
+- The replacement GitHub Actions run must finish successfully before PR merge;
+  no workflow protection will be bypassed.
+
+## 2026-07-13 - Cross-platform sandbox ctypes typing follow-up
+
+Slice selected:
+
+- Repair the clean Linux mypy failure reported by the replacement PR workflow
+  while retaining the Windows Job Object process-tree boundary.
+
+Implementation:
+
+- Resolved Windows-only `ctypes` APIs through typed module adapters instead of
+  directly referencing attributes omitted from Linux typeshed.
+
+Validation:
+
+- Ruff passed; mypy passed 59 files on native Windows and with
+  `--platform linux`; focused Docker/workspace sandbox tests reported 36 passed
+  and 2 platform deselections.
+
+Remaining risks:
+
+- GitHub must complete the next backend, TypeScript and security workflows
+  before merge; no red check is treated as accepted evidence.
+
+## 2026-07-13 - Clean Linux API portability follow-up
+
+Slice selected:
+
+- Resolve the six API failures revealed only by the clean Ubuntu PR runner.
+
+Implementation:
+
+- Made ADR discovery case-correct, normalized excessive JSON recursion to the
+  fail-closed depth violation, isolated the runtime-transport unit test from OPA
+  file-ownership validation, and corrected secret preflight fixtures to use or
+  mock their intended POSIX permissions and identity checks.
+
+Validation:
+
+- Ruff and Linux-target mypy passed. The 20 affected tests passed on Windows
+  and again inside immutable CPython 3.12.13 Alpine Linux; the foundation docs
+  gate found all 8 ADR files.
+
+Remaining risks:
+
+- The new PR SHA still requires complete backend, TypeScript/browser and
+  security workflow success before merge.
+
+## 2026-07-13 - Clean CI import and browser-contract follow-up
+
+Slice selected:
+
+- Resolve the standalone OpenAPI import failure and the three browser failures
+  exposed by the clean Ubuntu PR workflow.
+
+Implementation:
+
+- Exposed `apps/api/src` to every backend step through job-level `PYTHONPATH`
+  and added a focused workflow regression assertion.
+- Aligned the approval browser fixture with the immutable trusted tool schema,
+  retaining sensitive-data redaction evidence without injecting a forbidden
+  property or bypassing required human review.
+- Aligned the missing-replay assertion with the Console BFF's deliberate
+  fail-closed upstream-detail sanitization.
+
+Validation:
+
+- OpenAPI tests passed 6/6; Console ESLint passed; e2e runtime contracts passed
+  35/35; the full Playwright run passed 10/10 against the live API and Docker
+  sandbox, including both approval decisions, redaction, and missing replay.
+
+Remaining risks:
+
+- The replacement PR SHA must pass backend, TypeScript/browser, eval, and
+  security workflows before merge; the earlier red run is diagnostic evidence,
+  not acceptance evidence.
+
+## 2026-07-13 - Patched Go image rebuild and Trivy follow-up
+
+Slice selected:
+
+- Resolve the fail-closed security workflow findings without ignoring a CVE or
+  reducing Trivy severity.
+
+Implementation:
+
+- Upgraded Prometheus to the immutable 3.13.1 distroless release and rebuilt
+  OPA 1.18.2, Grafana, and SeaweedFS with pinned Go 1.26.5 builders.
+- Added source- and checksum-pinned OpenTelemetry Collector 0.156.0 and Vault
+  2.0.3 Dockerfiles. The OTel image is compact `scratch`; the Vault image
+  rebuilds its complete UI, replaces the active binary, and flattens the
+  upstream filesystem so the vulnerable binary is not retained in a lower
+  runtime layer.
+- Expanded security and release coverage from eight to ten first-party images,
+  removed OTel/Vault from the external scan inventory, wired their local builds
+  into Compose and the Kind smoke, and retained exact empty Trivy policy inputs.
+- Exposed `apps/api/src` to the security workflow so standalone API-aware gates
+  resolve imports on clean Linux.
+
+Validation:
+
+- Current Prometheus 3.13.1, API/OPA, and Grafana images passed Trivy 0.72.0
+  with HIGH/CRITICAL fail-closed scanning. Independent equivalent OTel and
+  Vault Go 1.26.5 rebuilds passed runtime/config/UI checks and the same Trivy
+  scan with zero findings; the exact committed variants remain remote-gated.
+- Container, local-runtime, secrets, Helm, sandbox, and release validators
+  passed. Focused cross-cutting tests passed 589/589; an earlier broader focused
+  run passed 719 tests before its sole stale assertion was corrected.
+
+Remaining risks:
+
+- The exact committed OTel/Vault images are intentionally not accepted until
+  GitHub builds and scans all ten rows from the replacement SHA. Vault's BUSL
+  redistribution terms and multi-architecture publication remain release
+  governance work outside this private repository QA merge.
+
+## 2026-07-13 - Hosted-runner image-build resource follow-up
+
+Slice selected:
+
+- Resolve the reproducible disk exhaustion exposed by the complete remote
+  first-party image matrix without weakening Trivy or omitting an image.
+
+Implementation:
+
+- Replaced the full OpenTelemetry Collector Contrib build with a pinned OCB
+  manifest containing exactly the receiver, processor, exporters, and config
+  providers used by `infra/otel/otel-collector-config.yaml`.
+- Kept the Go 1.26.5 builder, exact output checksum, scratch runtime, non-root
+  identity, and fail-closed HIGH/CRITICAL scan contract.
+- Added an exact, validator-protected hosted-runner step that removes only
+  preinstalled unused SDKs and requires at least 20 GiB free before each
+  isolated image build.
+
+Validation:
+
+- The minimal OTel image built locally, matched SHA-256
+  `f2de43b6617e9c5c88da5265733bd14a937545f766d8a1ab00ddec156390765e`,
+  accepted the deployed collector config, and passed Trivy 0.72.0 with zero
+  HIGH/CRITICAL findings.
+- The container validator and focused mutation suite protect the exact OCB
+  component allowlist and disk-reclamation command. The replacement remote
+  matrix remains the acceptance authority for all ten exact images.
+- The superseded remote Vault row then proved that the rebuilt binary and UI
+  compiled successfully, but exposed an incorrect assertion requiring files
+  inside the intentionally empty `/vault/file` and `/vault/logs` volumes. The
+  corrected runtime check requires both directories and the official
+  executable entrypoint instead, matching the pinned upstream image contract.
+
+Remaining risks:
+
+- The replacement PR SHA must complete its full remote security matrix before
+  the image scan requirement can move from tested evidence to accepted.
+
+## 2026-07-13 - Final GitHub QA acceptance decision
+
+Slice selected:
+
+- Record the exact remote evidence after all replacement-SHA workflows and the
+  complete image matrix finished, without promoting unresolved live lanes.
+
+Implementation:
+
+- Updated the mass-QA ledger and `SEC-011` traceability row with the immutable
+  commit and GitHub Actions run identifiers.
+- Kept the ingestion worker crash/restart lane and other unexecuted external
+  infrastructure lanes explicitly rejected or pending.
+
+Validation:
+
+- Commit `3bb45a548e4288934937f9397ce89710c53e7504`: `ci` run 29228234027,
+  `evals` run 29228234026, and `security` run 29228234055 all completed with
+  conclusion `success`.
+- The security run passed its main gate, both immutable third-party scans, and
+  every one of the ten exact first-party build/Trivy rows, including Grafana,
+  minimal OTel, and rebuilt Vault.
+
+Remaining risks:
+
+- Acceptance is commit- and inventory-specific. Multi-architecture release
+  publication, managed services, and the rejected ingestion recovery lane need
+  separate current evidence before their own promotion.

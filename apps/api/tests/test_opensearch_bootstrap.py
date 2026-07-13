@@ -199,15 +199,19 @@ def test_bootstrap_rejects_template_that_does_not_target_configured_index(
         )
 
 
+@pytest.mark.parametrize("dynamic_value", [False, "false"])
 def test_bootstrap_reports_compatible_only_when_existing_v3_mapping_and_replicas_are_present(
     tmp_path: Path,
+    dynamic_value: bool | str,
 ) -> None:
     template_path = _write_template(tmp_path)
     template = _template_payload()
     template_body = template["template"]
     assert isinstance(template_body, Mapping)
-    mappings = template_body["mappings"]
-    assert isinstance(mappings, Mapping)
+    raw_mappings = template_body["mappings"]
+    assert isinstance(raw_mappings, Mapping)
+    mappings = dict(raw_mappings)
+    mappings["dynamic"] = dynamic_value
     transport = RecordingOpenSearchTransport(
         response={"acknowledged": True},
         mapping_response={"hallu_evidence": {"mappings": mappings}},
