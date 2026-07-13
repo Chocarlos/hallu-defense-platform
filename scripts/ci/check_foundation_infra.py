@@ -315,9 +315,12 @@ def _validate_monorepo_layout(
         errors.append("apps/api/pyproject.toml must pin Python >=3.12,<3.13")
     optional_dependencies = project.get("optional-dependencies", {})
     dev_dependencies = optional_dependencies.get("dev", [])
-    for dependency in ("pytest", "ruff", "mypy", "jsonschema"):
+    for dependency in ("pytest", "ruff", "mypy"):
         if not any(str(candidate).startswith(dependency) for candidate in dev_dependencies):
             errors.append(f"apps/api dev dependencies must include {dependency}")
+    runtime_dependencies = project.get("dependencies", [])
+    if not any(str(candidate).startswith("jsonschema") for candidate in runtime_dependencies):
+        errors.append("apps/api runtime dependencies must include jsonschema")
 
 
 def _validate_makefile(makefile_text: str, errors: list[str]) -> None:
@@ -327,6 +330,8 @@ def _validate_makefile(makefile_text: str, errors: list[str]) -> None:
 
     if "VENV_PY" not in makefile_text or "PY :=" not in makefile_text:
         errors.append("Makefile must prefer the repository virtualenv Python when present")
+    if "VENV_PY := .venv/Scripts/python.exe" not in makefile_text:
+        errors.append("Makefile must use the executable Windows virtualenv Python path")
 
     for target in REQUIRED_MAKE_TARGETS:
         if target not in targets:
