@@ -145,7 +145,7 @@ Every final decision must be explainable from claims, evidence, verdicts, policy
 
 ### M6 Enterprise Runtime Reality
 
-Goal: promote the enterprise capabilities from static-config / local-JSONL evidence to real distributed runtime, delivered as 7 delegable vertical batches. Each batch follows full-slice discipline (implementation + focused tests with injected fakes + docs + TRACEABILITY_MATRIX rows + WORKLOG entry + validation evidence). No item passes beyond `tested`.
+Goal: promote the enterprise capabilities from static-config / local-JSONL evidence to real distributed runtime, delivered as 7 delegable vertical batches. Each batch follows full-slice discipline (implementation + focused tests with injected fakes + docs + TRACEABILITY_MATRIX rows + WORKLOG entry + validation evidence). Items advance to `accepted` only through a recorded QA decision backed by current deterministic evidence.
 
 - B1 PostgreSQL core: shared pool (services/postgres.py, SqlConnectionProvider / PooledPostgresProvider over psycopg-pool), Postgres audit ledger (bounded export, no replay-all) and approval queue (decide-once / consume-once via WHERE+RETURNING), repeatable migrations (schema_migrations + idempotent applier). New PY-018/019/020.
 - B2 Live CI lane + Keycloak OIDC: .github/workflows/live.yml (dispatch + push master + weekly cron), Keycloak service with committed realm export, client_credentials + --api OIDC smokes. New SEC-014, CI-022.
