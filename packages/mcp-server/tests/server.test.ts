@@ -863,37 +863,45 @@ async function waitForHealth(baseUrl: string, timeoutMs: number): Promise<void> 
 
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) {
+    if (!(await waitForChildClose(child, 5000))) {
+      throw new Error("Child process streams did not close within the bounded shutdown window");
+    }
     return;
   }
-  const exited = waitForChildExit(child, 5000);
+  const closed = waitForChildClose(child, 5000);
   child.kill();
-  if (await exited) {
+  if (await closed) {
     return;
   }
-  const forceExited = waitForChildExit(child, 5000);
+  const forceClosed = waitForChildClose(child, 5000);
   child.kill("SIGKILL");
-  if (!(await forceExited)) {
+  if (!(await forceClosed)) {
     throw new Error("Child process did not terminate within the bounded shutdown window");
   }
 }
 
-function waitForChildExit(
+function waitForChildClose(
   child: ChildProcessWithoutNullStreams,
   timeoutMs: number
 ): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) {
+  if (
+    (child.exitCode !== null || child.signalCode !== null) &&
+    child.stdin.destroyed &&
+    child.stdout.destroyed &&
+    child.stderr.destroyed
+  ) {
     return Promise.resolve(true);
   }
   return new Promise<boolean>((resolve) => {
-    const onExit = (): void => {
+    const onClose = (): void => {
       clearTimeout(timeout);
       resolve(true);
     };
     const timeout = setTimeout(() => {
-      child.off("exit", onExit);
+      child.off("close", onClose);
       resolve(false);
     }, timeoutMs);
-    child.once("exit", onExit);
+    child.once("close", onClose);
   });
 }
 
