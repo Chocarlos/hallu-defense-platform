@@ -7455,3 +7455,26 @@ Remaining risks:
 
 - The replacement GitHub Actions run must finish successfully before PR merge;
   no workflow protection will be bypassed.
+
+## 2026-07-13 - Cross-platform sandbox ctypes typing follow-up
+
+Slice selected:
+
+- Repair the clean Linux mypy failure reported by the replacement PR workflow
+  while retaining the Windows Job Object process-tree boundary.
+
+Implementation:
+
+- Resolved Windows-only `ctypes` APIs through typed module adapters instead of
+  directly referencing attributes omitted from Linux typeshed.
+
+Validation:
+
+- Ruff passed; mypy passed 59 files on native Windows and with
+  `--platform linux`; focused Docker/workspace sandbox tests reported 36 passed
+  and 2 platform deselections.
+
+Remaining risks:
+
+- GitHub must complete the next backend, TypeScript and security workflows
+  before merge; no red check is treated as accepted evidence.

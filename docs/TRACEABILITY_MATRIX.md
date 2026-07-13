@@ -16,6 +16,11 @@ source path on clean Linux runners. The workflow now exports the exact
 `${{ github.workspace }}/apps/api/src` path, and the config gate rejects its
 removal before the smoke and 21-scenario runners execute.
 
+The subsequent clean Linux backend typecheck exposed platform-specific ctypes
+attributes in `sandbox_exec.py`. Windows FFI callables are now resolved once
+through explicitly typed adapters; mypy passes all 59 files for both native
+Windows and `--platform linux` analysis.
+
 | ID | Description | Files / modules affected | Related contracts | Related endpoints | Tests required | Evidence of validation | Status | Risks / notes |
 |---|---|---|---|---|---|---|---|---|
 | FND-001 | Root agent instructions exist and define working loop | `AGENTS.md`, `scripts/ci/check_foundation_docs.py`, `apps/api/tests/test_foundation_docs.py` | n/a | n/a | foundation docs validator, focused negative tests | `check_foundation_docs.py` validates required AGENTS working-loop, non-negotiable, architecture, and command markers; `test_foundation_docs.py`: 6 passed | tested | Must keep updated as workflow evolves |
