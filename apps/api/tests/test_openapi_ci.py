@@ -62,6 +62,7 @@ def test_ci_workflow_runs_openapi_drift_check() -> None:
     workflow = (_repo_root() / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "python scripts/ci/check_openapi.py" in workflow
+    assert "PYTHONPATH: ${{ github.workspace }}/apps/api/src" in workflow
 
 
 def test_api_readme_documents_openapi_check() -> None:
