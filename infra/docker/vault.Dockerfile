@@ -47,7 +47,9 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
 FROM ${VAULT_IMAGE} AS patched
 COPY --from=builder --chmod=0555 /out/vault /bin/vault
 RUN /bin/vault version | grep -F 'Vault v2.0.3' \
-    && test "$(find /vault -maxdepth 2 -type f | wc -l)" -ge 1
+    && test -d /vault/file \
+    && test -d /vault/logs \
+    && test -x /usr/local/bin/docker-entrypoint.sh
 
 FROM scratch
 COPY --from=patched / /
