@@ -7431,3 +7431,27 @@ Remaining risks:
   authority-dependent external lanes were not accepted by this local campaign.
 - Host npm emitted `strict-allow-scripts` compatibility warnings; commands still
   passed, but the exact pinned Node/npm lane remains the authoritative CI lane.
+
+## 2026-07-13 - GitHub eval runner source-path follow-up
+
+Slice selected:
+
+- Repair the first clean GitHub Actions failure found after publishing the mass
+  QA pull request, without rewriting the existing atomic commit history.
+
+Implementation:
+
+- Added the exact API source directory to the eval workflow `PYTHONPATH` and
+  extended the eval-threshold configuration gate with a negative regression
+  test that rejects missing or redirected source paths.
+
+Validation:
+
+- `test_eval_thresholds_config.py`: 13 passed; the standalone gate validates 26
+  thresholds. With the exact source path, smoke evals passed 2/2 and scenario
+  evals passed 21/21. Variable generated reports were restored before commit.
+
+Remaining risks:
+
+- The replacement GitHub Actions run must finish successfully before PR merge;
+  no workflow protection will be bypassed.
