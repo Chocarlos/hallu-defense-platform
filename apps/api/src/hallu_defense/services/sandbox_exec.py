@@ -13,7 +13,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, Callable, Protocol, cast, runtime_checkable
 
 from hallu_defense.config import PRODUCTION_LIKE_ENVIRONMENTS, Settings
 from hallu_defense.services.text import bounded
@@ -43,6 +43,9 @@ MAX_DOCKER_CLI_OUTPUT_BYTES = MAX_SANDBOX_BATCH_CONTROL_CHARS * 4 + 4
 SANDBOX_STREAM_RESULTS_ENV = "HALLU_DEFENSE_SANDBOX_STREAM_RESULTS"
 SANDBOX_SNAPSHOT_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 _WINDOWS_CREATE_SUSPENDED = 0x00000004
+_WINDOWS_DLL = cast(Any, getattr(ctypes, "WinDLL", None))
+_WINDOWS_ERROR = cast(Callable[[int], OSError], getattr(ctypes, "WinError", None))
+_WINDOWS_GET_LAST_ERROR = cast(Callable[[], int], getattr(ctypes, "get_last_error", None))
 
 _CONTAINER_ENV_DEFAULTS = {
     "CI": "true",
@@ -786,12 +789,12 @@ class _JobObjectExtendedLimitInformation(ctypes.Structure):
 def _create_windows_kill_job() -> int | None:
     if os.name != "nt":
         return None
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _WINDOWS_DLL("kernel32", use_last_error=True)
     create_job = kernel32.CreateJobObjectW
     create_job.restype = ctypes.c_void_p
     handle = create_job(None, None)
     if not handle:
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _WINDOWS_ERROR(_WINDOWS_GET_LAST_ERROR())
     information = _JobObjectExtendedLimitInformation()
     information.basic_limit_information.limit_flags = 0x00002000
     set_information = kernel32.SetInformationJobObject
@@ -801,7 +804,7 @@ def _create_windows_kill_job() -> int | None:
         ctypes.byref(information),
         ctypes.sizeof(information),
     ):
-        error = ctypes.WinError(ctypes.get_last_error())
+        error = _WINDOWS_ERROR(_WINDOWS_GET_LAST_ERROR())
         kernel32.CloseHandle(ctypes.c_void_p(handle))
         raise error
     return int(handle)
@@ -814,18 +817,18 @@ def _assign_process_to_windows_job(
     if job_handle is None:
         return
     process_handle = int(getattr(process, "_handle"))
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _WINDOWS_DLL("kernel32", use_last_error=True)
     if not kernel32.AssignProcessToJobObject(
         ctypes.c_void_p(job_handle),
         ctypes.c_void_p(process_handle),
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _WINDOWS_ERROR(_WINDOWS_GET_LAST_ERROR())
 
 
 def _resume_windows_process(process: subprocess.Popen[bytes]) -> None:
     if os.name != "nt":
         return
-    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    ntdll = _WINDOWS_DLL("ntdll", use_last_error=True)
     resume_process = ntdll.NtResumeProcess
     resume_process.argtypes = [ctypes.c_void_p]
     resume_process.restype = ctypes.c_long
@@ -841,10 +844,10 @@ def _terminate_owned_process_tree(
     job_handle: int | None,
 ) -> None:
     if job_handle is not None:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = _WINDOWS_DLL("kernel32", use_last_error=True)
         if not kernel32.TerminateJobObject(ctypes.c_void_p(job_handle), 1):
-            error_number = ctypes.get_last_error()
-            raise ctypes.WinError(error_number or 1)
+            error_number = _WINDOWS_GET_LAST_ERROR()
+            raise _WINDOWS_ERROR(error_number or 1)
         return
     kill_process_group = getattr(os, "killpg", None)
     kill_signal = getattr(signal, "SIGKILL", 9)
@@ -859,9 +862,9 @@ def _terminate_owned_process_tree(
 def _close_windows_handle(job_handle: int | None) -> None:
     if job_handle is None:
         return
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _WINDOWS_DLL("kernel32", use_last_error=True)
     if not kernel32.CloseHandle(ctypes.c_void_p(job_handle)):
-        raise ctypes.WinError(ctypes.get_last_error() or 1)
+        raise _WINDOWS_ERROR(_WINDOWS_GET_LAST_ERROR() or 1)
 
 
 def _drain_bounded_pipe(
