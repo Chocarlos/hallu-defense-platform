@@ -394,7 +394,7 @@ def test_container_scan_config_rejects_point_runtime_code_chown(
     (
         (
             "otel-collector",
-            "303a747584810d6259a8e3a4547275761136fafbd31e4413f62cf9189e9d8b3d",
+            "f2de43b6617e9c5c88da5265733bd14a937545f766d8a1ab00ddec156390765e",
             "reproducible OTel marker",
         ),
         (

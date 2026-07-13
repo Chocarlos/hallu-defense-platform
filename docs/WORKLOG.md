@@ -7570,3 +7570,36 @@ Remaining risks:
   GitHub builds and scans all ten rows from the replacement SHA. Vault's BUSL
   redistribution terms and multi-architecture publication remain release
   governance work outside this private repository QA merge.
+
+## 2026-07-13 - Hosted-runner image-build resource follow-up
+
+Slice selected:
+
+- Resolve the reproducible disk exhaustion exposed by the complete remote
+  first-party image matrix without weakening Trivy or omitting an image.
+
+Implementation:
+
+- Replaced the full OpenTelemetry Collector Contrib build with a pinned OCB
+  manifest containing exactly the receiver, processor, exporters, and config
+  providers used by `infra/otel/otel-collector-config.yaml`.
+- Kept the Go 1.26.5 builder, exact output checksum, scratch runtime, non-root
+  identity, and fail-closed HIGH/CRITICAL scan contract.
+- Added an exact, validator-protected hosted-runner step that removes only
+  preinstalled unused SDKs and requires at least 20 GiB free before each
+  isolated image build.
+
+Validation:
+
+- The minimal OTel image built locally, matched SHA-256
+  `f2de43b6617e9c5c88da5265733bd14a937545f766d8a1ab00ddec156390765e`,
+  accepted the deployed collector config, and passed Trivy 0.72.0 with zero
+  HIGH/CRITICAL findings.
+- The container validator and focused mutation suite protect the exact OCB
+  component allowlist and disk-reclamation command. The replacement remote
+  matrix remains the acceptance authority for all ten exact images.
+
+Remaining risks:
+
+- The replacement PR SHA must complete its full remote security matrix before
+  the image scan requirement can move from tested evidence to accepted.

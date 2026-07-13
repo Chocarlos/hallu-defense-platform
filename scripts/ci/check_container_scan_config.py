@@ -20,6 +20,7 @@ DOCKERIGNORE_PATH = ROOT / ".dockerignore"
 KEYCLOAK_ARTIFACTS_PATH = ROOT / "requirements" / "keycloak-artifacts.json"
 SEAWEEDFS_LAUNCHER_PATH = ROOT / "infra" / "docker" / "seaweedfs_launcher.go"
 OPENSEARCH_ENTRYPOINT_PATH = ROOT / "infra" / "docker" / "opensearch_entrypoint.sh"
+OTEL_BUILDER_CONFIG_PATH = ROOT / "infra" / "docker" / "otel-collector-builder.yaml"
 DOCKERFILES = {
     "api": ROOT / "infra" / "docker" / "api.Dockerfile",
     "console": ROOT / "infra" / "docker" / "console.Dockerfile",
@@ -57,6 +58,16 @@ TRIVY_POLICY_RUN = " ".join(
         ': > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"',
         'chmod 0444 "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \\',
         '"${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"',
+    )
+)
+RUNNER_DISK_STEP_NAME = "Reclaim unused hosted runner SDKs"
+RUNNER_DISK_RUN = " ".join(
+    (
+        "set -euo pipefail",
+        "sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup",
+        "docker builder prune --all --force",
+        "available_kb=\"$(df --output=avail -k / | tail -n 1 | tr -d ' ')\"",
+        'test "${available_kb}" -ge 20971520',
     )
 )
 KIND_NODE_IMAGE = (
@@ -259,14 +270,23 @@ def _validate_first_party_matrix(job: object, errors: list[str]) -> None:
     if any(isinstance(step, Mapping) and "continue-on-error" in step for step in steps):
         errors.append("first-party image matrix steps must not weaken failures")
     _validate_external_trivy_policy_step(steps, errors, label="first-party")
-    if len(steps) != 4:
+    if len(steps) != 5:
         errors.append(
-            "first-party matrix must contain exactly four ordered trusted steps"
+            "first-party matrix must contain exactly five ordered trusted steps"
         )
     else:
-        checkout = steps[1]
-        build = steps[2]
-        scan = steps[3]
+        reclaim = steps[1]
+        checkout = steps[2]
+        build = steps[3]
+        scan = steps[4]
+        if (
+            not isinstance(reclaim, Mapping)
+            or set(reclaim) != {"name", "shell", "run"}
+            or reclaim.get("name") != RUNNER_DISK_STEP_NAME
+            or reclaim.get("shell") != "bash"
+            or " ".join(str(reclaim.get("run", "")).split()) != RUNNER_DISK_RUN
+        ):
+            errors.append("first-party matrix runner disk reclamation step is not exact")
         if not isinstance(checkout, Mapping) or dict(checkout) != {
             "uses": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
             "with": {"persist-credentials": False},
@@ -290,9 +310,13 @@ def _validate_first_party_matrix(job: object, errors: list[str]) -> None:
         for step in steps
         if isinstance(step, Mapping) and isinstance(step.get("run"), str)
     ]
-    if run_step_names != [TRIVY_POLICY_STEP_NAME, "Build current first-party image"]:
+    if run_step_names != [
+        TRIVY_POLICY_STEP_NAME,
+        RUNNER_DISK_STEP_NAME,
+        "Build current first-party image",
+    ]:
         errors.append(
-            "first-party matrix must contain only its exact policy and image build commands"
+            "first-party matrix must contain only its exact policy, disk, and build commands"
         )
     build_commands = [
         " ".join(str(step["run"]).split())
@@ -836,12 +860,11 @@ def _validate_otel_collector_dockerfile(
 ) -> None:
     markers = (
         "golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113",
-        "ARG SOURCE_TAG=v0.156.0",
-        "ARG SOURCE_COMMIT=aa158b23c8f89d795b21a05a49b3978565dfebd4",
-        "ARG OBI_SHA256=151ef5d04bff9660743148ff20d5c833222b0b45ab15245a2968a3f7f4366dec",
-        'refs/tags/${SOURCE_TAG}^{commit}',
-        "make build DISTRIBUTIONS=otelcol-contrib",
-        "303a747584810d6259a8e3a4547275761136fafbd31e4413f62cf9189e9d8b3d",
+        "ARG OCB_VERSION=0.156.0",
+        "COPY infra/docker/otel-collector-builder.yaml /src/builder.yaml",
+        '"go.opentelemetry.io/collector/cmd/builder@v${OCB_VERSION}"',
+        "/go/bin/builder --config /src/builder.yaml",
+        "f2de43b6617e9c5c88da5265733bd14a937545f766d8a1ab00ddec156390765e",
         "otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108",
         "FROM scratch",
         "USER 10001:10001",
@@ -852,6 +875,41 @@ def _validate_otel_collector_dockerfile(
             errors.append(
                 f"{dockerfile_path} missing reproducible OTel marker `{marker}`"
             )
+    expected_components = {
+        "exporters": [
+            {"gomod": "go.opentelemetry.io/collector/exporter/debugexporter v0.156.0"},
+            {
+                "gomod": "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.156.0"
+            },
+        ],
+        "processors": [
+            {"gomod": "go.opentelemetry.io/collector/processor/batchprocessor v0.156.0"}
+        ],
+        "receivers": [
+            {"gomod": "go.opentelemetry.io/collector/receiver/otlpreceiver v0.156.0"}
+        ],
+        "providers": [
+            {"gomod": "go.opentelemetry.io/collector/confmap/provider/envprovider v1.62.0"},
+            {"gomod": "go.opentelemetry.io/collector/confmap/provider/fileprovider v1.62.0"},
+            {"gomod": "go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.62.0"},
+        ],
+    }
+    try:
+        builder_config = yaml.safe_load(OTEL_BUILDER_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        errors.append(f"OTel builder config is missing or invalid: {exc}")
+        return
+    if not isinstance(builder_config, Mapping):
+        errors.append("OTel builder config must be a YAML object")
+        return
+    if set(builder_config) != {"dist", *expected_components}:
+        errors.append("OTel builder config must contain only the approved sections")
+    dist = builder_config.get("dist")
+    if not isinstance(dist, Mapping) or dist.get("version") != "0.156.0":
+        errors.append("OTel builder config must pin distribution version 0.156.0")
+    for section, expected in expected_components.items():
+        if builder_config.get(section) != expected:
+            errors.append(f"OTel builder config {section} set is not exact")
 
 
 def _validate_vault_dockerfile(
