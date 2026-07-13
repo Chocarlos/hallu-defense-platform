@@ -21,6 +21,18 @@
       "purpose": "ephemeral live-lane DSN fixture"
     },
     {
+      "path": ".github/workflows/live.yml",
+      "rule_id": "generic-api-key",
+      "match_sha256": "2887d76a36fa4b6150c3a62dae9276400486b7b295bebb658ff72dd6e310749a",
+      "purpose": "historical deterministic live-lane backup key removed in favor of runtime generation"
+    },
+    {
+      "path": ".github/workflows/live.yml",
+      "rule_id": "generic-api-key",
+      "match_sha256": "58347eecd2fd1335c19e12e5026081a440a07365d76f54dbdcf8147b594df4a1",
+      "purpose": "historical deterministic live-lane backup key removed in favor of runtime generation"
+    },
+    {
       "path": "apps/api/tests/test_apply_postgres_migrations.py",
       "rule_id": "database-uri-with-credentials",
       "match_sha256": "64c705a6454a0bce38fe1a43e987396bb7da4651f7077aefe0928ccae7568ad0",
