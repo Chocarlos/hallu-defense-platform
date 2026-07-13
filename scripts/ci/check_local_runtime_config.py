@@ -655,7 +655,7 @@ def _validate_opensearch(services: Mapping[str, object], errors: list[str]) -> N
         required_tmpfs=(
             "/tmp:rw,noexec,nosuid,nodev,size=64m",
             "/usr/share/opensearch/config:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=0700",
-            "/usr/share/opensearch/logs:rw,noexec,nosuid,nodev,size=64m",
+            "/usr/share/opensearch/logs:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700",
         ),
         expected_user="1000:1000",
         allowed_volumes=("opensearch-data:/usr/share/opensearch/data",),
