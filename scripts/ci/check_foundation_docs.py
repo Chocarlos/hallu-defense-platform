@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 AGENTS_PATH = ROOT / "AGENTS.md"
 PLAN_PATH = ROOT / "docs" / "PLAN_MASTER.md"
-ADR_DIR = ROOT / "docs" / "ADR"
+ADR_DIR = ROOT / "docs" / "adr"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 
@@ -120,7 +120,7 @@ def _validate_required_text(
 def _validate_adrs(adr_files: dict[str, str], errors: list[str]) -> None:
     if len(adr_files) < len(REQUIRED_ADR_TOPICS):
         errors.append(
-            f"docs/ADR must contain at least {len(REQUIRED_ADR_TOPICS)} ADR files"
+            f"docs/adr must contain at least {len(REQUIRED_ADR_TOPICS)} ADR files"
         )
     for slug, title_marker in REQUIRED_ADR_TOPICS.items():
         matching = {
@@ -129,7 +129,7 @@ def _validate_adrs(adr_files: dict[str, str], errors: list[str]) -> None:
             if slug in name
         }
         if not matching:
-            errors.append(f"docs/ADR missing required ADR topic: {slug}")
+            errors.append(f"docs/adr missing required ADR topic: {slug}")
             continue
         for name, text in matching.items():
             _validate_adr_file(name, text, title_marker, errors)
@@ -137,12 +137,12 @@ def _validate_adrs(adr_files: dict[str, str], errors: list[str]) -> None:
 
 def _validate_adr_file(name: str, text: str, title_marker: str, errors: list[str]) -> None:
     if not text.startswith("# ADR "):
-        errors.append(f"docs/ADR/{name} must start with an ADR heading")
+        errors.append(f"docs/adr/{name} must start with an ADR heading")
     if title_marker not in text:
-        errors.append(f"docs/ADR/{name} missing title marker: {title_marker}")
+        errors.append(f"docs/adr/{name} missing title marker: {title_marker}")
     for aliases in ADR_REQUIRED_SECTION_ALIASES:
         if not any(alias in text for alias in aliases):
-            errors.append(f"docs/ADR/{name} missing section: {aliases[0]}")
+            errors.append(f"docs/adr/{name} missing section: {aliases[0]}")
 
 
 def main() -> None:

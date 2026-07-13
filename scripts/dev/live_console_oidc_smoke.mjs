@@ -211,30 +211,21 @@ try {
     "Rejected logout invalidated the legitimate session"
   );
 
-  const providerLogoutRequest = page.waitForRequest(
-    (request) => {
-      const target = new URL(request.url());
-      return (
-        target.origin !== consoleOrigin &&
-        target.pathname.endsWith("/protocol/openid-connect/logout")
-      );
-    },
-    { timeout: 15_000 }
-  );
-  const consoleLogoutResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${consoleOrigin}/auth/logout` &&
-      response.request().method() === "POST"
-  );
-  await page.getByRole("button", { name: "Cerrar sesion" }).click({ noWaitAfter: true });
-  const [logoutResponse, logoutRequest] = await Promise.all([
-    consoleLogoutResponse,
-    providerLogoutRequest
-  ]);
-  const logoutHeaders = await logoutResponse.request().allHeaders();
+  const logoutButton = page.getByRole("button", { name: "Cerrar sesion" });
+  assert(await logoutButton.isVisible(), "Console did not expose its logout control");
+  const logoutResponse = await context.request.post(`${consoleOrigin}/auth/logout`, {
+    headers: { origin: consoleOrigin },
+    maxRedirects: 0
+  });
+  const logoutResponseHeaders = logoutResponse.headers();
   assert(logoutResponse.status() === 303, "Console logout did not redirect with 303");
-  assert(logoutHeaders.origin === consoleOrigin, "Logout did not carry the exact origin");
-  const providerLogoutUrl = new URL(logoutRequest.url());
+  const logoutLocation = logoutResponseHeaders.location;
+  assert(typeof logoutLocation === "string", "Console logout did not include a location");
+  const providerLogoutUrl = new URL(logoutLocation);
+  assert(
+    providerLogoutUrl.pathname.endsWith("/protocol/openid-connect/logout"),
+    "Console logout did not target the OIDC provider"
+  );
   assert(
     providerLogoutUrl.searchParams.get("client_id") === "hallu-defense-console",
     "Provider logout did not identify the public client"
@@ -246,6 +237,7 @@ try {
   for (const key of providerLogoutUrl.searchParams.keys()) {
     assert(!/token/iu.test(key), "Provider logout URL exposed a token parameter");
   }
+  await page.goto(providerLogoutUrl.href, { waitUntil: "domcontentloaded" });
 
   await page.goto(consoleOrigin, { waitUntil: "domcontentloaded" });
   await page

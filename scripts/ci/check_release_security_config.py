@@ -84,6 +84,8 @@ EXPECTED_IMAGES = {
     "grafana": "infra/docker/grafana.Dockerfile",
     "opensearch": "infra/docker/opensearch.Dockerfile",
     "seaweedfs": "infra/docker/seaweedfs.Dockerfile",
+    "otel-collector": "infra/docker/otel-collector.Dockerfile",
+    "vault": "infra/docker/vault.Dockerfile",
 }
 EXPECTED_ACTION_REFS = {
     "actions/checkout": "de0fac2e4500dabe0009e67214ff5f5447ce83dd",
@@ -105,7 +107,7 @@ EXPECTED_GLOBAL_ENV = {
     ),
 }
 EXPECTED_VERIFY_SUBJECT_RUN_SHA256 = (
-    "572cd1fe3d7b2a2824097844b3d125bcefab05aefcd97e8124e0d0b441d9da52"
+    "db5cb2c5e4f07fc0997072f5c6b92a2a4becd12c3ab03f14a6352a09d2e26a45"
 )
 EXPECTED_VERIFY_TAG_RUN_SHA256 = (
     "f0867e77920d104187672dc7ea296fe5804f4462a7a6ea3c0dad6f41c067313f"
@@ -423,7 +425,7 @@ def _validate_build_job(job: Mapping[str, object], errors: list[str]) -> None:
     image_rows = _parse_image_rows(job, errors, label="build-release")
     if image_rows != EXPECTED_IMAGES:
         errors.append(
-            "build-release must cover all eight current Dockerfiles exactly once"
+            "build-release must cover all ten current Dockerfiles exactly once"
         )
     steps = _steps(job, "build-release", errors)
     if steps is None:
@@ -651,7 +653,7 @@ def _validate_scan_job(job: Mapping[str, object], errors: list[str]) -> None:
         errors.append("scan-release must export only immutable artifact ids/digests")
     image_rows = _parse_image_rows(job, errors, label="scan-release")
     if image_rows != EXPECTED_IMAGES:
-        errors.append("scan-release must cover all eight image archives exactly once")
+        errors.append("scan-release must cover all ten image archives exactly once")
     steps = _steps(job, "scan-release", errors)
     if steps is None:
         return
@@ -848,7 +850,7 @@ def _validate_attestation_job(job: Mapping[str, object], errors: list[str]) -> N
         errors.append("attest-release dependency/protected-ref condition is not exact")
     image_rows = _parse_image_rows(job, errors, label="attest-release")
     if image_rows != EXPECTED_IMAGES:
-        errors.append("attest-release must independently expect exactly eight images")
+        errors.append("attest-release must independently expect exactly ten images")
 
     job_env = job.get("env")
     if not isinstance(job_env, Mapping):
@@ -2067,7 +2069,7 @@ def _validate_documentation(text: str, errors: list[str]) -> None:
             "`Metadata.RepoTags` independently must",
             "singleton exact",
             "secret-key packets (`sec`/`ssb`)",
-            "eight current first-party Dockerfiles",
+            "ten current first-party Dockerfiles",
             "sequentially",
             "machine-readable Trivy JSON",
             "immutable upload-artifact ID and digest",

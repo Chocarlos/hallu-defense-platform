@@ -34,9 +34,10 @@ path traversal segments are rejected.
 
 ## Local Vault
 
-Docker Compose includes a local-only `hashicorp/vault:2.0.3` dev server pinned
-by immutable manifest-list digest on
-`http://localhost:8200`. It is not a production Vault deployment: storage is
+Docker Compose includes a local-only Vault 2.0.3 dev server rebuilt reproducibly
+with Go 1.26.5 from the exact upstream commit. The original upstream image remains pinned
+as a filesystem/config source, while the active binary and UI are rebuilt and scanned.
+The local endpoint is `http://localhost:8200`. It is not a production Vault deployment: storage is
 ephemeral, the dev root token is local-only, and it exists to exercise the same
 KV v2 client path used by `services/secrets.py`.
 

@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 check_foundation_docs = importlib.import_module("scripts.ci.check_foundation_docs")
 AGENTS_PATH = check_foundation_docs.AGENTS_PATH
 PLAN_PATH = check_foundation_docs.PLAN_PATH
+ADR_DIR = check_foundation_docs.ADR_DIR
 FoundationDocsError = check_foundation_docs.FoundationDocsError
 load_adr_files = check_foundation_docs.load_adr_files
 validate_foundation_docs = check_foundation_docs.validate_foundation_docs
@@ -106,6 +107,7 @@ VALID_ADRS = {
 
 
 def test_foundation_docs_validator_accepts_current_repository_docs() -> None:
+    assert ADR_DIR.name == "adr"
     validate_foundation_docs(
         agents_text=AGENTS_PATH.read_text(encoding="utf-8"),
         plan_text=PLAN_PATH.read_text(encoding="utf-8"),

@@ -1,5 +1,5 @@
 ifeq ($(OS),Windows_NT)
-VENV_PY := .venv/Scripts/python
+VENV_PY := .venv/Scripts/python.exe
 else
 VENV_PY := .venv/bin/python
 endif

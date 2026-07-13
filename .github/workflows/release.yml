@@ -150,6 +150,8 @@ jobs:
         grafana|infra/docker/grafana.Dockerfile
         opensearch|infra/docker/opensearch.Dockerfile
         seaweedfs|infra/docker/seaweedfs.Dockerfile
+        otel-collector|infra/docker/otel-collector.Dockerfile
+        vault|infra/docker/vault.Dockerfile
     steps:
       - name: Validate protected control ref and verified tag handoff
         shell: bash
@@ -400,6 +402,8 @@ jobs:
         grafana|infra/docker/grafana.Dockerfile
         opensearch|infra/docker/opensearch.Dockerfile
         seaweedfs|infra/docker/seaweedfs.Dockerfile
+        otel-collector|infra/docker/otel-collector.Dockerfile
+        vault|infra/docker/vault.Dockerfile
     steps:
       - name: Validate immutable build artifact handoff
         shell: bash
@@ -728,6 +732,8 @@ jobs:
         grafana|infra/docker/grafana.Dockerfile
         opensearch|infra/docker/opensearch.Dockerfile
         seaweedfs|infra/docker/seaweedfs.Dockerfile
+        otel-collector|infra/docker/otel-collector.Dockerfile
+        vault|infra/docker/vault.Dockerfile
     steps:
       - name: Validate immutable artifact handoff
         shell: bash
@@ -1305,7 +1311,7 @@ jobs:
               or len(images) != len(image_names)
               or not all(isinstance(item, dict) for item in images)
           ):
-              raise SystemExit("release image evidence does not cover exactly eight images")
+              raise SystemExit("release image evidence does not cover exactly ten images")
           evidence_by_name: dict[str, dict[str, object]] = {}
           for item in images:
               expected_item_fields = {

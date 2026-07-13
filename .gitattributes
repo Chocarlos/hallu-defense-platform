@@ -1,1 +1,2 @@
-*.patch whitespace=-blank-at-eol,-space-before-tab
+*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
+infra/docker/*.sh text eol=lf

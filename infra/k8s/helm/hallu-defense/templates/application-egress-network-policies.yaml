@@ -14,8 +14,8 @@
 {{- if ne .Values.sandbox.image.pullPolicy "IfNotPresent" }}
 {{- fail "kindDependencies.enabled=true requires sandbox.image.pullPolicy=IfNotPresent for the locally loaded sandbox image" }}
 {{- end }}
-{{- if ne .Values.kindDependencies.vault.image "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54" }}
-{{- fail "kindDependencies.vault.image must remain the exact verified digest" }}
+{{- if ne .Values.kindDependencies.vault.image "hallu-defense-vault:ci" }}
+{{- fail "kindDependencies.vault.image must remain the locally rebuilt scanned image" }}
 {{- end }}
 {{- if ne .Values.kindDependencies.redis.image "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" }}
 {{- fail "kindDependencies.redis.image must remain the exact verified digest" }}

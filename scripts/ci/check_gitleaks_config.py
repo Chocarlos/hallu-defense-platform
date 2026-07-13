@@ -23,6 +23,7 @@ from scripts.ci.run_gitleaks import (  # noqa: E402
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
+LIVE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "live.yml"
 RUNNER_PATH = ROOT / "scripts" / "ci" / "run_gitleaks.py"
 TEST_PATH = ROOT / "apps" / "api" / "tests" / "test_gitleaks_gate.py"
 IGNORE_PATH = ROOT / ".gitleaksignore"
@@ -51,6 +52,7 @@ def validate_gitleaks_config(
     makefile_text: str,
     ci_workflow_text: str,
     security_workflow_text: str,
+    live_workflow_text: str,
 ) -> None:
     errors: list[str] = []
     try:
@@ -133,6 +135,25 @@ def validate_gitleaks_config(
     ):
         if marker not in security_workflow_text:
             errors.append(f"security workflow missing `{marker}`")
+    backup_key_name = "HALLU_DEFENSE_SECRET_BACKUP_ENCRYPTION_KEY"
+    for marker in (
+        f'{backup_key_name}="$(python -c',
+        "secrets.token_bytes(32)",
+        "base64.urlsafe_b64encode",
+        f"export {backup_key_name}",
+    ):
+        if marker not in live_workflow_text:
+            errors.append(
+                "live workflow must generate the backup encryption key ephemerally "
+                f"at runtime; missing `{marker}`"
+            )
+    if any(
+        line.strip().startswith(f"{backup_key_name}:")
+        for line in live_workflow_text.splitlines()
+    ):
+        errors.append(
+            "live workflow must not commit a literal backup encryption key in env"
+        )
     if errors:
         raise GitleaksConfigError("\n".join(errors))
 
@@ -154,6 +175,7 @@ def main() -> None:
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         ci_workflow_text=CI_WORKFLOW_PATH.read_text(encoding="utf-8"),
         security_workflow_text=SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
     )
     fixture_count = len(load_fixture_fingerprints("fixtures")) + len(
         load_fixture_fingerprints("secret_scan_fixtures")

@@ -1,9 +1,9 @@
-FROM golang:1.26.4-trixie@sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce AS opa-builder
+FROM golang:1.26.5-trixie@sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43 AS opa-builder
 
 ARG OPA_REPOSITORY=https://github.com/open-policy-agent/opa.git
-ARG OPA_TAG=v1.17.0
-ARG OPA_COMMIT=64a3625d33bc6ad8e7c40df03b76ce2fb3ab4d21
-ARG OPA_SOURCE_TIMESTAMP=2026-05-28T14:48:35Z
+ARG OPA_TAG=v1.18.2
+ARG OPA_COMMIT=e695c9ef8edb0f8b9f13d014d7bc8a7fbcc57297
+ARG OPA_SOURCE_TIMESTAMP=2026-07-02T13:31:31Z
 ENV GOPROXY=https://proxy.golang.org
 ENV GOSUMDB=sum.golang.org
 
@@ -28,11 +28,11 @@ RUN go mod edit \
     && CGO_ENABLED=0 go build -tags=opa_no_oci -mod=readonly -trimpath -buildvcs=false \
         -ldflags="-s -w -X github.com/open-policy-agent/opa/v1/version.Vcs=${OPA_COMMIT} -X github.com/open-policy-agent/opa/v1/version.Timestamp=${OPA_SOURCE_TIMESTAMP} -X github.com/open-policy-agent/opa/v1/version.Hostname=reproducible" \
         -o /out/opa . \
-    && test "$(go version /out/opa)" = "/out/opa: go1.26.4" \
+    && test "$(go version /out/opa)" = "/out/opa: go1.26.5" \
     && ! go version -m /out/opa | grep -F "oras.land/oras-go" \
-    && /out/opa version | grep -F "Version: 1.17.0" \
+    && /out/opa version | grep -F "Version: 1.18.2" \
     && /out/opa version | grep -F "Build Commit: ${OPA_COMMIT}" \
-    && /out/opa version | grep -F "Go Version: go1.26.4"
+    && /out/opa version | grep -F "Go Version: go1.26.5"
 
 FROM python:3.12.13-alpine3.24@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df AS python-builder
 

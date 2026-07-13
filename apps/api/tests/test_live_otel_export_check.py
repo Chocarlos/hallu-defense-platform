@@ -137,6 +137,24 @@ def test_live_otel_export_check_rejects_sensitive_attribute_key(tmp_path: Path) 
         )
 
 
+def test_live_otel_export_check_allows_non_sensitive_tool_output_count(tmp_path: Path) -> None:
+    spans_path = tmp_path / "spans.jsonl"
+    spans_path.write_text("", encoding="utf-8")
+
+    result = check.run_from_env(
+        _base_env(tmp_path),
+        http_post=_make_fake_post(
+            spans_path,
+            leaked_key="verification.tool_output_count",
+        ),
+        wait_ready=_no_op_wait,
+        sleep=lambda _seconds: None,
+        run_id="safecount01",
+    )
+
+    assert result["status"] == "passed"
+
+
 def test_live_otel_export_check_times_out_when_required_span_missing(tmp_path: Path) -> None:
     spans_path = tmp_path / "spans.jsonl"
     spans_path.write_text("", encoding="utf-8")

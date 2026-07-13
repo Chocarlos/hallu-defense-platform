@@ -8,6 +8,7 @@ from scripts.ci.check_container_scan_config import (
     ContainerScanConfigError,
     IMAGE_REFS,
     OPENSEARCH_ENTRYPOINT_PATH,
+    ROOT,
     SEAWEEDFS_LAUNCHER_PATH,
     load_current_config,
     validate_container_scan_config,
@@ -59,6 +60,17 @@ def test_container_scan_config_validates_required_images() -> None:
         "6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" in workflow_text
     )
     assert "sandbox" in dockerfile_texts
+
+
+def test_docker_build_inputs_are_lf_normalized_for_linux_builds() -> None:
+    patch_paths = sorted((ROOT / "infra" / "docker").glob("*.patch"))
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert patch_paths
+    assert all(b"\r\n" not in patch_path.read_bytes() for patch_path in patch_paths)
+    assert "*.patch text eol=lf" in attributes
+    assert b"\r\n" not in OPENSEARCH_ENTRYPOINT_PATH.read_bytes()
+    assert "infra/docker/*.sh text eol=lf" in attributes
 
 
 def test_container_scan_config_rejects_missing_trivy_scan() -> None:
@@ -378,9 +390,45 @@ def test_container_scan_config_rejects_point_runtime_code_chown(
 
 
 @pytest.mark.parametrize(
+    ("image", "marker", "message"),
+    (
+        (
+            "otel-collector",
+            "f2de43b6617e9c5c88da5265733bd14a937545f766d8a1ab00ddec156390765e",
+            "reproducible OTel marker",
+        ),
+        (
+            "vault",
+            "pnpm install --frozen-lockfile",
+            "reproducible Vault marker",
+        ),
+        (
+            "vault",
+            "test -x /usr/local/bin/docker-entrypoint.sh",
+            "reproducible Vault marker",
+        ),
+    ),
+)
+def test_container_scan_config_rejects_weakened_source_rebuild(
+    image: str,
+    marker: str,
+    message: str,
+) -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = dict(dockerfile_texts)
+    insecure[image] = insecure[image].replace(marker, "removed-security-marker", 1)
+
+    with pytest.raises(ContainerScanConfigError, match=message):
+        validate_container_scan_config(
+            workflow_text=workflow_text,
+            dockerfile_texts=insecure,
+        )
+
+
+@pytest.mark.parametrize(
     "marker",
     (
-        "golang:1.26.4-alpine3.24@sha256:3ad57304",
+        "golang:1.26.5-alpine3.24@sha256:0178a641",
         "ARG SEAWEEDFS_COMMIT=1355c7a102194d6c461baf090eff50367b575afb",
         "ARG SEAWEEDFS_SOURCE_SHA256=d4ec97a7",
         'addr := fmt.Sprintf("127.0.0.1:%d", *options.port)',
@@ -768,10 +816,10 @@ def test_container_scan_config_rejects_npm_policy_bypass(
 @pytest.mark.parametrize(
     ("marker", "message"),
     [
-        ("golang:1.26.4-trixie@sha256:", "Go 1.26.4"),
-        ("ARG OPA_TAG=v1.17.0", "OPA runtime marker"),
+        ("golang:1.26.5-trixie@sha256:", "Go 1.26.5"),
+        ("ARG OPA_TAG=v1.18.2", "OPA runtime marker"),
         (
-            "ARG OPA_COMMIT=64a3625d33bc6ad8e7c40df03b76ce2fb3ab4d21",
+            "ARG OPA_COMMIT=e695c9ef8edb0f8b9f13d014d7bc8a7fbcc57297",
             "OPA runtime marker",
         ),
         ("COPY infra/docker/opa-no-oci.patch", "OPA runtime marker"),

@@ -1220,7 +1220,7 @@ def _validate_supporting_files(
         "/var/run/secrets/kubernetes.io/serviceaccount/token",
         "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
         "minimum RBAC",
-        "OPA 1.17.0",
+        "OPA 1.18.2",
         "read_only: true",
         "no-new-privileges:true",
         "rw,noexec,nosuid,nodev",
