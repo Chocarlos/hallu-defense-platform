@@ -8,6 +8,8 @@ from urllib.parse import quote
 
 import pytest
 
+import hallu_defense.config as config_module
+
 from hallu_defense.config import (
     AuthConfigurationError,
     EnvironmentConfigurationError,
@@ -219,6 +221,7 @@ def test_load_settings_applies_runtime_transport_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(config_module, "validate_opa_settings", lambda _settings: None)
     redis_ca_path = tmp_path / "redis-ca.pem"
     vault_token_path = tmp_path / "vault-token"
     redis_ca_path.write_text("test-ca", encoding="utf-8")

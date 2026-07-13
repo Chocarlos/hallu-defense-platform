@@ -574,7 +574,7 @@ def test_excessively_nested_serialized_json_fails_closed_without_recursion_error
 
     assert result.complete is False
     assert result.value == REDACTED_UNSAFE_STRUCTURE
-    assert result.violations == ("json_decoding_failed",)
+    assert result.violations == ("max_depth_exceeded",)
 
 
 @pytest.mark.parametrize(

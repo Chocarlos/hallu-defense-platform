@@ -7478,3 +7478,27 @@ Remaining risks:
 
 - GitHub must complete the next backend, TypeScript and security workflows
   before merge; no red check is treated as accepted evidence.
+
+## 2026-07-13 - Clean Linux API portability follow-up
+
+Slice selected:
+
+- Resolve the six API failures revealed only by the clean Ubuntu PR runner.
+
+Implementation:
+
+- Made ADR discovery case-correct, normalized excessive JSON recursion to the
+  fail-closed depth violation, isolated the runtime-transport unit test from OPA
+  file-ownership validation, and corrected secret preflight fixtures to use or
+  mock their intended POSIX permissions and identity checks.
+
+Validation:
+
+- Ruff and Linux-target mypy passed. The 20 affected tests passed on Windows
+  and again inside immutable CPython 3.12.13 Alpine Linux; the foundation docs
+  gate found all 8 ADR files.
+
+Remaining risks:
+
+- The new PR SHA still requires complete backend, TypeScript/browser and
+  security workflow success before merge.
