@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from httpx import Response
+from httpx2 import Response
 
 from evals.runners.smoke import EVAL_TENANT_ID, _post_verification_scenario
 

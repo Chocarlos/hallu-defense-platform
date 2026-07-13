@@ -45,7 +45,10 @@ def test_worker_metrics_server_requires_bearer_and_renders_metrics() -> None:
         endpoint = f"http://127.0.0.1:{server.bound_port}/metrics"
         with pytest.raises(HTTPError) as unauthorized:
             urlopen(endpoint, timeout=2)
-        assert unauthorized.value.code == 401
+        try:
+            assert unauthorized.value.code == 401
+        finally:
+            unauthorized.value.close()
 
         request = Request(endpoint, headers={"Authorization": "Bearer metrics-token"})
         with urlopen(request, timeout=2) as response:
@@ -71,14 +74,20 @@ def test_worker_metrics_server_rejects_wrong_path_and_oversized_output() -> None
         origin = f"http://127.0.0.1:{server.bound_port}"
         with pytest.raises(HTTPError) as missing:
             urlopen(f"{origin}/health", timeout=2)
-        assert missing.value.code == 404
+        try:
+            assert missing.value.code == 404
+        finally:
+            missing.value.close()
         request = Request(
             f"{origin}/metrics",
             headers={"Authorization": "Bearer token"},
         )
         with pytest.raises(HTTPError) as oversized:
             urlopen(request, timeout=2)
-        assert oversized.value.code == 503
+        try:
+            assert oversized.value.code == 503
+        finally:
+            oversized.value.close()
     finally:
         server.stop()
 

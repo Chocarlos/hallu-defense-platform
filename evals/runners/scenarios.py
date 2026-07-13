@@ -55,8 +55,8 @@ def main() -> None:
 
 def evaluate_scenarios(*, write_report: bool) -> dict[str, Any]:
     scenarios = load_scenarios()
-    client = TestClient(app)
-    results = [_run_scenario(client, scenario) for scenario in scenarios]
+    with TestClient(app) as client:
+        results = [_run_scenario(client, scenario) for scenario in scenarios]
     metrics = compute_metrics(results)
     report = {"metrics": metrics, "scenarios": results}
     if write_report:

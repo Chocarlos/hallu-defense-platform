@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx2 import Response
 
 try:
     from evals.runners.thresholds import evaluate_thresholds, load_suite_thresholds
@@ -37,31 +37,31 @@ class _VerificationClient(Protocol):
 
 
 def main() -> None:
-    client = TestClient(app)
     scenarios = json.loads(GOLDEN_SET.read_text(encoding="utf-8"))
     results: list[dict[str, Any]] = []
     failures: list[str] = []
 
-    for scenario in scenarios:
-        started = time.perf_counter()
-        response = _post_verification_scenario(client, scenario)
-        latency_ms = (time.perf_counter() - started) * 1_000
-        if response.status_code != 200:
-            failures.append(f"{scenario['id']}: status {response.status_code}")
-            continue
-        payload = response.json()
-        results.append(_scenario_result(scenario, payload, latency_ms))
-        if not payload.get("trace_id"):
-            failures.append(f"{scenario['id']}: missing trace_id")
-        if not payload.get("claims"):
-            failures.append(f"{scenario['id']}: missing claims")
-        if not payload.get("verdicts"):
-            failures.append(f"{scenario['id']}: missing verdicts")
-        if payload.get("final_decision") != scenario["expected_final_decision"]:
-            failures.append(
-                f"{scenario['id']}: expected {scenario['expected_final_decision']} "
-                f"got {payload.get('final_decision')}"
-            )
+    with TestClient(app) as client:
+        for scenario in scenarios:
+            started = time.perf_counter()
+            response = _post_verification_scenario(client, scenario)
+            latency_ms = (time.perf_counter() - started) * 1_000
+            if response.status_code != 200:
+                failures.append(f"{scenario['id']}: status {response.status_code}")
+                continue
+            payload = response.json()
+            results.append(_scenario_result(scenario, payload, latency_ms))
+            if not payload.get("trace_id"):
+                failures.append(f"{scenario['id']}: missing trace_id")
+            if not payload.get("claims"):
+                failures.append(f"{scenario['id']}: missing claims")
+            if not payload.get("verdicts"):
+                failures.append(f"{scenario['id']}: missing verdicts")
+            if payload.get("final_decision") != scenario["expected_final_decision"]:
+                failures.append(
+                    f"{scenario['id']}: expected {scenario['expected_final_decision']} "
+                    f"got {payload.get('final_decision')}"
+                )
 
     metrics = compute_metrics(results)
     failures.extend(_metric_failures(metrics))
