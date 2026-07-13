@@ -133,6 +133,14 @@ jobs:
           : > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
           chmod 0444 "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \
             "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
+      - name: Reclaim unused hosted runner SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          docker builder prune --all --force
+          available_kb="$(df --output=avail -k / | tail -n 1 | tr -d ' ')"
+          test "${available_kb}" -ge 20971520
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
