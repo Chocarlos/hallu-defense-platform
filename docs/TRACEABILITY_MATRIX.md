@@ -21,6 +21,12 @@ attributes in `sandbox_exec.py`. Windows FFI callables are now resolved once
 through explicitly typed adapters; mypy passes all 59 files for both native
 Windows and `--platform linux` analysis.
 
+The next Linux API run exposed four additional Windows-masked fixture and path
+assumptions. ADR discovery now uses the repository's lowercase `docs/adr`, deep
+JSON recursion reports the stable fail-closed depth violation, transport tests
+isolate OPA ownership validation, and secret-file fixtures apply or mock the
+exact POSIX boundaries they intend to exercise.
+
 | ID | Description | Files / modules affected | Related contracts | Related endpoints | Tests required | Evidence of validation | Status | Risks / notes |
 |---|---|---|---|---|---|---|---|---|
 | FND-001 | Root agent instructions exist and define working loop | `AGENTS.md`, `scripts/ci/check_foundation_docs.py`, `apps/api/tests/test_foundation_docs.py` | n/a | n/a | foundation docs validator, focused negative tests | `check_foundation_docs.py` validates required AGENTS working-loop, non-negotiable, architecture, and command markers; `test_foundation_docs.py`: 6 passed | tested | Must keep updated as workflow evolves |

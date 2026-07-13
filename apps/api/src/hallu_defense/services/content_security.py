@@ -521,7 +521,7 @@ class SensitiveDataRedactor:
             try:
                 parsed, end = decoder.raw_decode(value, candidate)
             except RecursionError:
-                state.violate("json_decoding_failed")
+                state.violate("max_depth_exceeded")
                 return REDACTED_UNSAFE_STRUCTURE
             except (TypeError, ValueError):
                 scan_cursor = candidate + 1
