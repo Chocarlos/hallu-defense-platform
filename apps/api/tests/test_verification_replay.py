@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx2 import Response
 
 from hallu_defense.api import dependencies, middleware, routes
 from hallu_defense.config import Settings

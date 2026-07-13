@@ -7343,3 +7343,48 @@ Remaining risks:
   live proof used an isolated WSL process built from the same pinned,
   checksum-verified SeaweedFS source. The new GitHub live job still exercises
   the Compose image and exact scratch-resource teardown on an Ubuntu runner.
+
+## 2026-07-12 - HTTPX2 TestClient migration and warning-free strict suite
+
+Slice selected:
+
+- Removed the remaining Starlette TestClient deprecation warning through the
+  supported dependency migration, then treated every additional warning found
+  under `-W error` as a real resource-lifecycle defect.
+
+Implementation:
+
+- Replaced the dev-only `httpx` dependency and direct `Response` type imports
+  with `httpx2>=2.5.0,<3.0.0`. Starlette 1.3.1 now uses its preferred TestClient
+  backend instead of its deprecated compatibility fallback.
+- Regenerated the Linux locks with exact CPython 3.12.13 and pip-tools 7.5.3.
+  The resolved dev graph pins `httpx2 2.5.0`, `httpcore2 2.5.0`, and
+  `truststore 0.10.4`; a second clean exact-toolchain run found no lock drift.
+- Made both eval runners own `TestClient` through context managers.
+- Hardened the Windows Git inspector startup-failure branch to terminate the
+  process, close its pipes and Job Object handle, and retain cleanup diagnostics
+  without replacing the primary exception.
+- Closed all three expected `urllib.error.HTTPError` responses in worker
+  metrics tests. Those response bodies held the three sockets that strict
+  garbage collection exposed late in the previous suite.
+
+Validation:
+
+- Full strict API suite: `2716 passed, 27 deselected` with `-W error`; there are
+  zero runtime skips and zero warnings.
+- Focused migration/resource suites passed: 85 TestClient/core tests, 8
+  eval/Git cleanup tests, and 9 worker-metrics tests with forced garbage
+  collection after every case.
+- Ruff passed the complete Python source/test/script/eval surface; mypy passed
+  all 59 API source files. Both eval suites passed (2 smoke and 21 scenarios),
+  and their variable generated reports were restored rather than committed.
+- `pip check` found no broken requirements. The exact runtime, dev,
+  build-tools, and sandbox locks each reported no known vulnerabilities; the
+  reproducibility configuration and exact lock check passed.
+
+Remaining risks:
+
+- `httpx2` is currently a test/development dependency; production HTTP paths
+  continue using their existing bounded provider-specific transports. Future
+  Starlette/httpx2 upgrades still require normal lock regeneration and the same
+  strict full-suite validation.

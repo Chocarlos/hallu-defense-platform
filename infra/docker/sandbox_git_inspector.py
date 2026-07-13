@@ -1655,10 +1655,13 @@ def _run_git(
     try:
         _assign_process_to_windows_job(windows_job, process)
         _resume_windows_process(process)
-    except BaseException:
-        process.kill()
-        process.wait()
-        _close_windows_handle(windows_job)
+    except BaseException as exc:
+        cleanup_errors = _cleanup_git_process_capture(process, windows_job, ())
+        if cleanup_errors:
+            exc.add_note(
+                "Git startup cleanup also failed "
+                f"({type(cleanup_errors[0]).__name__})."
+            )
         raise
     return _collect_git_process_result(
         process,
