@@ -7637,3 +7637,61 @@ Remaining risks:
 - Acceptance is commit- and inventory-specific. Multi-architecture release
   publication, managed services, and the rejected ingestion recovery lane need
   separate current evidence before their own promotion.
+
+## 2026-07-13 - Root README product and onboarding guide
+
+Slice selected:
+
+- Replace the shallow root README with a truthful end-to-end guide for users,
+  integrators, developers, operators, and reviewers, then protect its critical
+  onboarding content against documentation drift.
+
+Implementation:
+
+- Rewrote `README.md` around the actual platform: protected surfaces,
+  verification flow, component architecture, prerequisites, reproducible
+  Python/npm setup, host and Compose startup, ports, an executable API request,
+  REST/SDK/MCP/adapter surfaces, RAG/providers, security, quality gates,
+  deployment, repository layout, governance, and contribution paths.
+- Linked the guide to the canonical OpenAPI, QA acceptance ledger, operational
+  runbooks, security documentation, plan, traceability matrix, and worklog.
+  Preserved the rejected ingestion crash/restart smoke as an explicit residual
+  risk instead of presenting the whole platform as universally production-ready.
+- Made `.env.example` portable by replacing the checkout-specific sandbox path
+  with `.` and documenting its working-directory resolution boundary.
+- Extended `check_foundation_docs.py` with required README sections/markers and
+  relative-link existence validation. Added positive and negative tests for a
+  complete guide, missing installation command, and broken internal link.
+
+Validation:
+
+- `.venv\\Scripts\\python.exe scripts/ci/check_foundation_docs.py` passed and
+  validated the root README plus eight ADR files.
+- `.venv\\Scripts\\python.exe -m pytest
+  apps/api/tests/test_foundation_docs.py -q`: 9 passed.
+- Ruff passed for the changed checker/test, and `git diff --check` reported no
+  whitespace error (only expected Windows LF-to-CRLF working-copy notices).
+- The exact README `/verification/run` JSON was posted through the real FastAPI
+  application with `TestClient`: HTTP 200, one claim, one verdict, a `tr_`
+  trace prefix, and `final_decision=allow`.
+- Global sequential gates passed: `make lint`; `make typecheck` with no mypy
+  issues in 59 Python source files and all TypeScript workspaces green; and
+  `make test` with 2,733 Python tests passed / 27 platform-incompatible tests
+  deselected, plus SDK 17, adapters 11, MCP 41, and Console 101 tests passed.
+- `make build` passed all workspaces and the optimized Next.js production build;
+  the Console production checker scanned 181 artifacts successfully.
+- Traceability, worklog, and local-runtime gates passed with 194 requirement
+  rows, 127 worklog entries, and 14 Compose services / 4 volumes respectively;
+  their focused combined suite passed 76 tests.
+
+Remaining risks:
+
+- External workflow badges and Mermaid rendering depend on GitHub's renderer;
+  the local gate verifies their surrounding guide and every relative target but
+  does not make an external-network availability claim.
+- npm emitted its pre-existing forward-compatibility warning for the
+  `strict-allow-scripts` project setting; lint, types, tests, and builds still
+  completed successfully under the pinned npm version.
+- Deployment readiness remains environment-specific. The existing rejected
+  ingestion crash/restart lane is still open and was not changed by this
+  documentation slice.

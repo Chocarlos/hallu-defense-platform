@@ -1,13 +1,45 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
+README_PATH = ROOT / "README.md"
 AGENTS_PATH = ROOT / "AGENTS.md"
 PLAN_PATH = ROOT / "docs" / "PLAN_MASTER.md"
 ADR_DIR = ROOT / "docs" / "adr"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+
+REQUIRED_README_SECTIONS = (
+    "## Estado del proyecto",
+    "## Qué protege",
+    "## Cómo funciona",
+    "## Arquitectura",
+    "## Inicio rápido",
+    "## Stack local completo con Docker Compose",
+    "## Superficies públicas",
+    "## Modelo de seguridad",
+    "## Desarrollo y validación",
+    "## Despliegue",
+    "## Documentación y gobierno",
+)
+REQUIRED_README_MARKERS = (
+    "Python 3.12",
+    "24.18.0",
+    "11.16.0",
+    "py -3.12 -m venv .venv",
+    "python3.12 -m venv .venv",
+    "npm ci",
+    "HALLU_DEFENSE_ALLOWED_WORKSPACE",
+    "docker compose up --build -d",
+    "POST /verification/run",
+    "make contracts",
+    "make security-check",
+    "docs/qa/2026-07-13-mass-qa-acceptance.md",
+)
+MARKDOWN_LINK_PATTERN = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
 
 REQUIRED_AGENT_SECTIONS = (
     "## Required Working Loop",
@@ -60,6 +92,16 @@ ADR_REQUIRED_SECTION_ALIASES = (
 
 class FoundationDocsError(ValueError):
     pass
+
+
+def validate_root_readme(*, readme_text: str, root: Path = ROOT) -> None:
+    errors: list[str] = []
+    _validate_required_text("README.md", readme_text, REQUIRED_README_SECTIONS, errors)
+    _validate_required_text("README.md", readme_text, REQUIRED_README_MARKERS, errors)
+    _validate_relative_markdown_links(readme_text, root, errors)
+
+    if errors:
+        raise FoundationDocsError("\n".join(errors))
 
 
 def validate_foundation_docs(
@@ -135,6 +177,19 @@ def _validate_adrs(adr_files: dict[str, str], errors: list[str]) -> None:
             _validate_adr_file(name, text, title_marker, errors)
 
 
+def _validate_relative_markdown_links(text: str, root: Path, errors: list[str]) -> None:
+    for raw_target in MARKDOWN_LINK_PATTERN.findall(text):
+        target = raw_target.strip().strip("<>")
+        if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+            continue
+        path_text = unquote(target.split("#", maxsplit=1)[0])
+        if not path_text:
+            continue
+        path = Path(path_text)
+        if path.is_absolute() or not (root / path).exists():
+            errors.append(f"README.md contains missing relative link target: {path_text}")
+
+
 def _validate_adr_file(name: str, text: str, title_marker: str, errors: list[str]) -> None:
     if not text.startswith("# ADR "):
         errors.append(f"docs/adr/{name} must start with an ADR heading")
@@ -146,6 +201,7 @@ def _validate_adr_file(name: str, text: str, title_marker: str, errors: list[str
 
 
 def main() -> None:
+    validate_root_readme(readme_text=README_PATH.read_text(encoding="utf-8"))
     validate_foundation_docs(
         agents_text=AGENTS_PATH.read_text(encoding="utf-8"),
         plan_text=PLAN_PATH.read_text(encoding="utf-8"),
@@ -155,7 +211,10 @@ def main() -> None:
         makefile_text=MAKEFILE_PATH.read_text(encoding="utf-8"),
         ci_workflow_text=CI_WORKFLOW_PATH.read_text(encoding="utf-8"),
     )
-    print(f"Validated foundation docs with {len(load_adr_files())} ADR file(s).")
+    print(
+        "Validated root README and foundation docs with "
+        f"{len(load_adr_files())} ADR file(s)."
+    )
 
 
 if __name__ == "__main__":
