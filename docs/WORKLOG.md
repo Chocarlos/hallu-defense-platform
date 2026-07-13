@@ -7531,3 +7531,42 @@ Remaining risks:
 - The replacement PR SHA must pass backend, TypeScript/browser, eval, and
   security workflows before merge; the earlier red run is diagnostic evidence,
   not acceptance evidence.
+
+## 2026-07-13 - Patched Go image rebuild and Trivy follow-up
+
+Slice selected:
+
+- Resolve the fail-closed security workflow findings without ignoring a CVE or
+  reducing Trivy severity.
+
+Implementation:
+
+- Upgraded Prometheus to the immutable 3.13.1 distroless release and rebuilt
+  OPA 1.18.2, Grafana, and SeaweedFS with pinned Go 1.26.5 builders.
+- Added source- and checksum-pinned OpenTelemetry Collector 0.156.0 and Vault
+  2.0.3 Dockerfiles. The OTel image is compact `scratch`; the Vault image
+  rebuilds its complete UI, replaces the active binary, and flattens the
+  upstream filesystem so the vulnerable binary is not retained in a lower
+  runtime layer.
+- Expanded security and release coverage from eight to ten first-party images,
+  removed OTel/Vault from the external scan inventory, wired their local builds
+  into Compose and the Kind smoke, and retained exact empty Trivy policy inputs.
+- Exposed `apps/api/src` to the security workflow so standalone API-aware gates
+  resolve imports on clean Linux.
+
+Validation:
+
+- Current Prometheus 3.13.1, API/OPA, and Grafana images passed Trivy 0.72.0
+  with HIGH/CRITICAL fail-closed scanning. Independent equivalent OTel and
+  Vault Go 1.26.5 rebuilds passed runtime/config/UI checks and the same Trivy
+  scan with zero findings; the exact committed variants remain remote-gated.
+- Container, local-runtime, secrets, Helm, sandbox, and release validators
+  passed. Focused cross-cutting tests passed 589/589; an earlier broader focused
+  run passed 719 tests before its sole stale assertion was corrected.
+
+Remaining risks:
+
+- The exact committed OTel/Vault images are intentionally not accepted until
+  GitHub builds and scans all ten rows from the replacement SHA. Vault's BUSL
+  redistribution terms and multi-architecture publication remain release
+  governance work outside this private repository QA merge.

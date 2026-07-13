@@ -43,7 +43,7 @@ risks in the traceability matrix.
 - The ingestion worker crash/restart live smoke is not accepted. Its 15 focused
   tests pass, but the Windows execution timed out and a Linux-container replay
   exited before claiming the job. This remains a live defect/investigation.
-- Kind/Helm cluster execution, current Trivy scans of all eight built images,
+- Kind/Helm cluster execution, current Trivy scans of all ten built images,
   deployed production profile, managed services, external OIDC/provider lanes
   and other authority-dependent checks were not executed locally. Static gates
   for these areas passed, but they remain `tested` or pending—not accepted.
