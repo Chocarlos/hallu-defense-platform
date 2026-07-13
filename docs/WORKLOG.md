@@ -7388,3 +7388,46 @@ Remaining risks:
   continue using their existing bounded provider-specific transports. Future
   Starlette/httpx2 upgrades still require normal lock regeneration and the same
   strict full-suite validation.
+
+## 2026-07-13 - Mass QA acceptance and live runtime repair
+
+Slice selected:
+
+- Execute repository-wide QA, repair reproducible failures without weakening
+  controls, and record an explicit acceptance decision for gates and live
+  capabilities that have current evidence.
+
+Implementation:
+
+- Fixed Windows virtualenv selection, MCP child-process shutdown, runtime
+  Gitleaks synthetic-secret generation, PostgreSQL readiness, OpenSearch 3.7
+  mapping compatibility, hybrid-RAG fencing, Console logout verification,
+  Linux patch/shell line endings, OpenSearch tmpfs ownership, and OTel safe
+  aggregate-key classification.
+- Promoted `jsonschema` from dev-only to API runtime dependency, regenerated the
+  hashed Python locks with CPython 3.12.13 and pip-tools 7.5.3, and updated the
+  gates to require it in runtime.
+- Added regression coverage for each repaired failure and recorded the reviewed
+  acceptance ledger in `docs/qa/2026-07-13-mass-qa-acceptance.md`.
+
+Validation:
+
+- Final sequential gates passed: `make lint`, `make typecheck`, and `make test`;
+  Python reported 2,722 passed / 27 platform-live deselected, plus SDK 17,
+  adapters 11, MCP 41, and Console 101 passed.
+- `make security-check` passed with native Gitleaks 8.30.1, no known Python lock
+  vulnerabilities, npm audit 0 vulnerabilities, 14 migrations, Helm, auth,
+  release, backup, RAG, sandbox, container and observability validators.
+- Live Docker evidence passed for sandbox, PostgreSQL, hybrid RAG, Keycloak API
+  and Console OIDC/BFF, Vault, OTel/Prometheus/Grafana, Redis concurrency and
+  encrypted S3-compatible backup/restore. All resources used unique scratch
+  projects and were removed with their volumes.
+
+Remaining risks:
+
+- The ingestion crash/restart live smoke is rejected pending root-cause repair:
+  15 focused tests pass, Windows timed out, and Linux-container replay exited
+  before job claim. Kind, full Trivy image scans, deployed production and
+  authority-dependent external lanes were not accepted by this local campaign.
+- Host npm emitted `strict-allow-scripts` compatibility warnings; commands still
+  passed, but the exact pinned Node/npm lane remains the authoritative CI lane.
