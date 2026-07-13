@@ -929,6 +929,9 @@ def _validate_vault_dockerfile(
         "go build -trimpath -buildvcs=false -tags=ui",
         "FROM scratch",
         "COPY --from=patched / /",
+        "test -d /vault/file",
+        "test -d /vault/logs",
+        "test -x /usr/local/bin/docker-entrypoint.sh",
         "USER vault",
         'ENTRYPOINT ["docker-entrypoint.sh"]',
     )

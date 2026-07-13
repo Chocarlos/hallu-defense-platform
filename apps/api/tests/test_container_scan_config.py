@@ -402,6 +402,11 @@ def test_container_scan_config_rejects_point_runtime_code_chown(
             "pnpm install --frozen-lockfile",
             "reproducible Vault marker",
         ),
+        (
+            "vault",
+            "test -x /usr/local/bin/docker-entrypoint.sh",
+            "reproducible Vault marker",
+        ),
     ),
 )
 def test_container_scan_config_rejects_weakened_source_rebuild(

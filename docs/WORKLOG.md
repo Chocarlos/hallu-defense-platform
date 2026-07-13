@@ -7598,6 +7598,11 @@ Validation:
 - The container validator and focused mutation suite protect the exact OCB
   component allowlist and disk-reclamation command. The replacement remote
   matrix remains the acceptance authority for all ten exact images.
+- The superseded remote Vault row then proved that the rebuilt binary and UI
+  compiled successfully, but exposed an incorrect assertion requiring files
+  inside the intentionally empty `/vault/file` and `/vault/logs` volumes. The
+  corrected runtime check requires both directories and the official
+  executable entrypoint instead, matching the pinned upstream image contract.
 
 Remaining risks:
 
