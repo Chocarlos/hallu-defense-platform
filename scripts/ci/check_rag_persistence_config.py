@@ -247,6 +247,8 @@ def _validate_supporting_files(
         errors.append("security workflow must run check_rag_persistence_config.py")
     if bootstrap not in security_workflow_text:
         errors.append("security workflow must run the OpenSearch template bootstrap dry-run")
+    if "PYTHONPATH: ${{ github.workspace }}/apps/api/src" not in security_workflow_text:
+        errors.append("security workflow must expose the API source through PYTHONPATH")
     _validate_live_opensearch_smoke_wiring(
         docs_text=docs_text,
         makefile_text=makefile_text,
