@@ -40,10 +40,15 @@ async function enqueueHighRiskToolCall(
     headers: REVIEWER_HEADERS,
     data: {
       tool_name: "delete_repository",
-      input: { repo: "core", api_key: sensitiveFixture },
-      schema: { type: "object", required: ["repo"] },
+      input: { repo: `core api_key=${sensitiveFixture}` },
+      schema: {
+        type: "object",
+        properties: { repo: { type: "string", minLength: 1 } },
+        required: ["repo"],
+        additionalProperties: false
+      },
       risk_level: "high",
-      approval_required: false,
+      approval_required: true,
       caller_context: { subject: "console-reviewer" }
     }
   });
@@ -91,7 +96,7 @@ test.describe("approval queue console flow", () => {
     const record = pending.approvals.find((item) => item.approval_id === approvalId);
     expect(record).toBeDefined();
     expect(record?.tool_call.tool_name).toBe("delete_repository");
-    expect(record?.tool_call.input["api_key"]).toBe("[REDACTED]");
+    expect(record?.tool_call.input["repo"]).toBe("core [REDACTED]");
     expect(JSON.stringify(pending)).not.toContain(sensitiveFixture);
     expect(await page.content()).not.toContain(sensitiveFixture);
 
@@ -107,7 +112,7 @@ test.describe("approval queue console flow", () => {
     const decided = approved.approvals.find((item) => item.approval_id === approvalId);
     expect(decided?.status).toBe("approved");
     expect(decided?.decided_by).toBe("console-reviewer");
-    expect(decided?.tool_call.input["api_key"]).toBe("[REDACTED]");
+    expect(decided?.tool_call.input["repo"]).toBe("core [REDACTED]");
   });
 
   test("rejects a queued high-risk tool call from the UI", async ({ page, request }) => {
