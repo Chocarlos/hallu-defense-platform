@@ -17,7 +17,7 @@ def test_committed_rego_modules_are_v1_compatible_and_ci_uses_opa_1() -> None:
         encoding="utf-8"
     )
 
-    assert "version: 1.17.0" in workflow
+    assert "version: 1.18.2" in workflow
     assert 'run([opa, "check", "--strict", OPA_TEST_TARGET])' in runner
 
 

@@ -64,12 +64,14 @@ CONSOLE_IMAGE = "hallu-defense-console:ci"
 SANDBOX_IMAGE = "hallu-defense-sandbox:ci"
 PGVECTOR_IMAGE = "hallu-defense-pgvector:ci"
 OPENSEARCH_IMAGE = "hallu-defense-opensearch:ci"
+VAULT_IMAGE = "hallu-defense-vault:ci"
 SCRATCH_IMAGE_REPOSITORIES = {
     "api": "hallu-defense-api",
     "console": "hallu-defense-console",
     "sandbox": "hallu-defense-sandbox",
     "pgvector": "hallu-defense-pgvector",
     "opensearch": "hallu-defense-opensearch",
+    "vault": "hallu-defense-vault",
 }
 KIND_POD_SUBNET = "192.168.0.0/16"
 KIND_NETWORK_POLICY_PROVIDER = "kindnet"
@@ -755,6 +757,7 @@ def run_smoke(
             ("infra/docker/sandbox.Dockerfile", effective_images["sandbox"]),
             ("infra/docker/pgvector.Dockerfile", effective_images["pgvector"]),
             ("infra/docker/opensearch.Dockerfile", effective_images["opensearch"]),
+            ("infra/docker/vault.Dockerfile", effective_images["vault"]),
         ):
             execute(
                 ["docker", "build", "--file", dockerfile, "--tag", image, "."],
@@ -825,6 +828,8 @@ def run_smoke(
             f"kindDependencies.pgvector.image={effective_images['pgvector']}",
             "--set-string",
             f"kindDependencies.opensearch.image={effective_images['opensearch']}",
+            "--set-string",
+            f"kindDependencies.vault.image={effective_images['vault']}",
         ]
         helm_cluster_args = [
             "--kubeconfig",

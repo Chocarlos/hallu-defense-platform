@@ -1,4 +1,4 @@
-FROM golang:1.26.4-trixie@sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce AS backend-builder
+FROM golang:1.26.5-trixie@sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43 AS backend-builder
 
 ARG GRAFANA_COMMIT=b309c9bb3b81a748c3a75289236a27309ed2566a
 ARG GRAFANA_SOURCE_DATE_EPOCH=1782199002
@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     COMMIT_SHA="${GRAFANA_COMMIT}" \
     BUILD_BRANCH=v13.1.0 \
     make build-go OS=linux ARCH=amd64 CGO_ENABLED=0 \
-    && echo "5dd79544386b8ad44567bcd823e2c8d0479f1097dd39bfaeca99e6625a090e62  bin/linux/amd64/grafana" | sha256sum --check --strict \
+    && echo "9e7b41aa84cfc2e735f7482d51103e5ffcc6989525b6be7dad7b43c7b724c2f9  bin/linux/amd64/grafana" | sha256sum --check --strict \
     && go version -m bin/linux/amd64/grafana | grep -F 'github.com/grafana/tempo' | grep -F 'v2.10.3+incompatible' \
     && go version -m bin/linux/amd64/grafana | grep -F 'golang.org/x/net' | grep -F 'v0.55.0' \
     && go version -m bin/linux/amd64/grafana | grep -F 'google.golang.org/grpc' | grep -F 'v1.81.1'

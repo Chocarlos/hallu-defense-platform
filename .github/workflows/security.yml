@@ -118,6 +118,10 @@ jobs:
             dockerfile: infra/docker/opensearch.Dockerfile
           - name: seaweedfs
             dockerfile: infra/docker/seaweedfs.Dockerfile
+          - name: otel-collector
+            dockerfile: infra/docker/otel-collector.Dockerfile
+          - name: vault
+            dockerfile: infra/docker/vault.Dockerfile
     steps:
       - name: Create empty external Trivy policy
         shell: bash
@@ -155,10 +159,8 @@ jobs:
       max-parallel: 1
       matrix:
         image:
-          - prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc
-          - otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
+          - prom/prometheus:v3.13.1-distroless@sha256:214f8427c8fba80c327bb94a75feb802ae12f2d6ca30812aa6e7d22f09bbea80
           - redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
-          - hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
     steps:
       - name: Create empty external Trivy policy
         shell: bash

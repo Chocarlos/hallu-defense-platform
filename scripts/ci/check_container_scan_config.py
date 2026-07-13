@@ -29,6 +29,8 @@ DOCKERFILES = {
     "grafana": ROOT / "infra" / "docker" / "grafana.Dockerfile",
     "opensearch": ROOT / "infra" / "docker" / "opensearch.Dockerfile",
     "seaweedfs": ROOT / "infra" / "docker" / "seaweedfs.Dockerfile",
+    "otel-collector": ROOT / "infra" / "docker" / "otel-collector.Dockerfile",
+    "vault": ROOT / "infra" / "docker" / "vault.Dockerfile",
 }
 IMAGE_REFS = {
     "api": "hallu-defense-api:ci",
@@ -39,6 +41,8 @@ IMAGE_REFS = {
     "grafana": "hallu-defense-grafana:ci",
     "opensearch": "hallu-defense-opensearch:ci",
     "seaweedfs": "hallu-defense-seaweedfs:ci",
+    "otel-collector": "hallu-defense-otel-collector:ci",
+    "vault": "hallu-defense-vault:ci",
 }
 TRIVY_ACTION = "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25"
 TRIVY_VERSION = "v0.72.0"
@@ -61,8 +65,8 @@ KIND_NODE_IMAGE = (
 )
 IMMUTABLE_IMAGE_RE = re.compile(r"^[^@\s]+:[^@\s]+@sha256:[0-9a-f]{64}$")
 API_OPA_BUILDER_FROM = (
-    "FROM golang:1.26.4-trixie@"
-    "sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce "
+    "FROM golang:1.26.5-trixie@"
+    "sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43 "
     "AS opa-builder"
 )
 API_PYTHON_FROM = (
@@ -534,13 +538,15 @@ def _actual_external_images(errors: list[str]) -> dict[str, set[str]]:
     try:
         compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
         services = compose["services"]
-        for service in ("prometheus", "otel-collector", "redis", "vault"):
+        # OTel Collector and Vault are rebuilt locally from pinned source and
+        # belong to the first-party build/scan matrix.
+        for service in ("prometheus", "redis"):
             actual[f"compose:{service}"].add(str(services[service]["image"]))
         helm = yaml.safe_load(HELM_VALUES_PATH.read_text(encoding="utf-8"))
         dependencies = helm["kindDependencies"]
         # OpenSearch and pgvector are locally built first-party derivatives and
         # are scanned by their dedicated image jobs, not this external matrix.
-        for dependency in ("vault", "redis"):
+        for dependency in ("redis",):
             actual[f"helm:kindDependencies.{dependency}"].add(
                 str(dependencies[dependency]["image"])
             )
@@ -677,7 +683,7 @@ def _validate_dockerfile(
             )
         if API_OPA_BUILDER_FROM not in from_lines:
             errors.append(
-                f"{dockerfile_path} must pin the Go 1.26.4 OPA builder stage by digest"
+                f"{dockerfile_path} must pin the Go 1.26.5 OPA builder stage by digest"
             )
         if API_PYTHON_FROM not in from_lines:
             errors.append(f"{dockerfile_path} must pin the Python 3.12 base by digest")
@@ -685,8 +691,8 @@ def _validate_dockerfile(
             if "@sha256:" not in line:
                 errors.append(f"{dockerfile_path} base stages must be pinned by digest")
         for snippet in (
-            "ARG OPA_TAG=v1.17.0",
-            "ARG OPA_COMMIT=64a3625d33bc6ad8e7c40df03b76ce2fb3ab4d21",
+            "ARG OPA_TAG=v1.18.2",
+            "ARG OPA_COMMIT=e695c9ef8edb0f8b9f13d014d7bc8a7fbcc57297",
             'rev-parse "refs/tags/${OPA_TAG}^{commit}"',
             "COPY infra/docker/opa-no-oci.patch /tmp/opa-no-oci.patch",
             "git -C /src/opa apply --check /tmp/opa-no-oci.patch",
@@ -697,7 +703,7 @@ def _validate_dockerfile(
             "go mod verify",
             "CGO_ENABLED=0 go build -tags=opa_no_oci -mod=readonly -trimpath -buildvcs=false",
             '! go version -m /out/opa | grep -F "oras.land/oras-go"',
-            "Go Version: go1.26.4",
+            "Go Version: go1.26.5",
             "COPY infra/opa/policies /app/infra/opa/policies",
             "COPY --from=opa-builder /out/opa /usr/local/bin/opa",
             "/usr/local/bin/opa version",
@@ -817,6 +823,62 @@ def _validate_dockerfile(
         _validate_opensearch_dockerfile(dockerfile_text, dockerfile_path, errors)
     if name == "seaweedfs":
         _validate_seaweedfs_dockerfile(dockerfile_text, dockerfile_path, errors)
+    if name == "otel-collector":
+        _validate_otel_collector_dockerfile(dockerfile_text, dockerfile_path, errors)
+    if name == "vault":
+        _validate_vault_dockerfile(dockerfile_text, dockerfile_path, errors)
+
+
+def _validate_otel_collector_dockerfile(
+    dockerfile_text: str,
+    dockerfile_path: str,
+    errors: list[str],
+) -> None:
+    markers = (
+        "golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113",
+        "ARG SOURCE_TAG=v0.156.0",
+        "ARG SOURCE_COMMIT=aa158b23c8f89d795b21a05a49b3978565dfebd4",
+        "ARG OBI_SHA256=151ef5d04bff9660743148ff20d5c833222b0b45ab15245a2968a3f7f4366dec",
+        'refs/tags/${SOURCE_TAG}^{commit}',
+        "make build DISTRIBUTIONS=otelcol-contrib",
+        "303a747584810d6259a8e3a4547275761136fafbd31e4413f62cf9189e9d8b3d",
+        "otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108",
+        "FROM scratch",
+        "USER 10001:10001",
+        'ENTRYPOINT ["/otelcol-contrib"]',
+    )
+    for marker in markers:
+        if marker not in dockerfile_text:
+            errors.append(
+                f"{dockerfile_path} missing reproducible OTel marker `{marker}`"
+            )
+
+
+def _validate_vault_dockerfile(
+    dockerfile_text: str,
+    dockerfile_path: str,
+    errors: list[str],
+) -> None:
+    markers = (
+        "golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc",
+        "node:20-alpine3.23@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",
+        "hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54",
+        "ARG VAULT_COMMIT=7193f9a48ff6093ca61b3b627a8671e770428ba6",
+        "ARG VAULT_SOURCE_SHA256=7a12e6300ea17de23b1d533ff6452ed18802b9efa5b075dd1135ea1ded7b307b",
+        "pnpm install --frozen-lockfile",
+        "pnpm run build",
+        "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local",
+        "go build -trimpath -buildvcs=false -tags=ui",
+        "FROM scratch",
+        "COPY --from=patched / /",
+        "USER vault",
+        'ENTRYPOINT ["docker-entrypoint.sh"]',
+    )
+    for marker in markers:
+        if marker not in dockerfile_text:
+            errors.append(
+                f"{dockerfile_path} missing reproducible Vault marker `{marker}`"
+            )
 
 
 def _validate_seaweedfs_dockerfile(
@@ -825,7 +887,7 @@ def _validate_seaweedfs_dockerfile(
     errors: list[str],
 ) -> None:
     markers = (
-        "golang:1.26.4-alpine3.24@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648",
+        "golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2",
         "alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
         "ARG SEAWEEDFS_VERSION=4.29",
         "ARG SEAWEEDFS_COMMIT=1355c7a102194d6c461baf090eff50367b575afb",
@@ -909,13 +971,13 @@ def _validate_grafana_dockerfile(
     errors: list[str],
 ) -> None:
     markers = (
-        "golang:1.26.4-trixie@sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce",
+        "golang:1.26.5-trixie@sha256:116489021a0d8ca3facf79f84ee69052cff88733547150a644d45c5eaa91dc43",
         "ARG GRAFANA_COMMIT=b309c9bb3b81a748c3a75289236a27309ed2566a",
         "ARG TEMPO_COMMIT=4aeafc237b8d9a8d62e45735131e8a89eb741a00",
         "git -C /src/grafana apply --check",
         "grafana-tempo-2.10.3.patch",
         "make build-go OS=linux ARCH=amd64 CGO_ENABLED=0",
-        "5dd79544386b8ad44567bcd823e2c8d0479f1097dd39bfaeca99e6625a090e62",
+        "9e7b41aa84cfc2e735f7482d51103e5ffcc6989525b6be7dad7b43c7b724c2f9",
         "github.com/grafana/tempo",
         "v2.10.3+incompatible",
         "golang.org/x/net",

@@ -195,11 +195,13 @@ def _validate_local_vault_compose(compose_text: str, errors: list[str]) -> None:
         return
     services = _mapping(loaded.get("services"), "docker-compose.yml services", errors)
     vault = _mapping(services.get("vault"), "service vault", errors)
-    if vault.get("image") != (
-        "hashicorp/vault:2.0.3@sha256:"
-        "a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54"
+    if vault.get("image") != "hallu-defense-vault:ci":
+        errors.append("service vault must tag the locally rebuilt hardened Vault image")
+    build = _mapping(vault.get("build"), "service vault build", errors)
+    if build.get("context") != "." or build.get("dockerfile") != (
+        "infra/docker/vault.Dockerfile"
     ):
-        errors.append("service vault image must use the approved immutable Vault 2.0.3 pin")
+        errors.append("service vault must build the hardened Vault Dockerfile")
     ports = vault.get("ports")
     if not isinstance(ports, list) or "127.0.0.1:8200:8200" not in ports:
         errors.append("service vault must expose 8200 only on loopback")
