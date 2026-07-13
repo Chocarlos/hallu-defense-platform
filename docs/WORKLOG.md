@@ -7502,3 +7502,32 @@ Remaining risks:
 
 - The new PR SHA still requires complete backend, TypeScript/browser and
   security workflow success before merge.
+
+## 2026-07-13 - Clean CI import and browser-contract follow-up
+
+Slice selected:
+
+- Resolve the standalone OpenAPI import failure and the three browser failures
+  exposed by the clean Ubuntu PR workflow.
+
+Implementation:
+
+- Exposed `apps/api/src` to every backend step through job-level `PYTHONPATH`
+  and added a focused workflow regression assertion.
+- Aligned the approval browser fixture with the immutable trusted tool schema,
+  retaining sensitive-data redaction evidence without injecting a forbidden
+  property or bypassing required human review.
+- Aligned the missing-replay assertion with the Console BFF's deliberate
+  fail-closed upstream-detail sanitization.
+
+Validation:
+
+- OpenAPI tests passed 6/6; Console ESLint passed; e2e runtime contracts passed
+  35/35; the full Playwright run passed 10/10 against the live API and Docker
+  sandbox, including both approval decisions, redaction, and missing replay.
+
+Remaining risks:
+
+- The replacement PR SHA must pass backend, TypeScript/browser, eval, and
+  security workflows before merge; the earlier red run is diagnostic evidence,
+  not acceptance evidence.
