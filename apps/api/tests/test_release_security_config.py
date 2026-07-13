@@ -342,7 +342,7 @@ def test_release_security_config_requires_exact_image_coverage_in_both_jobs() ->
         "        duplicate|infra/docker/api.Dockerfile",
     )
 
-    with pytest.raises(ReleaseSecurityConfigError, match="eight current Dockerfiles"):
+    with pytest.raises(ReleaseSecurityConfigError, match="ten current Dockerfiles"):
         _validate(config)
 
 
