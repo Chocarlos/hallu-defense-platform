@@ -58,8 +58,8 @@ It sets:
 - `HALLU_DEFENSE_OPA_ENABLED=true`,
   `HALLU_DEFENSE_OPA_PATH=/usr/local/bin/opa`, and
   `HALLU_DEFENSE_OPA_POLICY_DIR=/app/infra/opa/policies`. The API image copies
-  only the runtime policy directory into the final image. Its OPA 1.17.0 static
-  binary is reproducibly built from the pinned official v1.17.0 source commit
+  only the runtime policy directory into the final image. Its OPA 1.18.2 static
+  binary is reproducibly built from the pinned official v1.18.2 source commit
   with the pinned Go 1.26.4 builder and patched `x/crypto`, `x/net`, `x/sys`, and
   `oras-go` module versions. Every base stage is pinned by digest; the build
   verifies module checksums and provenance, then runs `opa version` and

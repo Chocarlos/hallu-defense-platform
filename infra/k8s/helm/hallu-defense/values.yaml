@@ -249,7 +249,8 @@ kindDependencies:
   enabled: false
   vault:
     enabled: true
-    image: hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
+    # Kind loads this locally rebuilt Go 1.26.5 derivative.
+    image: hallu-defense-vault:ci
     resources:
       requests:
         cpu: 50m

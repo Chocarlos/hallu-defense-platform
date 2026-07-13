@@ -21,7 +21,10 @@ static gate.
 Required behavior:
 
 - Run Trivy 0.72.0 through the commit-pinned 0.36.0 action.
-- Scan OS and application/library packages in all eight first-party images.
+- Scan OS and application/library packages in all ten first-party images.
+- Rebuild the pinned OpenTelemetry Collector 0.156.0 and Vault 2.0.3 sources
+  with Go 1.26.5, preserving their runtime contracts while removing the
+  patched `CVE-2026-39822` toolchain finding instead of waiving it.
 - Scan the immutable third-party image matrix from the maintained inventory.
 - Fail on every `HIGH` or `CRITICAL` finding; do not use `ignore-unfixed`,
   `continue-on-error`, or a severity waiver.

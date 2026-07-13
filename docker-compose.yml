@@ -115,7 +115,7 @@ services:
       - api
 
   prometheus:
-    image: prom/prometheus:v3.13.0-distroless@sha256:f3b6aae627d96e7ad8256cdf6de5953247735117c6f577383fadb42efeeea7bc
+    image: prom/prometheus:v3.13.1-distroless@sha256:214f8427c8fba80c327bb94a75feb802ae12f2d6ca30812aa6e7d22f09bbea80
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -155,7 +155,10 @@ services:
       - prometheus
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
+    image: hallu-defense-otel-collector:ci
+    build:
+      context: .
+      dockerfile: infra/docker/otel-collector.Dockerfile
     command:
       - --config=/etc/otelcol-contrib/config.yaml
     ports:
@@ -282,7 +285,10 @@ services:
       KC_DB_PASSWORD: hallu
 
   vault:
-    image: hashicorp/vault:2.0.3@sha256:a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54
+    image: hallu-defense-vault:ci
+    build:
+      context: .
+      dockerfile: infra/docker/vault.Dockerfile
     command:
       - server
       - -dev

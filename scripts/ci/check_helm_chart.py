@@ -968,11 +968,8 @@ def _validate_values(
     vault = _mapping(
         kind_dependencies.get("vault"), "values.kindDependencies.vault", errors
     )
-    if vault.get("image") != (
-        "hashicorp/vault:2.0.3@sha256:"
-        "a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54"
-    ):
-        errors.append("values must pin the verified Vault image digest")
+    if vault.get("image") != "hallu-defense-vault:ci":
+        errors.append("values must select the locally rebuilt hardened Vault image")
     pgvector = _mapping(
         kind_dependencies.get("pgvector"), "values.kindDependencies.pgvector", errors
     )
@@ -5837,10 +5834,7 @@ def _validate_rendered_images(
         "console": "hallu-defense-console:ci",
         "worker": "hallu-defense-api:ci",
         "migrations": "hallu-defense-api:ci",
-        "vault": (
-            "hashicorp/vault:2.0.3@sha256:"
-            "a296a888b118615dc01d5f1a6846e6d4a7277946caaed5b447008fff5fe06b54"
-        ),
+        "vault": "hallu-defense-vault:ci",
         "pgvector": "hallu-defense-pgvector:ci",
         "opensearch": "hallu-defense-opensearch:ci",
         "vault-bootstrap": "hallu-defense-api:ci",

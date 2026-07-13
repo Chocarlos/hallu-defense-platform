@@ -390,9 +390,40 @@ def test_container_scan_config_rejects_point_runtime_code_chown(
 
 
 @pytest.mark.parametrize(
+    ("image", "marker", "message"),
+    (
+        (
+            "otel-collector",
+            "303a747584810d6259a8e3a4547275761136fafbd31e4413f62cf9189e9d8b3d",
+            "reproducible OTel marker",
+        ),
+        (
+            "vault",
+            "pnpm install --frozen-lockfile",
+            "reproducible Vault marker",
+        ),
+    ),
+)
+def test_container_scan_config_rejects_weakened_source_rebuild(
+    image: str,
+    marker: str,
+    message: str,
+) -> None:
+    workflow_text, dockerfile_texts = load_current_config()
+    insecure = dict(dockerfile_texts)
+    insecure[image] = insecure[image].replace(marker, "removed-security-marker", 1)
+
+    with pytest.raises(ContainerScanConfigError, match=message):
+        validate_container_scan_config(
+            workflow_text=workflow_text,
+            dockerfile_texts=insecure,
+        )
+
+
+@pytest.mark.parametrize(
     "marker",
     (
-        "golang:1.26.4-alpine3.24@sha256:3ad57304",
+        "golang:1.26.5-alpine3.24@sha256:0178a641",
         "ARG SEAWEEDFS_COMMIT=1355c7a102194d6c461baf090eff50367b575afb",
         "ARG SEAWEEDFS_SOURCE_SHA256=d4ec97a7",
         'addr := fmt.Sprintf("127.0.0.1:%d", *options.port)',
@@ -780,10 +811,10 @@ def test_container_scan_config_rejects_npm_policy_bypass(
 @pytest.mark.parametrize(
     ("marker", "message"),
     [
-        ("golang:1.26.4-trixie@sha256:", "Go 1.26.4"),
-        ("ARG OPA_TAG=v1.17.0", "OPA runtime marker"),
+        ("golang:1.26.5-trixie@sha256:", "Go 1.26.5"),
+        ("ARG OPA_TAG=v1.18.2", "OPA runtime marker"),
         (
-            "ARG OPA_COMMIT=64a3625d33bc6ad8e7c40df03b76ce2fb3ab4d21",
+            "ARG OPA_COMMIT=e695c9ef8edb0f8b9f13d014d7bc8a7fbcc57297",
             "OPA runtime marker",
         ),
         ("COPY infra/docker/opa-no-oci.patch", "OPA runtime marker"),
