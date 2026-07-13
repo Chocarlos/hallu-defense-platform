@@ -38,6 +38,7 @@ from hallu_defense.services.rag_index import (  # noqa: E402
     PgVectorPsycopgConnect,
     PgVectorRagIndexBackend,
     PostgresHybridRevisionLockCoordinator,
+    PostgresTenantDeletionFence,
     PsycopgPgVectorConnection,
     RagChunk,
     RagIndexBackend,
@@ -230,13 +231,14 @@ class PsycopgOpenSearchSmokeProvisioner:
             )
             if applied_schema.index_state != "compatible":
                 raise RuntimeError("Hybrid RAG smoke index did not receive schema v3.")
+            pgvector_connection = PsycopgPgVectorConnection(
+                dsn=scratch_dsn,
+                connect=cast(PgVectorPsycopgConnect, connect),
+                row_factory=row_factory,
+            )
             pgvector = PgVectorRagIndexBackend(
                 table_name="rag_evidence_chunks",
-                connection=PsycopgPgVectorConnection(
-                    dsn=scratch_dsn,
-                    connect=cast(PgVectorPsycopgConnect, connect),
-                    row_factory=row_factory,
-                ),
+                connection=pgvector_connection,
             )
             locks = PostgresHybridRevisionLockCoordinator(
                 dsn=scratch_dsn,
@@ -249,6 +251,9 @@ class PsycopgOpenSearchSmokeProvisioner:
                     opensearch=opensearch,
                     pgvector=pgvector,
                     revision_locks=locks,
+                    tenant_write_fence=PostgresTenantDeletionFence(
+                        pgvector_connection
+                    ),
                 ),
                 database_name=database_name,
                 index_name=index_name,
