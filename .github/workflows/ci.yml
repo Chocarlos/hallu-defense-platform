@@ -168,12 +168,28 @@ jobs:
         run: npm --workspace @hallu-defense/console run test:e2e:marketing
       - name: Validate BrowserStack matrix contract
         run: npm --workspace @hallu-defense/console run test:browserstack:config
-      - name: Run BrowserStack marketing matrix when credentials exist
+
+  browserstack-marketing:
+    if: github.event_name == 'push'
+    needs: typescript
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - run: test "$(npm --version)" = "11.16.0"
+      - run: npm ci
+      - name: Validate BrowserStack matrix contract
+        run: npm --workspace @hallu-defense/console run test:browserstack:config
+      - name: Run BrowserStack marketing matrix or report an honest credential skip
         env:
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           BROWSERSTACK_BASE_URL: ${{ secrets.BROWSERSTACK_BASE_URL }}
-          BROWSERSTACK_LOCAL: ${{ vars.BROWSERSTACK_LOCAL || 'false' }}
-          BROWSERSTACK_LOCAL_IDENTIFIER: ${{ secrets.BROWSERSTACK_LOCAL_IDENTIFIER }}
           BROWSERSTACK_WEBHOOK_STUB: ${{ vars.BROWSERSTACK_WEBHOOK_STUB || 'false' }}
         run: npm --workspace @hallu-defense/console run test:browserstack:marketing
