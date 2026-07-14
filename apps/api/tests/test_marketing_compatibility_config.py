@@ -253,6 +253,34 @@ def test_gate_rejects_missing_standalone_static_copy(tmp_path: Path) -> None:
         validate(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "request.headers()",
+        "request.postData()",
+        "expect(inputWasEnabled).toBe(false)",
+        "expect(buttonWasEnabled).toBe(false)",
+        "expect(leakingChannels).toEqual([])",
+    ],
+)
+def test_gate_rejects_weakened_no_javascript_pii_boundary(
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    _copy_fixture(tmp_path)
+    spec = tmp_path / "apps/console/e2e-marketing/progressive-enhancement.spec.ts"
+    spec.write_text(
+        spec.read_text(encoding="utf-8").replace(marker, "missing-nojs-boundary-marker"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        MarketingCompatibilityConfigError,
+        match="progressive-enhancement",
+    ):
+        validate(tmp_path)
+
+
 def test_gate_rejects_missing_live_browserstack_form_submission(tmp_path: Path) -> None:
     _copy_fixture(tmp_path)
     runner = tmp_path / "apps/console/scripts/run-browserstack-marketing.mjs"
