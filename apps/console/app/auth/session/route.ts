@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import {
   createUnsignedLocalConsoleSession,
   deleteConsoleSession,
-  getConsoleSession,
+  getConsoleSessionForConfig,
   sessionCookieName,
   type ConsoleSession
 } from "../../../lib/auth-store";
@@ -22,12 +22,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const config = loadConsoleRuntimeConfig();
     const cookieName = sessionCookieName(config);
     const oldSessionId = request.cookies.get(cookieName)?.value;
-    let session = getConsoleSession(oldSessionId);
+    let session = getConsoleSessionForConfig(oldSessionId, config);
 
     if (config.authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
       if (session?.authMode !== CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
         deleteConsoleSession(oldSessionId);
-        session = createUnsignedLocalConsoleSession(config.localIdentity);
+        session = createUnsignedLocalConsoleSession(config);
       }
     } else if (session?.authMode !== CONSOLE_AUTH_MODE_OIDC) {
       deleteConsoleSession(oldSessionId);

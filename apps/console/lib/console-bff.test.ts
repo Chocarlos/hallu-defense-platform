@@ -3,13 +3,38 @@ import { NextRequest } from "next/server";
 
 import {
   createConsoleSession,
+  createUnsignedLocalConsoleSession,
   getConsoleSession,
   resetAuthStoreForTests
 } from "./auth-store";
 import { forwardConsoleApiRequest } from "./console-bff";
+import {
+  loadConsoleRuntimeConfig,
+  type ConsoleOidcRuntimeConfig,
+  type ConsoleUnsignedLocalRuntimeConfig
+} from "./runtime-config";
 
 const consoleOrigin = "https://console.example.test";
 const sessionCookie = "__Host-hallu-console-session";
+const oidcRuntimeDrifts = [
+  [
+    "issuer",
+    "HALLU_DEFENSE_CONSOLE_OIDC_ISSUER",
+    "https://identity.example.test/realms/rotated"
+  ],
+  ["client", "HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID", "rotated-console"],
+  ["audience", "HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE", "rotated-api"],
+  [
+    "API origin",
+    "HALLU_DEFENSE_CONSOLE_API_ORIGIN",
+    "https://api-rotated.example.test"
+  ],
+  [
+    "required roles",
+    "HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES",
+    "verifier,approval_reviewer"
+  ]
+] as const;
 
 describe("Console same-origin BFF", () => {
   beforeEach(() => {
@@ -45,6 +70,100 @@ describe("Console same-origin BFF", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(response.headers.get("cache-control")).toContain("no-store");
   });
+
+  it.each(oidcRuntimeDrifts)(
+    "invalidates before forwarding when the OIDC %s changes",
+    async (_label, name, value) => {
+      const session = oidcSession();
+      vi.stubEnv(name, value);
+      const fetchImpl = vi.fn<typeof fetch>();
+
+      const response = await forwardConsoleApiRequest(
+        request(session),
+        ["approvals", "list"],
+        fetchImpl
+      );
+
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "Authentication is required." });
+      expect(response.headers.get("set-cookie")).toContain(`${sessionCookie}=`);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(getConsoleSession(session.sessionId)).toBeNull();
+    }
+  );
+
+  it("fails a legacy session without a runtime fingerprint closed", async () => {
+    const session = oidcSession();
+    delete (session as { runtimeFingerprint?: string }).runtimeFingerprint;
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    const response = await forwardConsoleApiRequest(
+      request(session),
+      ["approvals", "list"],
+      fetchImpl
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("set-cookie")).toContain(`${sessionCookie}=`);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(getConsoleSession(session.sessionId)).toBeNull();
+  });
+
+  it("forwards unsigned-local identity only while its runtime binding matches", async () => {
+    stubUnsignedLocalEnvironment();
+    const config = currentUnsignedLocalConfig();
+    const session = createUnsignedLocalConsoleSession(config);
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      expect(String(input)).toBe("http://127.0.0.1:8100/approvals/list");
+      expect(headers.get("authorization")).toBeNull();
+      expect(headers.get("x-tenant-id")).toBe("tenant-a");
+      expect(headers.get("x-subject-id")).toBe("local-reviewer");
+      expect(headers.get("x-roles")).toBe("verifier");
+      return jsonResponse({ approvals: [], trace_id: "tr_local" });
+    });
+
+    const response = await forwardConsoleApiRequest(
+      localRequest(session),
+      ["approvals", "list"],
+      fetchImpl
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["API origin", "HALLU_DEFENSE_CONSOLE_API_ORIGIN", "http://127.0.0.1:8200"],
+    [
+      "identity",
+      "HALLU_DEFENSE_CONSOLE_LOCAL_SUBJECT_ID",
+      "rotated-reviewer"
+    ]
+  ] as const)(
+    "rejects an unsigned-local session before forwarding when %s changes",
+    async (_label, name, value) => {
+      stubUnsignedLocalEnvironment();
+      const session = createUnsignedLocalConsoleSession(
+        currentUnsignedLocalConfig()
+      );
+      vi.stubEnv(name, value);
+      const fetchImpl = vi.fn<typeof fetch>();
+
+      const response = await forwardConsoleApiRequest(
+        localRequest(session),
+        ["approvals", "list"],
+        fetchImpl
+      );
+
+      expect(response.status).toBe(401);
+      expect(response.headers.get("set-cookie")).toContain(
+        "hallu-console-session=;"
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(getConsoleSession(session.sessionId)).toBeNull();
+    }
+  );
 
   it.each([
     { origin: "https://attacker.example.test", csrf: "valid" },
@@ -217,13 +336,21 @@ describe("Console same-origin BFF", () => {
 });
 
 function oidcSession() {
-  return createConsoleSession({
+  return createConsoleSession(currentOidcConfig(), {
     accessToken: "A".repeat(64),
     expiresAtSeconds: Math.floor(Date.now() / 1000) + 600,
     tenantId: "tenant-a",
     subjectId: "reviewer",
-    roles: ["verifier"]
+    roles: ["approval_reviewer", "verifier"]
   });
+}
+
+function currentOidcConfig(): ConsoleOidcRuntimeConfig {
+  return loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
+}
+
+function currentUnsignedLocalConfig(): ConsoleUnsignedLocalRuntimeConfig {
+  return loadConsoleRuntimeConfig() as ConsoleUnsignedLocalRuntimeConfig;
 }
 
 function request(
@@ -246,6 +373,23 @@ function request(
   });
 }
 
+function localRequest(
+  session: ReturnType<typeof createUnsignedLocalConsoleSession>
+): NextRequest {
+  return new NextRequest("http://127.0.0.1:3100/api/approvals/list", {
+    method: "POST",
+    headers: {
+      origin: "http://127.0.0.1:3100",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "same-origin",
+      "content-type": "application/json",
+      cookie: `hallu-console-session=${session.sessionId}`,
+      "x-console-csrf": session.csrfToken
+    },
+    body: "{}"
+  });
+}
+
 function stubEnvironment(): void {
   const values = {
     HALLU_DEFENSE_ENV: "production",
@@ -256,6 +400,23 @@ function stubEnvironment(): void {
     HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID: "hallu-defense-console",
     HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE: "hallu-defense-api",
     HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES: "verifier"
+  } as const;
+  for (const [name, value] of Object.entries(values)) {
+    vi.stubEnv(name, value);
+  }
+}
+
+function stubUnsignedLocalEnvironment(): void {
+  const values = {
+    HALLU_DEFENSE_ENV: "test",
+    HALLU_DEFENSE_CONSOLE_AUTH_MODE: "unsigned-local",
+    HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: "http://127.0.0.1:3100",
+    HALLU_DEFENSE_CONSOLE_API_ORIGIN: "http://127.0.0.1:8100",
+    HALLU_DEFENSE_CONSOLE_ALLOW_INSECURE_LOCAL_HTTP: "true",
+    HALLU_DEFENSE_CONSOLE_ALLOW_UNSIGNED_LOCAL: "true",
+    HALLU_DEFENSE_CONSOLE_LOCAL_TENANT_ID: "tenant-a",
+    HALLU_DEFENSE_CONSOLE_LOCAL_SUBJECT_ID: "local-reviewer",
+    HALLU_DEFENSE_CONSOLE_LOCAL_ROLES: "verifier"
   } as const;
   for (const [name, value] of Object.entries(values)) {
     vi.stubEnv(name, value);

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 import {
   deleteConsoleSession,
-  getConsoleSession,
+  getConsoleSessionForConfig,
   sessionCookieName,
   type ConsoleSession
 } from "./auth-store";
@@ -63,7 +63,7 @@ export async function forwardConsoleApiRequest(
 
   const cookieName = sessionCookieName(config);
   const sessionId = request.cookies.get(cookieName)?.value;
-  const session = getConsoleSession(sessionId);
+  const session = getConsoleSessionForConfig(sessionId, config);
   if (!sessionMatchesConfig(session, config)) {
     deleteConsoleSession(sessionId);
     return clearSession(jsonError("Authentication is required.", 401), config);

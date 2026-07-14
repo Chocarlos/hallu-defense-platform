@@ -12,6 +12,7 @@ import {
   createAuthorizationTransaction,
   createConsoleSession,
   getConsoleSession,
+  getConsoleSessionForConfig,
   rotateConsoleSession,
   resetAuthStoreForTests
 } from "./auth-store";
@@ -118,7 +119,7 @@ describe("OIDC authorization state and PKCE", () => {
   });
 
   it("binds an active prior session and rotates it atomically", () => {
-    const prior = createConsoleSession(tokenSet("prior-token", 600), 1);
+    const prior = createConsoleSession(config, tokenSet("prior-token", 600), 1);
     const transaction = createAuthorizationTransaction(config, {
       nowMs: 1_000,
       priorSessionId: prior.sessionId
@@ -126,6 +127,7 @@ describe("OIDC authorization state and PKCE", () => {
 
     expect(transaction.priorSessionId).toBe(prior.sessionId);
     const replacement = rotateConsoleSession(
+      config,
       consumeAuthorizationTransaction(transaction.state, transaction.state, 2_000),
       tokenSet("replacement-token", 700),
       2
@@ -136,7 +138,11 @@ describe("OIDC authorization state and PKCE", () => {
   });
 
   it("lets only one sibling transaction replace a shared prior session", () => {
-    const prior = createConsoleSession(tokenSet("prior-token", 10_000), 1);
+    const prior = createConsoleSession(
+      config,
+      tokenSet("prior-token", 10_000),
+      1
+    );
     const first = createAuthorizationTransaction(config, {
       nowMs: 1_000,
       priorSessionId: prior.sessionId
@@ -147,6 +153,7 @@ describe("OIDC authorization state and PKCE", () => {
     });
 
     const winner = rotateConsoleSession(
+      config,
       consumeAuthorizationTransaction(first.state, first.state, 2_000),
       tokenSet("winner-token", 10_000),
       2
@@ -158,7 +165,12 @@ describe("OIDC authorization state and PKCE", () => {
     );
 
     expect(() =>
-      rotateConsoleSession(consumedSibling, tokenSet("orphan-token", 10_000), 2)
+      rotateConsoleSession(
+        config,
+        consumedSibling,
+        tokenSet("orphan-token", 10_000),
+        2
+      )
     ).toThrow(AuthorizationStateError);
     expect(() =>
       consumeAuthorizationTransaction(sibling.state, sibling.state, 2_001)
@@ -168,7 +180,11 @@ describe("OIDC authorization state and PKCE", () => {
   });
 
   it("does not allocate orphan sessions during reauthentication and can replace at capacity", () => {
-    const prior = createConsoleSession(tokenSet("prior-token", 10_000), 1);
+    const prior = createConsoleSession(
+      config,
+      tokenSet("prior-token", 10_000),
+      1
+    );
     const transactions = [];
     for (let index = 0; index < AUTH_TRANSACTION_CAPACITY; index += 1) {
       transactions.push(
@@ -183,7 +199,7 @@ describe("OIDC authorization state and PKCE", () => {
       sessions: 1
     });
     for (let index = 1; index < AUTH_SESSION_CAPACITY; index += 1) {
-      createConsoleSession(tokenSet(`session-${index}`, 10_000), 1);
+      createConsoleSession(config, tokenSet(`session-${index}`, 10_000), 1);
     }
 
     const winningTransaction = transactions[0];
@@ -191,6 +207,7 @@ describe("OIDC authorization state and PKCE", () => {
       throw new Error("Missing winning authorization transaction.");
     }
     const replacement = rotateConsoleSession(
+      config,
       consumeAuthorizationTransaction(
         winningTransaction.state,
         winningTransaction.state,
@@ -206,7 +223,12 @@ describe("OIDC authorization state and PKCE", () => {
         2_000
       );
       expect(() =>
-        rotateConsoleSession(consumed, tokenSet("orphan-token", 10_000), 2)
+        rotateConsoleSession(
+          config,
+          consumed,
+          tokenSet("orphan-token", 10_000),
+          2
+        )
       ).toThrow(AuthorizationStateError);
     }
     expect(getConsoleSession(prior.sessionId, 2)).toBeNull();
@@ -215,9 +237,54 @@ describe("OIDC authorization state and PKCE", () => {
       transactions: 0,
       sessions: AUTH_SESSION_CAPACITY
     });
-    expect(() => createConsoleSession(tokenSet("overflow", 10_000), 2)).toThrow(
-      AuthorizationCapacityError
+    expect(() =>
+      createConsoleSession(config, tokenSet("overflow", 10_000), 2)
+    ).toThrow(AuthorizationCapacityError);
+  });
+
+  it("purges a session when its server-side runtime boundary changes", () => {
+    const session = createConsoleSession(
+      config,
+      tokenSet("bound-token", 10_000),
+      1
     );
+
+    expect(
+      getConsoleSessionForConfig(
+        session.sessionId,
+        {
+          ...config,
+          discoveryCacheTtlSeconds: config.discoveryCacheTtlSeconds + 1,
+          httpTimeoutMs: config.httpTimeoutMs + 1,
+          trustedProxyHops: config.trustedProxyHops + 1
+        },
+        2
+      )
+    ).toBe(session);
+    expect(
+      getConsoleSessionForConfig(
+        session.sessionId,
+        { ...config, apiOrigin: "http://127.0.0.1:8200" },
+        2
+      )
+    ).toBeNull();
+    expect(getConsoleSession(session.sessionId, 2)).toBeNull();
+  });
+
+  it("does not bind a stale prior session into a new login transaction", () => {
+    const session = createConsoleSession(
+      config,
+      tokenSet("prior-bound-token", 10_000),
+      1
+    );
+
+    const transaction = createAuthorizationTransaction(
+      { ...config, apiAudience: "rotated-api" },
+      { nowMs: 2_000, priorSessionId: session.sessionId }
+    );
+
+    expect(transaction.priorSessionId).toBeNull();
+    expect(getConsoleSession(session.sessionId, 2)).toBeNull();
   });
 });
 
