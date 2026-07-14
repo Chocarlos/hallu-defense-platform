@@ -29,35 +29,62 @@ for (const locale of locales) {
   });
 
   for (const trigger of ["enter", "button"] as const) {
-    test(`@form ${locale.path} ${trigger} cannot place form PII in a no-JavaScript URL`, async ({
+    test(`@form ${locale.path} ${trigger} cannot transmit form PII without JavaScript`, async ({
       page
     }) => {
       const email = `${trigger}-nojs@example.invalid`;
       await page.goto(locale.path);
-      await page.getByLabel(locale.emailLabel).fill(email);
-      const leakingRequests: string[] = [];
+      const emailInput = page.getByLabel(locale.emailLabel);
+      const continueButton = page.getByRole("button", { name: locale.continueButton });
+      const inputWasEnabled = await emailInput.isEnabled();
+      const buttonWasEnabled = await continueButton.isEnabled();
+      const leakingChannels: string[] = [];
       await page.route("**/*", async (route) => {
         const request = route.request();
-        const url = new URL(request.url());
-        if (decodeURIComponent(url.search).includes(email)) leakingRequests.push(request.url());
+        if (containsEncodedValue(request.url(), email)) leakingChannels.push("url");
+        if (
+          containsEncodedValue(
+            Object.entries(request.headers()).flat().join("\n"),
+            email
+          )
+        ) {
+          leakingChannels.push("headers");
+        }
+        if (containsEncodedValue(request.postData() ?? "", email)) {
+          leakingChannels.push("body");
+        }
         if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
           await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html>" });
           return;
         }
         await route.continue();
       });
-      const navigation = page.waitForNavigation({ waitUntil: "commit", timeout: 750 }).catch(
-        () => null
-      );
-      if (trigger === "enter") {
-        await page.getByLabel(locale.emailLabel).press("Enter");
-      } else {
-        await page.getByRole("button", { name: locale.continueButton }).click();
+      if (inputWasEnabled && buttonWasEnabled) {
+        await emailInput.fill(email);
+        const navigation = page
+          .waitForNavigation({ waitUntil: "commit", timeout: 750 })
+          .catch(() => null);
+        if (trigger === "enter") {
+          await emailInput.press("Enter");
+        } else {
+          await continueButton.click();
+        }
+        await navigation;
       }
-      await navigation;
-      expect(leakingRequests).toEqual([]);
+      expect(inputWasEnabled).toBe(false);
+      expect(buttonWasEnabled).toBe(false);
+      expect(leakingChannels).toEqual([]);
       expect(decodeURIComponent(new URL(page.url()).search)).not.toContain(email);
     });
+  }
+}
+
+function containsEncodedValue(value: string, expected: string): boolean {
+  if (value.includes(expected)) return true;
+  try {
+    return decodeURIComponent(value).includes(expected);
+  } catch {
+    return false;
   }
 }
 
