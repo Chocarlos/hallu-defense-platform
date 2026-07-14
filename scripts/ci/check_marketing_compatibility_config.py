@@ -46,6 +46,7 @@ def validate(root: Path = REPO_ROOT) -> None:
             "apps/console/e2e-marketing/performance-lab.spec.ts",
             "apps/console/e2e-marketing/progressive-enhancement.spec.ts",
             "apps/console/e2e-marketing/run-marketing-suite.mjs",
+            "apps/console/e2e-marketing/serve-standalone.mjs",
             "apps/console/scripts/run-browserstack-marketing.mjs",
             "Makefile",
             ".github/workflows/ci.yml",
@@ -143,13 +144,27 @@ def validate(root: Path = REPO_ROOT) -> None:
     _validate_playwright_matrix(playwright, errors)
     for marker in (
         'testDir: "./e2e-marketing"',
+        'const baseURL = `http://127.0.0.1:${port}`',
         'mode === "form"',
-        "npx next dev --port",
-        "npm run build && npx next start --port",
+        "npx next dev --hostname 127.0.0.1 --port",
+        "npm run build && node ./e2e-marketing/serve-standalone.mjs --port",
         'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"',
         'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "true"',
     ):
         _require(playwright, marker, "apps/console/playwright.marketing.config.ts", errors)
+
+    standalone_label = "apps/console/e2e-marketing/serve-standalone.mjs"
+    for marker in (
+        "cpSync(source, destination",
+        'path.join(consoleDirectory, ".next", "static")',
+        'path.join(standaloneConsoleDirectory, ".next", "static")',
+        'path.join(consoleDirectory, "public")',
+        'path.join(standaloneConsoleDirectory, "public")',
+        'path.join(standaloneConsoleDirectory, "server.js")',
+        'process.env.HOSTNAME = "127.0.0.1"',
+        "process.chdir(standaloneDirectory)",
+    ):
+        _require(texts[standalone_label], marker, standalone_label, errors)
 
     marketing_spec = texts["apps/console/e2e-marketing/marketing.spec.ts"]
     for marker in (
@@ -293,6 +308,21 @@ def validate(root: Path = REPO_ROOT) -> None:
         "runSeleniumSmoke",
         "No compatibility result is claimed",
         "BROWSERSTACK_WEBHOOK_STUB",
+        "HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED",
+        "liveFormEnabled,",
+        "webhookStub",
+        "runtime.liveFormEnabled",
+        "assertIsolatedWebhookStub",
+        "await completePlaywrightDemoRequest(",
+        'liveSmokeEmail("playwright", requirement.key)',
+        "await completeSeleniumDemoRequest(",
+        'liveSmokeEmail("selenium", requirement.key)',
+        "response.status() !== 202",
+        "responseStatus !== 202",
+        "PUBLIC_REQUEST_ID_PATTERN",
+        "liveSmokeEmail",
+        'new Set(liveEmails).size === liveEmails.length',
+        'email.endsWith("@example.invalid")',
     ):
         _require(browserstack, marker, "apps/console/scripts/run-browserstack-marketing.mjs", errors)
 
@@ -415,6 +445,8 @@ def _validate_browserstack_ci_isolation(corpus: str, errors: list[str]) -> None:
         "BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}",
         "BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}",
         "BROWSERSTACK_BASE_URL: ${{ secrets.BROWSERSTACK_BASE_URL }}",
+        "HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED: ${{ vars.HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED || 'false' }}",
+        "BROWSERSTACK_WEBHOOK_STUB: ${{ vars.BROWSERSTACK_WEBHOOK_STUB || 'false' }}",
     ):
         _require(browserstack_job, marker, label, errors)
     for forbidden in ("BROWSERSTACK_LOCAL:", "BROWSERSTACK_LOCAL_IDENTIFIER:"):

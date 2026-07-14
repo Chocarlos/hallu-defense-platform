@@ -1,5 +1,7 @@
+import { X509Certificate } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { createSecureContext } from "node:tls";
 
 const PRODUCTION_LIKE_ENVIRONMENTS = new Set(["production", "staging"]);
 const SECRET_FILE_MAX_BYTES = 8 * 1024;
@@ -164,6 +166,41 @@ export function isValidMetricsBearer(bytes: Uint8Array): boolean {
   return bytes.every((byte) => byte >= 0x21 && byte <= 0x7e);
 }
 
+export function normalizePrivacyContactEmail(
+  value: string | undefined
+): string | null {
+  if (
+    value === undefined ||
+    value === "" ||
+    value.length > PRIVACY_CONTACT_EMAIL_MAX_CHARACTERS ||
+    value.trim() !== value ||
+    /[^\x21-\x7e]/u.test(value) ||
+    /[%?#&,]/u.test(value)
+  ) {
+    return null;
+  }
+  const separator = value.lastIndexOf("@");
+  if (separator <= 0 || separator !== value.indexOf("@")) {
+    return null;
+  }
+  const local = value.slice(0, separator);
+  const domain = value.slice(separator + 1);
+  const labels = domain.split(".");
+  if (
+    local.length > 64 ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/u.test(local) ||
+    local.includes("..") ||
+    labels.length < 2 ||
+    labels.some(
+      (label) =>
+        !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label)
+    )
+  ) {
+    return null;
+  }
+  return `${local}@${domain.toLowerCase()}`;
+}
+
 function stripSingleTrailingNewline(bytes: Uint8Array): Buffer {
   if (bytes.at(-1) !== 0x0a) {
     return Buffer.from(bytes);
@@ -182,14 +219,10 @@ function loadEnabledConfig(
   const publicOrigin = parseOrigin(required(env, "HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN"), {
     allowLoopbackHttp: !productionLike
   });
-  const privacyContactEmail = required(
-    env,
-    "HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL"
-  ).toLowerCase();
-  if (
-    privacyContactEmail.length > PRIVACY_CONTACT_EMAIL_MAX_CHARACTERS ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(privacyContactEmail)
-  ) {
+  const privacyContactEmail = normalizePrivacyContactEmail(
+    env.HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL
+  );
+  if (privacyContactEmail === null) {
     throw new DemoConfigurationError();
   }
 
@@ -220,8 +253,8 @@ function loadEnabledConfig(
   if (!isValidMetricsBearer(metricsBearer)) {
     throw new DemoConfigurationError();
   }
-  if (redisCaPath !== undefined && readSecretBytes(redisCaPath).byteLength === 0) {
-    throw new DemoConfigurationError();
+  if (redisCaPath !== undefined) {
+    validateRedisCertificateAuthority(readSecretBytes(redisCaPath));
   }
 
   return {
@@ -237,6 +270,18 @@ function loadEnabledConfig(
     ...(redisCaPath === undefined ? {} : { redisCaPath }),
     metricsBearerFile
   };
+}
+
+function validateRedisCertificateAuthority(bytes: Uint8Array): void {
+  try {
+    const certificate = new X509Certificate(Buffer.from(bytes));
+    if (!certificate.ca) {
+      throw new Error("Redis trust certificate is not a CA.");
+    }
+    createSecureContext({ ca: Buffer.from(bytes) });
+  } catch {
+    throw new DemoConfigurationError();
+  }
 }
 
 function validateWebhookUrl(value: string, allowedOrigin: string): void {

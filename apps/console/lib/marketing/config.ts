@@ -1,5 +1,6 @@
 import {
   isDemoRequestIntakeEnabled,
+  normalizePrivacyContactEmail,
   type EnvironmentSource
 } from "../demo-request/config";
 
@@ -78,34 +79,5 @@ export function resolveMarketingOrigin(
 }
 
 export function safeContactEmail(value: string | undefined): string | null {
-  if (
-    value === undefined ||
-    value === "" ||
-    value.length > 254 ||
-    value.trim() !== value ||
-    /[^\x21-\x7e]/u.test(value) ||
-    /[%?#&,]/u.test(value)
-  ) {
-    return null;
-  }
-  const separator = value.lastIndexOf("@");
-  if (separator <= 0 || separator !== value.indexOf("@")) {
-    return null;
-  }
-  const local = value.slice(0, separator);
-  const domain = value.slice(separator + 1);
-  const labels = domain.split(".");
-  if (
-    local.length > 64 ||
-    !/^[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/u.test(local) ||
-    local.includes("..") ||
-    labels.length < 2 ||
-    labels.some(
-      (label) =>
-        !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label)
-    )
-  ) {
-    return null;
-  }
-  return `${local}@${domain.toLowerCase()}`;
+  return normalizePrivacyContactEmail(value);
 }

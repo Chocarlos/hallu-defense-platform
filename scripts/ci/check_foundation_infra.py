@@ -114,6 +114,7 @@ REQUIRED_WORKFLOW_FILES = (
 CI_REQUIRED_MARKERS = (
     "backend:",
     "typescript:",
+    "browserstack-marketing:",
     "runs-on: ubuntu-24.04",
     "permissions:\n  contents: read",
     "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2",
@@ -355,14 +356,16 @@ def _validate_ci(
     for marker in CI_REQUIRED_MARKERS:
         if marker not in ci_workflow_text:
             errors.append(f".github/workflows/ci.yml missing marker: {marker}")
-    if ci_workflow_text.count("runs-on: ubuntu-24.04") != 2:
-        errors.append("ci.yml must pin both jobs to ubuntu-24.04")
+    if ci_workflow_text.count("runs-on: ubuntu-24.04") != 3:
+        errors.append("ci.yml must pin all three jobs to ubuntu-24.04")
     if "ubuntu-latest" in ci_workflow_text:
         errors.append("ci.yml must not use the floating ubuntu-latest runner")
     if "npm install" in ci_workflow_text:
         errors.append("ci.yml must use npm ci instead of mutating dependency resolution")
-    if ci_workflow_text.count("timeout-minutes:") != 2:
+    if ci_workflow_text.count("timeout-minutes:") != 3:
         errors.append("ci.yml must bound every job with timeout-minutes")
+    if ci_workflow_text.count("npm ci") != 2:
+        errors.append(".github/workflows/ci.yml missing marker: npm ci per Node job")
     if "pip install --upgrade" in ci_workflow_text or "pip install -e" in ci_workflow_text:
         errors.append("ci.yml must install Python only from the exact hashed locks")
     if ci_workflow_text.count("--omit") != 1 or "npm audit --omit=dev --audit-level=high" not in ci_workflow_text:

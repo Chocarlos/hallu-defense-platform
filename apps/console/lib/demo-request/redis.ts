@@ -9,22 +9,28 @@ const EMAIL_WINDOW_MILLISECONDS = 3_600_000;
 const IDEMPOTENCY_TTL_MILLISECONDS = 86_400_000;
 const RESERVATION_LEASE_MILLISECONDS = 15_000;
 const REDIS_COMMAND_TIMEOUT_MILLISECONDS = 1_000;
-const KEY_PREFIX = "hallu-defense:demo-request:v1";
+const KEY_PREFIX = "hallu-defense:{demo-request-v1}";
 
-export const RESERVE_SCRIPT = `
+export const GLOBAL_LIMIT_SCRIPT = `
 local global_count = redis.call('INCR', KEYS[1])
 if global_count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
-if global_count > tonumber(ARGV[1]) then return {'rate_global', ''} end
+if global_count > tonumber(ARGV[1]) then return 'rate_global' end
+return 'allowed'
+`.trim();
 
+export const RESERVE_SCRIPT = `
 local redis_time = redis.call('TIME')
 local now_milliseconds = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
-local state = redis.call('HMGET', KEYS[3], 'status', 'request_id', 'lease_until', 'payload_digest')
-if redis.call('EXISTS', KEYS[3]) == 1 then
-  if not state[1] or not state[2] or not state[4] or state[4] ~= ARGV[9] then
+local state = redis.call('HMGET', KEYS[2], 'status', 'request_id', 'lease_until', 'payload_digest')
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  if not state[1] or not state[2] or not state[4] or state[4] ~= ARGV[7] then
     return {'conflict', ''}
   end
   if state[1] == 'completed' then
     return {'duplicate', state[2]}
+  end
+  if state[1] == 'dispatching' then
+    return {'pending', state[2]}
   end
   local lease_until = tonumber(state[3] or '0')
   if state[1] == 'processing' and lease_until > now_milliseconds then
@@ -33,31 +39,40 @@ if redis.call('EXISTS', KEYS[3]) == 1 then
   if state[1] ~= 'processing' and state[1] ~= 'retryable' then
     return {'invalid', ''}
   end
-  redis.call('HSET', KEYS[3],
+  redis.call('HSET', KEYS[2],
     'status', 'processing',
     'request_id', state[2],
-    'lease_token', ARGV[6],
-    'lease_until', now_milliseconds + tonumber(ARGV[7]))
-  redis.call('PEXPIRE', KEYS[3], ARGV[5])
+    'lease_token', ARGV[4],
+    'lease_until', now_milliseconds + tonumber(ARGV[5]))
+  redis.call('PEXPIRE', KEYS[2], ARGV[3])
   return {'reserved', state[2]}
 end
 
-local email_count = redis.call('INCR', KEYS[2])
-if email_count == 1 then redis.call('PEXPIRE', KEYS[2], ARGV[4]) end
-if email_count > tonumber(ARGV[3]) then return {'rate_email', ''} end
+local email_count = redis.call('INCR', KEYS[1])
+if email_count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+if email_count > tonumber(ARGV[1]) then return {'rate_email', ''} end
 
-redis.call('HSET', KEYS[3],
+redis.call('HSET', KEYS[2],
   'status', 'processing',
-  'request_id', ARGV[8],
-  'payload_digest', ARGV[9],
-  'lease_token', ARGV[6],
-  'lease_until', now_milliseconds + tonumber(ARGV[7]))
-redis.call('PEXPIRE', KEYS[3], ARGV[5])
-return {'reserved', ARGV[8]}
+  'request_id', ARGV[6],
+  'payload_digest', ARGV[7],
+  'lease_token', ARGV[4],
+  'lease_until', now_milliseconds + tonumber(ARGV[5]))
+redis.call('PEXPIRE', KEYS[2], ARGV[3])
+return {'reserved', ARGV[6]}
+`.trim();
+
+export const BEGIN_DELIVERY_SCRIPT = `
+if redis.call('HGET', KEYS[1], 'status') ~= 'processing' then return 0 end
+if redis.call('HGET', KEYS[1], 'lease_token') ~= ARGV[1] then return 0 end
+redis.call('HSET', KEYS[1], 'status', 'dispatching')
+redis.call('HDEL', KEYS[1], 'lease_until')
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
 `.trim();
 
 export const FINALIZE_SCRIPT = `
-if redis.call('HGET', KEYS[1], 'status') ~= 'processing' then return 0 end
+if redis.call('HGET', KEYS[1], 'status') ~= 'dispatching' then return 0 end
 if redis.call('HGET', KEYS[1], 'lease_token') ~= ARGV[1] then return 0 end
 redis.call('HSET', KEYS[1], 'status', 'completed')
 redis.call('HDEL', KEYS[1], 'lease_token', 'lease_until')
@@ -66,7 +81,8 @@ return 1
 `.trim();
 
 export const RELEASE_SCRIPT = `
-if redis.call('HGET', KEYS[1], 'status') ~= 'processing' then return 0 end
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'processing' and status ~= 'dispatching' then return 0 end
 if redis.call('HGET', KEYS[1], 'lease_token') ~= ARGV[1] then return 0 end
 redis.call('HSET', KEYS[1], 'status', 'retryable')
 redis.call('HDEL', KEYS[1], 'lease_token', 'lease_until')
@@ -79,8 +95,9 @@ export type ReservationStatus =
   | "duplicate"
   | "pending"
   | "conflict"
-  | "rate_global"
   | "rate_email";
+
+export type GlobalLimitStatus = "allowed" | "rate_global";
 
 export interface DemoReservation {
   readonly status: ReservationStatus;
@@ -96,7 +113,9 @@ export interface DemoReservationInput {
 }
 
 export interface DemoStore {
+  consumeGlobal(): Promise<GlobalLimitStatus>;
   reserve(input: DemoReservationInput): Promise<DemoReservation>;
+  beginDelivery(submissionIdDigest: string, leaseToken: string): Promise<boolean>;
   finalize(submissionIdDigest: string, leaseToken: string): Promise<boolean>;
   release(submissionIdDigest: string, leaseToken: string): Promise<boolean>;
 }
@@ -132,6 +151,23 @@ export class RedisDemoStore implements DemoStore {
     }
   }
 
+  async consumeGlobal(): Promise<GlobalLimitStatus> {
+    const result = decodeRedisString(
+      await this.command([
+        "EVAL",
+        GLOBAL_LIMIT_SCRIPT,
+        "1",
+        `${KEY_PREFIX}:global`,
+        String(GLOBAL_LIMIT),
+        String(GLOBAL_WINDOW_MILLISECONDS)
+      ])
+    );
+    if (result !== "allowed" && result !== "rate_global") {
+      throw new DemoStoreUnavailableError();
+    }
+    return result;
+  }
+
   async reserve(input: DemoReservationInput): Promise<DemoReservation> {
     assertCanonicalDigest(input.emailDigest, "Email");
     assertCanonicalDigest(input.payloadDigest, "Payload");
@@ -142,12 +178,9 @@ export class RedisDemoStore implements DemoStore {
     const result = await this.command([
       "EVAL",
       RESERVE_SCRIPT,
-      "3",
-      `${KEY_PREFIX}:global`,
+      "2",
       `${KEY_PREFIX}:email:${input.emailDigest}`,
       idempotencyKey,
-      String(GLOBAL_LIMIT),
-      String(GLOBAL_WINDOW_MILLISECONDS),
       String(EMAIL_LIMIT),
       String(EMAIL_WINDOW_MILLISECONDS),
       String(IDEMPOTENCY_TTL_MILLISECONDS),
@@ -157,6 +190,21 @@ export class RedisDemoStore implements DemoStore {
       input.payloadDigest
     ]);
     return parseReservation(result);
+  }
+
+  async beginDelivery(
+    submissionIdDigest: string,
+    leaseToken: string
+  ): Promise<boolean> {
+    const result = await this.command([
+      "EVAL",
+      BEGIN_DELIVERY_SCRIPT,
+      "1",
+      idempotencyRedisKey(submissionIdDigest),
+      leaseToken,
+      String(IDEMPOTENCY_TTL_MILLISECONDS)
+    ]);
+    return parseCasResult(result);
   }
 
   async finalize(submissionIdDigest: string, leaseToken: string): Promise<boolean> {
@@ -237,7 +285,7 @@ function parseReservation(value: unknown): DemoReservation {
   if (!isReservationStatus(status)) {
     throw new DemoStoreUnavailableError();
   }
-  if (status === "conflict" || status === "rate_global" || status === "rate_email") {
+  if (status === "conflict" || status === "rate_email") {
     if (requestId !== "") {
       throw new DemoStoreUnavailableError();
     }
@@ -275,7 +323,6 @@ function isReservationStatus(value: string): value is ReservationStatus {
     "duplicate",
     "pending",
     "conflict",
-    "rate_global",
     "rate_email"
   ].includes(value);
 }

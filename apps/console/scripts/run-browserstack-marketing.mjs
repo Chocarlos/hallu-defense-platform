@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Agent as HttpsAgent } from "node:https";
 import process from "node:process";
 
@@ -11,6 +11,9 @@ const PLAYWRIGHT_ENDPOINT = "wss://cdp.browserstack.com/playwright";
 const SAFE_EMAIL = "browserstack-smoke@example.invalid";
 const DEFAULT_BUILD_NAME = "hallu-defense-marketing";
 const EXPECTED_HEADLINE = "La confianza no se asume. Se demuestra.";
+const EXPECTED_FORM_SUCCESS = "Solicitud recibida.";
+const PUBLIC_REQUEST_ID_PATTERN = /\bdr_[A-Za-z0-9_-]{24}\b/u;
+const LIVE_SMOKE_NONCE = randomBytes(6).toString("hex");
 
 const CATALOG_TIMEOUT_MS = 20_000;
 const REMOTE_CONNECT_TIMEOUT_MS = 60_000;
@@ -152,6 +155,7 @@ async function runRemoteMatrix() {
       {
         event: "browserstack-marketing-matrix",
         source: CATALOG_URL,
+        formSmoke: runtime.liveFormEnabled ? "isolated-webhook-stub" : "non-submitting",
         playwright: playwrightMatrix.map(({ requirement, entry }) => ({
           requirement: requirement.key,
           capabilityBrowser: requirement.capabilityBrowser,
@@ -243,7 +247,9 @@ function readRuntimeConfiguration(environment) {
     baseURL,
     buildName,
     local,
-    localIdentifier
+    localIdentifier,
+    liveFormEnabled,
+    webhookStub
   });
 }
 
@@ -656,22 +662,15 @@ async function runPlaywrightSmoke({ requirement, entry, runtime, credentials }) 
       throw new RunnerError(`Horizontal overflow detected on ${requirement.key}.`);
     }
 
-    const email = page.locator('input[type="email"]');
-    const emailCount = await safeRemoteStep(
-      () => email.count(),
-      `Playwright session ${requirement.key} could not inspect the email field.`
-    );
-    if (
-      emailCount > 0 &&
-      (await safeRemoteStep(
-        () => email.first().isEnabled(),
-        `Playwright session ${requirement.key} could not inspect the email field.`
-      ))
-    ) {
-      await safeRemoteStep(
-        () => email.first().fill(SAFE_EMAIL),
-        `Playwright session ${requirement.key} could not fill synthetic contact data.`
+    if (runtime.liveFormEnabled) {
+      assertIsolatedWebhookStub(runtime, requirement.key);
+      await completePlaywrightDemoRequest(
+        page,
+        requirement.key,
+        liveSmokeEmail("playwright", requirement.key)
       );
+    } else {
+      await inspectPlaywrightDemoFormWithoutSubmitting(page, requirement.key);
     }
 
     if (diagnostics.pageErrors.total > 0 || diagnostics.consoleErrors.total > 0) {
@@ -775,14 +774,19 @@ async function runSeleniumSmoke({ requirement, entry, runtime, credentials }) {
       throw new RunnerError(`Horizontal overflow detected for ${requirement.key}.`);
     }
 
-    const emails = await seleniumStep(
-      () => driver.findElements(By.css('input[type="email"]:not([disabled])')),
-      `Selenium session ${requirement.key} could not inspect the email field.`
-    );
-    if (emails.length > 0) {
-      await seleniumStep(
-        () => emails[0].sendKeys(SAFE_EMAIL),
-        `Selenium session ${requirement.key} could not fill synthetic contact data.`
+    if (runtime.liveFormEnabled) {
+      assertIsolatedWebhookStub(runtime, requirement.key);
+      await completeSeleniumDemoRequest(
+        driver,
+        seleniumStep,
+        requirement.key,
+        liveSmokeEmail("selenium", requirement.key)
+      );
+    } else {
+      await inspectSeleniumDemoFormWithoutSubmitting(
+        driver,
+        seleniumStep,
+        requirement.key
       );
     }
     await setSeleniumSessionStatus(
@@ -823,6 +827,242 @@ async function runSeleniumSmoke({ requirement, entry, runtime, credentials }) {
       httpAgent.destroy();
     }
   }
+}
+
+function assertIsolatedWebhookStub(runtime, requirementKey) {
+  if (!runtime.webhookStub) {
+    throw new ConfigurationError(
+      `Enabled form smoke ${requirementKey} is not bound to an isolated webhook stub.`
+    );
+  }
+}
+
+async function inspectPlaywrightDemoFormWithoutSubmitting(page, requirementKey) {
+  const email = page.locator('input[type="email"]');
+  const emailCount = await safeRemoteStep(
+    () => email.count(),
+    `Playwright session ${requirementKey} could not inspect the email field.`
+  );
+  if (
+    emailCount > 0 &&
+    (await safeRemoteStep(
+      () => email.first().isEnabled(),
+      `Playwright session ${requirementKey} could not inspect the email field.`
+    ))
+  ) {
+    await safeRemoteStep(
+      () => email.first().fill(SAFE_EMAIL),
+      `Playwright session ${requirementKey} could not fill synthetic contact data.`
+    );
+  }
+}
+
+async function completePlaywrightDemoRequest(page, requirementKey, email) {
+  await safeRemoteStep(
+    () => page.locator('[data-demo-form-hydrated="true"]').waitFor({ state: "visible" }),
+    `Playwright session ${requirementKey} did not hydrate the enabled form.`
+  );
+  await safeRemoteStep(
+    () => page.locator("#demo-email").fill(email),
+    `Playwright session ${requirementKey} could not fill synthetic contact data.`
+  );
+  await safeRemoteStep(
+    () => page.getByRole("button", { name: "Continuar", exact: true }).click(),
+    `Playwright session ${requirementKey} could not continue the enabled form.`
+  );
+  await safeRemoteStep(
+    () => page.locator("#demo-consent").check(),
+    `Playwright session ${requirementKey} could not grant synthetic consent.`
+  );
+
+  const responsePromise = page.waitForResponse(
+    (response) => {
+      try {
+        return (
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === "/demo-request"
+        );
+      } catch {
+        return false;
+      }
+    },
+    { timeout: ASSERTION_TIMEOUT_MS }
+  );
+  const [response] = await safeRemoteStep(
+    () =>
+      Promise.all([
+        responsePromise,
+        page.getByRole("button", { name: "Solicitar demo", exact: true }).click()
+      ]),
+    `Playwright session ${requirementKey} did not complete the enabled form.`
+  );
+  if (response.status() !== 202) {
+    throw new RunnerError(
+      `Enabled form smoke returned HTTP ${response.status()} on ${requirementKey}.`
+    );
+  }
+
+  const success = page.getByRole("status").filter({ hasText: EXPECTED_FORM_SUCCESS });
+  await safeRemoteStep(
+    () => success.waitFor({ state: "visible" }),
+    `Playwright session ${requirementKey} did not render the 202 success state.`
+  );
+  const successText = await safeRemoteStep(
+    () => success.textContent(),
+    `Playwright session ${requirementKey} could not inspect the 202 success state.`
+  );
+  assertSuccessfulFormText(successText, requirementKey);
+}
+
+async function inspectSeleniumDemoFormWithoutSubmitting(
+  driver,
+  seleniumStep,
+  requirementKey
+) {
+  const emails = await seleniumStep(
+    () => driver.findElements(By.css('input[type="email"]:not([disabled])')),
+    `Selenium session ${requirementKey} could not inspect the email field.`
+  );
+  if (emails.length > 0) {
+    await seleniumStep(
+      () => emails[0].sendKeys(SAFE_EMAIL),
+      `Selenium session ${requirementKey} could not fill synthetic contact data.`
+    );
+  }
+}
+
+async function completeSeleniumDemoRequest(
+  driver,
+  seleniumStep,
+  requirementKey,
+  emailAddress
+) {
+  await seleniumStep(
+    () =>
+      driver.wait(async () => {
+        const hydrated = await driver.findElements(
+          By.css('[data-demo-form-hydrated="true"]')
+        );
+        return hydrated.length === 1;
+      }, ASSERTION_TIMEOUT_MS),
+    `Selenium session ${requirementKey} did not hydrate the enabled form.`
+  );
+
+  const email = await seleniumStep(
+    () => driver.findElement(By.css("#demo-email")),
+    `Selenium session ${requirementKey} could not find the enabled email field.`
+  );
+  await seleniumStep(
+    () => email.sendKeys(emailAddress),
+    `Selenium session ${requirementKey} could not fill synthetic contact data.`
+  );
+  const continueButton = await seleniumStep(
+    () => driver.findElement(By.css('form button[type="submit"]')),
+    `Selenium session ${requirementKey} could not find the continue button.`
+  );
+  await seleniumStep(
+    () => continueButton.click(),
+    `Selenium session ${requirementKey} could not continue the enabled form.`
+  );
+
+  const consent = await seleniumStep(
+    () =>
+      driver.wait(async () => {
+        const matches = await driver.findElements(By.css("#demo-consent"));
+        return matches[0] ?? false;
+      }, ASSERTION_TIMEOUT_MS),
+    `Selenium session ${requirementKey} could not find the consent control.`
+  );
+  await seleniumStep(
+    () => driver.executeScript("arguments[0].scrollIntoView({block: 'center'});", consent),
+    `Selenium session ${requirementKey} could not reveal the consent control.`
+  );
+  await seleniumStep(
+    () => consent.click(),
+    `Selenium session ${requirementKey} could not grant synthetic consent.`
+  );
+  const consentGranted = await seleniumStep(
+    () => consent.isSelected(),
+    `Selenium session ${requirementKey} could not verify synthetic consent.`
+  );
+  if (!consentGranted) {
+    throw new RunnerError(
+      `Selenium session ${requirementKey} did not retain synthetic consent.`
+    );
+  }
+
+  await seleniumStep(
+    () =>
+      driver.executeScript(`
+        window.__halluDefenseBrowserStackDemoStatus = null;
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+          const response = await originalFetch(...args);
+          const input = args[0];
+          const rawUrl = typeof input === "string" ? input : input?.url;
+          if (typeof rawUrl === "string" && new URL(rawUrl, window.location.href).pathname === "/demo-request") {
+            window.__halluDefenseBrowserStackDemoStatus = response.status;
+          }
+          return response;
+        };
+      `),
+    `Selenium session ${requirementKey} could not install the response-status probe.`
+  );
+  const submitButton = await seleniumStep(
+    () => driver.findElement(By.css('form button[type="submit"]')),
+    `Selenium session ${requirementKey} could not find the submit button.`
+  );
+  await seleniumStep(
+    () => submitButton.click(),
+    `Selenium session ${requirementKey} could not submit the enabled form.`
+  );
+
+  const successText = await seleniumStep(
+    () =>
+      driver.wait(async () => {
+        const statuses = await driver.findElements(By.css('[role="status"]'));
+        for (const status of statuses) {
+          const text = await status.getText();
+          if (text.includes(EXPECTED_FORM_SUCCESS)) return text;
+        }
+        return false;
+      }, ASSERTION_TIMEOUT_MS),
+    `Selenium session ${requirementKey} did not render the 202 success state.`
+  );
+  const responseStatus = await seleniumStep(
+    () =>
+      driver.executeScript(
+        "return window.__halluDefenseBrowserStackDemoStatus;"
+      ),
+    `Selenium session ${requirementKey} could not inspect the form response status.`
+  );
+  if (responseStatus !== 202) {
+    throw new RunnerError(
+      `Enabled form smoke returned HTTP ${String(responseStatus)} for ${requirementKey}.`
+    );
+  }
+  assertSuccessfulFormText(successText, requirementKey);
+}
+
+function assertSuccessfulFormText(value, requirementKey) {
+  if (
+    typeof value !== "string" ||
+    !value.includes(EXPECTED_FORM_SUCCESS) ||
+    !PUBLIC_REQUEST_ID_PATTERN.test(value)
+  ) {
+    throw new RunnerError(
+      `Enabled form smoke ${requirementKey} rendered an invalid 202 success state.`
+    );
+  }
+}
+
+function liveSmokeEmail(runner, requirementKey) {
+  const safeRequirementKey = requirementKey.toLowerCase().replace(/[^a-z0-9-]+/gu, "-");
+  const localPart = `browserstack-smoke-${LIVE_SMOKE_NONCE}-${runner}-${safeRequirementKey}`;
+  if (!/^[a-z0-9-]+$/u.test(localPart) || localPart.length > 64) {
+    throw new ConfigurationError("BrowserStack live smoke email could not be generated safely.");
+  }
+  return `${localPart}@example.invalid`;
 }
 
 async function buildSeleniumDriver(capabilities, requirementKey) {
@@ -1194,6 +1434,40 @@ function validateStaticContract() {
   assertConfiguration(
     validatedBaseUrl("http://localhost:3000/", true).protocol === "http:",
     "Local HTTP URL must be accepted only for BrowserStack Local."
+  );
+  const disabledFormRuntime = readRuntimeConfiguration({
+    BROWSERSTACK_BASE_URL: "https://staging.example.invalid/"
+  });
+  assertConfiguration(
+    disabledFormRuntime.liveFormEnabled === false &&
+      disabledFormRuntime.webhookStub === false,
+    "The default BrowserStack smoke must remain non-submitting."
+  );
+  const enabledFormRuntime = readRuntimeConfiguration({
+    BROWSERSTACK_BASE_URL: "https://staging.example.invalid/",
+    HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED: "true",
+    BROWSERSTACK_WEBHOOK_STUB: "true"
+  });
+  assertConfiguration(
+    enabledFormRuntime.liveFormEnabled === true && enabledFormRuntime.webhookStub === true,
+    "Enabled form and webhook-stub flags must survive runtime parsing."
+  );
+  const liveEmails = [
+    ...currentRequirements.map(({ key }) => liveSmokeEmail("playwright", key)),
+    ...minimumRequirements.map(({ key }) => liveSmokeEmail("selenium", key))
+  ];
+  assertConfiguration(
+    new Set(liveEmails).size === liveEmails.length &&
+      liveEmails.every((email) => email.endsWith("@example.invalid")),
+    "Enabled form smoke emails must be unique and reserved for testing."
+  );
+  expectConfigurationError(
+    () =>
+      readRuntimeConfiguration({
+        BROWSERSTACK_BASE_URL: "https://staging.example.invalid/",
+        HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED: "true"
+      }),
+    "Enabled form without webhook stub"
   );
 
   const safeSession = parseSessionDetails(

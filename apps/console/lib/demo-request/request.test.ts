@@ -106,6 +106,7 @@ describe("demo request boundary", () => {
     { email: "invalid@example" },
     { name: "x".repeat(101) },
     { company: "x".repeat(121) },
+    { website: undefined },
     { unexpected: "field" }
   ])("returns 422 semantics for an invalid schema: %j", async (override) => {
     await expect(readAndNormalizeDemoRequest(validRequest(override))).rejects.toMatchObject({

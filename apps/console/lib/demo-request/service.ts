@@ -29,6 +29,8 @@ import {
 import { readAndNormalizeDemoRequest, validateDemoRequestSource } from "./request";
 import { deliverDemoWebhook, DemoWebhookError } from "./webhook";
 
+const MINIMUM_PUBLIC_RESPONSE_MILLISECONDS = 300;
+
 export interface DemoRequestHandlerDependencies {
   readonly config?: DemoRuntimeConfig;
   readonly store?: DemoStore;
@@ -37,6 +39,9 @@ export interface DemoRequestHandlerDependencies {
   readonly now?: () => Date;
   readonly secretReader?: (path: string) => Uint8Array;
   readonly leaseToken?: () => string;
+  readonly monotonicNow?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly minimumResponseMilliseconds?: number;
 }
 
 export function createDemoRequestHandler(
@@ -50,30 +55,47 @@ export function createDemoRequestHandler(
   const now = dependencies.now ?? (() => new Date());
   const secretReader = dependencies.secretReader ?? readSecretBytes;
   const leaseToken = dependencies.leaseToken ?? createLeaseToken;
+  const monotonicNow = dependencies.monotonicNow ?? (() => performance.now());
+  const sleep = dependencies.sleep ?? delay;
+  const minimumResponseMilliseconds =
+    dependencies.minimumResponseMilliseconds ?? MINIMUM_PUBLIC_RESPONSE_MILLISECONDS;
 
   return async (request: Request): Promise<Response> => {
-    if (!config.enabled || store === undefined) {
-      metrics.recordDemoResult("unavailable");
-      return errorResponse(503, "Demo requests are unavailable.");
-    }
+    const startedAt = monotonicNow();
+    let response: Response;
     try {
-      return await processEnabledRequest(request, {
-        config,
-        store,
-        metrics,
-        fetchImpl,
-        now,
-        secretReader,
-        leaseToken
-      });
+      if (!config.enabled || store === undefined) {
+        metrics.recordDemoResult("unavailable");
+        response = errorResponse(503, "Demo requests are unavailable.");
+      } else {
+        response = await processEnabledRequest(request, {
+          config,
+          store,
+          metrics,
+          fetchImpl,
+          now,
+          secretReader,
+          leaseToken
+        });
+      }
     } catch (error) {
       if (error instanceof DemoRequestError) {
         metrics.recordDemoResult(error.outcome);
-        return errorResponse(error.status, error.publicMessage, error.retryAfterSeconds);
+        response = errorResponse(
+          error.status,
+          error.publicMessage,
+          error.retryAfterSeconds
+        );
+      } else {
+        metrics.recordDemoResult("unavailable");
+        response = errorResponse(503, "Demo requests are unavailable.");
       }
-      metrics.recordDemoResult("unavailable");
-      return errorResponse(503, "Demo requests are unavailable.");
     }
+    const remaining = minimumResponseMilliseconds - (monotonicNow() - startedAt);
+    if (remaining > 0) {
+      await sleep(remaining);
+    }
+    return response;
   };
 }
 
@@ -92,6 +114,10 @@ async function processEnabledRequest(
   dependencies: EnabledDependencies
 ): Promise<Response> {
   validateDemoRequestSource(request, dependencies.config.publicOrigin);
+  const globalStatus = await consumeGlobal(dependencies.store);
+  if (globalStatus === "rate_global") {
+    throw new DemoRequestError(429, "Too many requests.", "rate_limited", 60);
+  }
   const demoRequest = await readAndNormalizeDemoRequest(request);
   const hmacSecret = dependencies.secretReader(
     dependencies.config.webhookHmacSecretFile
@@ -100,11 +126,6 @@ async function processEnabledRequest(
     unavailable();
   }
   const requestId = deriveDemoRequestId(hmacSecret, demoRequest.submissionId);
-
-  if (demoRequest.honeypot) {
-    dependencies.metrics.recordDemoResult("accepted");
-    return acceptedResponse(requestId);
-  }
 
   const submissionIdDigest = createHash("sha256")
     .update(demoRequest.submissionId, "ascii")
@@ -116,9 +137,6 @@ async function processEnabledRequest(
     requestId,
     leaseToken: dependencies.leaseToken(),
   });
-  if (reservation.status === "rate_global") {
-    throw new DemoRequestError(429, "Too many requests.", "rate_limited", 60);
-  }
   if (reservation.status === "rate_email") {
     throw new DemoRequestError(429, "Too many requests.", "rate_limited", 3_600);
   }
@@ -135,38 +153,63 @@ async function processEnabledRequest(
 
   const reservedRequestId = requiredReservationRequestId(reservation);
   const currentLeaseToken = reservation.leaseToken;
-  try {
-    const delivered = await deliverDemoWebhook({
-      webhookUrl: dependencies.config.webhookUrl,
-      hmacSecret,
-      request: demoRequest,
-      requestId: reservedRequestId,
-      now: dependencies.now(),
-      fetchImpl: dependencies.fetchImpl,
-      parentSignal: request.signal
-    });
-    dependencies.metrics.recordWebhook(delivered.outcome, delivered.durationSeconds);
-  } catch (error) {
-    if (error instanceof DemoWebhookError) {
-      dependencies.metrics.recordWebhook(error.outcome, error.durationSeconds);
-    }
-    await dependencies.store
-      .release(submissionIdDigest, currentLeaseToken)
-      .catch(() => false);
+  if (!(await beginDelivery(dependencies.store, submissionIdDigest, currentLeaseToken))) {
     unavailable();
   }
+  if (!demoRequest.honeypot) {
+    try {
+      const delivered = await deliverDemoWebhook({
+        webhookUrl: dependencies.config.webhookUrl,
+        hmacSecret,
+        request: demoRequest,
+        requestId: reservedRequestId,
+        now: dependencies.now(),
+        fetchImpl: dependencies.fetchImpl,
+        parentSignal: request.signal
+      });
+      dependencies.metrics.recordWebhook(delivered.outcome, delivered.durationSeconds);
+    } catch (error) {
+      if (error instanceof DemoWebhookError) {
+        dependencies.metrics.recordWebhook(error.outcome, error.durationSeconds);
+      }
+      await dependencies.store
+        .release(submissionIdDigest, currentLeaseToken)
+        .catch(() => false);
+      unavailable();
+    }
+  }
 
-  let finalized: boolean;
+  // Once dispatch begins, Redis retains a 24-hour `dispatching` guard. If the
+  // final CAS acknowledgement is lost after a successful webhook, returning
+  // the accepted response prevents a client retry while the guard prevents a
+  // second delivery. Explicit webhook failures are released above.
+  await dependencies.store
+    .finalize(submissionIdDigest, currentLeaseToken)
+    .catch(() => false);
+  dependencies.metrics.recordDemoResult("accepted");
+  return acceptedResponse(reservedRequestId);
+}
+
+async function consumeGlobal(
+  store: DemoStore
+): Promise<Awaited<ReturnType<DemoStore["consumeGlobal"]>>> {
   try {
-    finalized = await dependencies.store.finalize(submissionIdDigest, currentLeaseToken);
+    return await store.consumeGlobal();
   } catch {
     unavailable();
   }
-  if (!finalized) {
+}
+
+async function beginDelivery(
+  store: DemoStore,
+  submissionIdDigest: string,
+  leaseToken: string
+): Promise<boolean> {
+  try {
+    return await store.beginDelivery(submissionIdDigest, leaseToken);
+  } catch {
     unavailable();
   }
-  dependencies.metrics.recordDemoResult("accepted");
-  return acceptedResponse(reservedRequestId);
 }
 
 async function reserve(
@@ -220,4 +263,8 @@ function jsonResponse(
 
 function unavailable(): never {
   throw new DemoRequestError(503, "Demo requests are unavailable.", "unavailable");
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
