@@ -12,7 +12,21 @@ El repositorio contiene el plano de verificación FastAPI, contratos públicos s
 
 ## Estado del proyecto
 
-La plataforma está implementada y cubierta por validación local, CI y pruebas live controladas. La campaña integral más reciente dejó verdes los gates secuenciales de lint, tipos, tests, build, seguridad, contratos y evaluaciones; la evidencia exacta y sus límites están en el [ledger de aceptación QA](docs/qa/2026-07-13-mass-qa-acceptance.md).
+La aceptación integral más reciente corresponde exclusivamente al commit
+`3bb45a548e4288934937f9397ce89710c53e7504` y a los runs identificados en el
+[ledger de aceptación QA](docs/qa/2026-07-13-mass-qa-acceptance.md). No debe
+extrapolarse a cambios posteriores.
+
+El checkpoint WIP `fb111c1e15c87e40006844d62e37616a84ab796f` añade la
+landing bilingüe, las rutas de privacidad, la captación de demo y sus gates de
+compatibilidad. Su auditoría actual conserva los tres requisitos nuevos por
+debajo de aceptación:
+
+| Requisito | Estado | Evidencia y bloqueo actual |
+| --- | --- | --- |
+| TS-011 | `implemented` | Rutas ES/EN, metadata, social card y pruebas unitarias existen; el gate Playwright está rojo por el tour con teclado, hay overflow horizontal reproducible a 320 px y faltan revisión manual y presupuestos LCP/INP/CLS. |
+| SEC-020 | `implemented` | El intake está desactivado por defecto y tiene validación, Redis/webhook y tests con dobles; faltan ejecución real Redis/CRM, contrato público versionado y cierre de divergencias de configuración, honeypot e idempotencia downstream. |
+| CI-033 | `implemented` | Se recolectan 90 casos y la configuración BrowserStack valida; la ejecución local terminó con 25 passed, 2 skipped y 63 failed, y no hubo ejecución BrowserStack por ausencia de credenciales. |
 
 Esto no equivale a certificar cualquier despliegue como listo para producción: cada entorno debe completar sus propios checks de infraestructura, identidad, secretos, restauración y carga. En particular, el smoke de recuperación del worker de ingesta tras crash/restart permanece rechazado hasta resolver su causa raíz; no se presenta como evidencia aceptada.
 

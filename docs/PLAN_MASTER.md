@@ -156,3 +156,30 @@ Goal: promote the enterprise capabilities from static-config / local-JSONL evide
 - B7 Production profile + backup/restore + K8s: docker-compose.prod.yml overlay (fail-closed), Vault + MinIO wired, real retention/backup/restore drill + tenant deletion, Helm chart validated on kind. New FND-013/014, SEC-015/016, CI-028/029.
 
 Confirmed scope decisions (Carlos): sandbox = Docker container per run; live OIDC = local Keycloak in Compose; production = Compose prod-profile first, K8s/Helm (kind) last; calibration = versioned thresholds that block CI + reproducible confidence curves. Execution: each batch delegated as a bounded assignment; diff inspected and revalidated from master before integration. Detailed assignments: docs/development/fable-enterprise-batch-2.md.
+
+### M7 Public Launch Layer (WIP)
+
+Goal: add a bilingual public entry point and a privacy-preserving demo-request
+boundary without extending earlier QA acceptance to unverified launch code. The
+implementation checkpoint is `fb111c1e15c87e40006844d62e37616a84ab796f`;
+promotion requires current evidence from the exact candidate commit.
+
+- TS-011: bilingual landing and privacy routes at `/`, `/en`, `/privacy`, and
+  `/en/privacy`; preserved authenticated Console at `/console`; localized
+  metadata/social card; responsive, keyboard, accessibility, reduced-motion,
+  and Web Vitals evidence at the required browser/viewport matrix.
+- SEC-020: disabled-by-default `/demo-request` intake with a versioned public
+  request/response contract, minimization and consent, no sensitive logging,
+  Redis-backed rate limiting/idempotency, generic failures, honeypot behavior,
+  webhook delivery, metrics, and fail-closed production configuration.
+- CI-033: deterministic Vitest and Playwright launch gates, BrowserStack
+  compatibility execution, production build checks, and CI wiring that cannot
+  turn missing credentials or unexecuted browsers into compatibility evidence.
+
+Audit decision for this checkpoint: TS-011, SEC-020, and CI-033 are
+`implemented`, not `accepted`. The current marketing Playwright run is red,
+BrowserStack and real Redis/webhook execution are absent, 320 px horizontal
+overflow and the keyboard-tour regression remain reproducible, no LCP/INP/CLS
+budget is enforced, and the Kind Console smoke still probes `/` instead of
+exercising an authenticated `/console` flow. The traceability matrix and
+worklog record the exact evidence and remaining blockers.
