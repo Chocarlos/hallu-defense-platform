@@ -688,6 +688,57 @@ def test_local_runtime_config_rejects_keycloak_realm_missing_role(
         validate_local_runtime_config(**_current_inputs())
 
 
+@pytest.mark.parametrize(
+    "post_logout_redirects",
+    [
+        "http://localhost:3000##http://127.0.0.1:3000",
+        (
+            "http://localhost:3000##http://127.0.0.1:3000##"
+            "http://localhost:3100##http://127.0.0.1:*"
+        ),
+    ],
+)
+def test_local_runtime_config_requires_exact_keycloak_post_logout_roots(
+    post_logout_redirects: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    realm = json.loads(KEYCLOAK_REALM_PATH.read_text(encoding="utf-8"))
+    console_client = next(
+        client
+        for client in realm["clients"]
+        if client["clientId"] == "hallu-defense-console"
+    )
+    console_client["attributes"][
+        "post.logout.redirect.uris"
+    ] = post_logout_redirects
+    mutated = tmp_path / "realm-hallu-defense.json"
+    mutated.write_text(json.dumps(realm), encoding="utf-8")
+    monkeypatch.setattr(check_local_runtime_config, "KEYCLOAK_REALM_PATH", mutated)
+
+    with pytest.raises(LocalRuntimeConfigError, match="post-logout root URIs"):
+        validate_local_runtime_config(**_current_inputs())
+
+
+def test_local_runtime_config_rejects_keycloak_wildcard_web_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    realm = json.loads(KEYCLOAK_REALM_PATH.read_text(encoding="utf-8"))
+    console_client = next(
+        client
+        for client in realm["clients"]
+        if client["clientId"] == "hallu-defense-console"
+    )
+    console_client["webOrigins"] = ["http://localhost:3000", "*"]
+    mutated = tmp_path / "realm-hallu-defense.json"
+    mutated.write_text(json.dumps(realm), encoding="utf-8")
+    monkeypatch.setattr(check_local_runtime_config, "KEYCLOAK_REALM_PATH", mutated)
+
+    with pytest.raises(LocalRuntimeConfigError, match="exact local web origins"):
+        validate_local_runtime_config(**_current_inputs())
+
+
 def test_local_runtime_config_rejects_keycloak_realm_with_embedded_pem(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -232,6 +232,11 @@ services:
     restart: "no"
 
   console:
+    # File-backed demo credentials are root:10001/0440 on the Linux host. The
+    # image still runs as its non-root node user; only this supplemental group
+    # grants read access to the five mounted files.
+    group_add:
+      - "10001"
     environment: !override
       HALLU_DEFENSE_ENV: production
       HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: ${HALLU_DEFENSE_DEMO_REQUESTS_ENABLED:-false}

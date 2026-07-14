@@ -29,6 +29,135 @@
     "kindDependencies",
     "secrets"
   ],
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["demoRequests"],
+        "properties": {
+          "global": {},
+          "nameOverride": {},
+          "fullnameOverride": {},
+          "oidc": {},
+          "cors": {},
+          "outboundHttps": {},
+          "ragIndex": {},
+          "opensearch": {},
+          "postgres": {},
+          "vault": {},
+          "approvalCommitment": {},
+          "provider": {},
+          "otel": {},
+          "rateLimit": {},
+          "networkPolicy": {},
+          "sandbox": {},
+          "api": {},
+          "console": {},
+          "demoRequests": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled"],
+            "properties": {
+              "enabled": { "const": true },
+              "privacyContactEmail": {},
+              "webhookAllowedOrigin": {},
+              "redisCaPath": {}
+            }
+          },
+          "worker": {},
+          "migrations": {},
+          "kindDependencies": {},
+          "secrets": {}
+        }
+      },
+      "then": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "global": {},
+          "nameOverride": {},
+          "fullnameOverride": {},
+          "oidc": {},
+          "cors": {},
+          "outboundHttps": {},
+          "ragIndex": {},
+          "opensearch": {},
+          "postgres": {},
+          "vault": {},
+          "approvalCommitment": {},
+          "provider": {},
+          "otel": {},
+          "rateLimit": {},
+          "demoRequests": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {},
+              "privacyContactEmail": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 254,
+                "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
+              },
+              "webhookAllowedOrigin": { "$ref": "#/definitions/httpsOrigin" },
+              "redisCaPath": {}
+            }
+          },
+          "networkPolicy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kubernetesApi": {},
+              "ingress": {},
+              "api": {},
+              "console": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "external": {},
+                  "demoWebhook": { "minItems": 1 },
+                  "demoRedis": { "minItems": 1 }
+                }
+              },
+              "worker": {},
+              "migrations": {}
+            }
+          },
+          "sandbox": {},
+          "api": {},
+          "console": {},
+          "worker": {},
+          "migrations": {},
+          "kindDependencies": {},
+          "secrets": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "runtime": {},
+              "bootstrap": {},
+              "migrations": {},
+              "kindPostgres": {},
+              "kindVault": {},
+              "kindRedisTls": {},
+              "demo": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": { "$ref": "#/definitions/dnsSubdomain" },
+                  "webhookUrlKey": {},
+                  "webhookHmacSecretKey": {},
+                  "redisUrlKey": {},
+                  "redisCaKey": {},
+                  "metricsBearerKey": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "global": {
       "type": "object",
@@ -434,7 +563,7 @@
       "required": ["enabled", "privacyContactEmail", "webhookAllowedOrigin", "redisCaPath"],
       "properties": {
         "enabled": { "type": "boolean", "default": false },
-        "privacyContactEmail": { "type": "string", "maxLength": 320 },
+        "privacyContactEmail": { "type": "string", "maxLength": 254 },
         "webhookAllowedOrigin": { "$ref": "#/definitions/httpsOriginOrEmpty" },
         "redisCaPath": {
           "type": "string",
@@ -672,6 +801,12 @@
       "type": "string",
       "maxLength": 253,
       "pattern": "^(?:|[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*)$"
+    },
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$"
     },
     "secretKey": {
       "type": "string",
