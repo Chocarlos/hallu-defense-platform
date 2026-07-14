@@ -153,4 +153,3 @@ function writeSecureSecret(path: string, contents: string | Uint8Array): void {
   writeFileSync(path, contents);
   chmodSync(path, 0o440);
 }
-

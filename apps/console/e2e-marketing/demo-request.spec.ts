@@ -2,6 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 const PUBLIC_REQUEST_ID = "dr_AbCdEfGhIjKlMnOpQrStUvWx";
 
+test.beforeEach(async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+});
+
 const locales = [
   {
     path: "/",
@@ -56,19 +60,19 @@ for (const locale of locales) {
     ).toBeFocused();
 
     const consent = page.getByLabel(locale.consentLabel);
-    await page.getByRole("button", { name: locale.submitButton }).click();
+    await submitForm(page, locale.submitButton);
     expect(await consent.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(
       true
     );
     expect(payloads).toHaveLength(0);
-    await expect(page.getByRole("link", { name: /privacidad|privacy/iu })).toHaveAttribute(
+    await expect(page.locator('label[for="demo-consent"] a')).toHaveAttribute(
       "href",
       locale.privacyPath
     );
 
-    await consent.check();
-    await page.getByRole("button", { name: locale.submitButton }).click();
-    const status = page.getByRole("status");
+    await checkConsent(consent);
+    await submitForm(page, locale.submitButton);
+    const status = page.getByRole("status").filter({ hasText: locale.success });
     await expect(status).toContainText(locale.success);
     await expect(status).toBeFocused();
     await expect(status).toContainText(PUBLIC_REQUEST_ID);
@@ -82,9 +86,9 @@ for (const locale of locales) {
   }) => {
     const payloads = await interceptDemoRequests(page, [422, 503, 202]);
     await advanceToStepTwo(page, locale);
-    await page.getByLabel(locale.consentLabel).check();
+    await checkConsent(page.getByLabel(locale.consentLabel));
 
-    await page.getByRole("button", { name: locale.submitButton }).click();
+    await submitForm(page, locale.submitButton);
     await expect(page.getByRole("alert").filter({ hasText: locale.invalid })).toBeVisible();
     const retryButton = page.getByRole("button", { name: locale.retryButton });
     await expect(retryButton).toBeFocused();
@@ -92,7 +96,7 @@ for (const locale of locales) {
     await expect(page.getByRole("alert").filter({ hasText: locale.unavailable })).toBeVisible();
     await expect(retryButton).toBeFocused();
     await retryButton.click();
-    const status = page.getByRole("status");
+    const status = page.getByRole("status").filter({ hasText: locale.success });
     await expect(status).toContainText(locale.success);
     await expect(status).toBeFocused();
     await expect(status).toContainText(PUBLIC_REQUEST_ID);
@@ -110,9 +114,9 @@ for (const locale of locales) {
       { request_id: "synthetic-browser-response" }
     ]);
     await advanceToStepTwo(page, locale);
-    await page.getByLabel(locale.consentLabel).check();
+    await checkConsent(page.getByLabel(locale.consentLabel));
 
-    await page.getByRole("button", { name: locale.submitButton }).click();
+    await submitForm(page, locale.submitButton);
     await expect(page.getByRole("alert").filter({ hasText: locale.generic })).toBeVisible();
     await expect(page.getByText(locale.success, { exact: false })).toHaveCount(0);
     const retryButton = page.getByRole("button", { name: locale.retryButton });
@@ -128,11 +132,26 @@ async function advanceToStepTwo(
   locale: (typeof locales)[number]
 ): Promise<void> {
   await page.goto(locale.path);
+  await expect(page.locator('[data-demo-form-hydrated="true"]')).toBeVisible();
   await page.getByLabel(locale.emailLabel).fill(`${locale.locale}-e2e@example.invalid`);
   await page.getByRole("button", { name: locale.continueButton }).click();
   await expect(
     page.getByRole("heading", { level: 3, name: locale.stepTwo })
   ).toBeFocused();
+}
+
+async function checkConsent(consent: ReturnType<Page["getByLabel"]>): Promise<void> {
+  await consent.focus();
+  await expect(consent).toBeFocused();
+  await consent.press("Space");
+  await expect(consent).toBeChecked();
+}
+
+async function submitForm(page: Page, name: string): Promise<void> {
+  const submit = page.getByRole("button", { name });
+  await submit.focus();
+  await expect(submit).toBeFocused();
+  await submit.press("Enter");
 }
 
 async function interceptDemoRequests(

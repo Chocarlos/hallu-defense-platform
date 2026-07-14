@@ -101,4 +101,3 @@ function assertWebhookOutcome(value: string): asserts value is WebhookOutcome {
     throw new TypeError("Unsupported demo webhook metric outcome.");
   }
 }
-

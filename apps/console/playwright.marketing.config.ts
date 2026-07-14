@@ -61,6 +61,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
+  ...(mode === "form" ? { workers: 3 } : {}),
   reporter: [["list"]],
   timeout: 45_000,
   expect: { timeout: 10_000 },
