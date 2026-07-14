@@ -10,6 +10,7 @@ import {
   createAuthorizationTransaction,
   createConsoleSession,
   getConsoleSession,
+  getConsoleSessionForConfig,
   resetAuthStoreForTests
 } from "./auth-store";
 import { resetOidcProviderCacheForTests } from "./oidc";
@@ -45,7 +46,7 @@ describe("OIDC callback Strict-session rotation", () => {
 
   it("revokes the transaction-bound prior session when the callback has no session cookie", async () => {
     const config = loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
-    const prior = oldSession();
+    const prior = oldSession(config);
     const transaction = createAuthorizationTransaction(config, {
       priorSessionId: prior.sessionId
     });
@@ -62,9 +63,10 @@ describe("OIDC callback Strict-session rotation", () => {
     const replacement = getConsoleSession(replacementId);
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(`${consoleOrigin}/`);
+    expect(response.headers.get("location")).toBe(`${consoleOrigin}/console`);
     expect(getConsoleSession(prior.sessionId)).toBeNull();
     expect(replacement).not.toBeNull();
+    expect(getConsoleSessionForConfig(replacementId, config)).toBe(replacement);
     expect(replacement?.accessToken).toMatch(/^eyJ/u);
     expect(replacementId).not.toBe(prior.sessionId);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -78,7 +80,7 @@ describe("OIDC callback Strict-session rotation", () => {
     const replay = await callback(callbackRequest(transaction.state, issuer));
     expect(replay.status).toBe(303);
     expect(replay.headers.get("location")).toBe(
-      `${consoleOrigin}/?auth_error=login_failed`
+      `${consoleOrigin}/console?auth_error=login_failed`
     );
     expect(getConsoleSession(replacementId)).toBe(replacement);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -86,7 +88,7 @@ describe("OIDC callback Strict-session rotation", () => {
 
   it("keeps the prior session when callback validation fails", async () => {
     const config = loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
-    const prior = oldSession();
+    const prior = oldSession(config);
     const transaction = createAuthorizationTransaction(config, {
       priorSessionId: prior.sessionId
     });
@@ -99,7 +101,7 @@ describe("OIDC callback Strict-session rotation", () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      `${consoleOrigin}/?auth_error=login_failed`
+      `${consoleOrigin}/console?auth_error=login_failed`
     );
     expect(response.cookies.get(sessionCookieName)).toBeUndefined();
     expect(getConsoleSession(prior.sessionId)).toBe(prior);
@@ -110,8 +112,8 @@ describe("OIDC callback Strict-session rotation", () => {
   });
 });
 
-function oldSession() {
-  return createConsoleSession({
+function oldSession(config: ConsoleOidcRuntimeConfig) {
+  return createConsoleSession(config, {
     accessToken: "old-stolen-session-token".padEnd(64, "x"),
     expiresAtSeconds: Math.floor(Date.now() / 1000) + 600,
     tenantId: "tenant-a",

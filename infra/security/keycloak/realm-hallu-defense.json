@@ -189,7 +189,8 @@
       ],
       "attributes": {
         "access.token.lifespan": "300",
-        "pkce.code.challenge.method": "S256"
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000##http://127.0.0.1:3000##http://localhost:3100##http://127.0.0.1:3100"
       },
       "protocolMappers": [
         {

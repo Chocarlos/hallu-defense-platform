@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function openConsole(page: Page): Promise<void> {
-  await page.goto("/");
+  await page.goto("/console");
   await expect(page.getByRole("heading", { name: "Consola DevEx" })).toBeVisible();
 }
 

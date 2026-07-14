@@ -21,6 +21,7 @@ VALUES_SCHEMA_PATH = CHART_DIR / "values.schema.json"
 KIND_VALUES_PATH = CHART_DIR / "values-kind.yaml"
 TEMPLATES_DIR = CHART_DIR / "templates"
 DEPLOYMENT_DOC_PATH = ROOT / "docs" / "deployment" / "kubernetes-helm.md"
+MARKETING_DOC_PATH = ROOT / "docs" / "deployment" / "marketing-launch.md"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
@@ -107,6 +108,10 @@ PRODUCTION_WORKLOAD_DIGESTS = {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ),
 }
+DEMO_PRIVACY_EMAIL_254 = (
+    "a" * 64 + "@" + "b" * 63 + "." + "c" * 63 + "." + "d" * 61
+)
+DEMO_PRIVACY_EMAIL_255 = DEMO_PRIVACY_EMAIL_254 + "d"
 
 
 class HelmChartConfigError(ValueError):
@@ -153,8 +158,15 @@ def validate_helm_chart(
     worker_runtime_text: str,
     readiness_text: str,
     kind_vault_bootstrap_text: str,
+    marketing_doc_text: str | None = None,
 ) -> None:
     errors: list[str] = []
+    if marketing_doc_text is None:
+        try:
+            marketing_doc_text = MARKETING_DOC_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"marketing deployment runbook could not be read: {exc}")
+            marketing_doc_text = ""
     _validate_chart_metadata(chart, errors)
     _validate_values_schema(values, kind_values, errors)
     _validate_values(values, kind_values, errors)
@@ -182,6 +194,7 @@ def validate_helm_chart(
         live_workflow_text=live_workflow_text,
         live_smoke_text=live_smoke_text,
         prod_compose_text=prod_compose_text,
+        marketing_doc_text=marketing_doc_text,
         errors=errors,
     )
     if errors:
@@ -217,6 +230,116 @@ def run_helm_template_if_available(
         label="helm template",
     )
     _validate_rendered_manifest(template_result.stdout)
+    demo_args = _demo_helm_value_args()
+    _run_helm_command(
+        [executable, "lint", str(CHART_DIR), *value_args, *demo_args],
+        label="enabled demo helm lint",
+    )
+    enabled_demo_result = _run_helm_command(
+        [
+            executable,
+            "template",
+            "hallu-defense",
+            str(CHART_DIR),
+            *value_args,
+            *demo_args,
+        ],
+        label="enabled demo helm template",
+    )
+    _validate_rendered_demo_intake_manifest(
+        enabled_demo_result.stdout,
+        profile="enabled kind demo",
+        webhook_cidr="192.0.2.30/32",
+        webhook_port=443,
+        redis_cidr="192.0.2.31/32",
+        redis_port=6380,
+    )
+    _run_helm_command(
+        [
+            executable,
+            "template",
+            "hallu-defense",
+            str(CHART_DIR),
+            *value_args,
+            *_demo_helm_value_args(privacy_contact=DEMO_PRIVACY_EMAIL_254),
+        ],
+        label="enabled demo 254-character privacy contact",
+    )
+    for label, overrides, expected_error in (
+        (
+            "enabled demo missing privacy contact",
+            ("--set-string", "demoRequests.privacyContactEmail="),
+            "/demoRequests/privacyContactEmail",
+        ),
+        (
+            "enabled demo missing webhook origin",
+            ("--set-string", "demoRequests.webhookAllowedOrigin="),
+            "/demoRequests/webhookAllowedOrigin",
+        ),
+        (
+            "enabled demo missing Secret name",
+            ("--set-string", "secrets.demo.name="),
+            "/secrets/demo/name",
+        ),
+        (
+            "enabled demo wrong Redis CA path",
+            (
+                "--set-string",
+                "demoRequests.redisCaPath=/run/hallu-defense/demo/redis-url",
+            ),
+            "/demoRequests/redisCaPath",
+        ),
+        (
+            "enabled demo excessive privacy contact",
+            (
+                "--set-string",
+                f"demoRequests.privacyContactEmail={DEMO_PRIVACY_EMAIL_255}",
+            ),
+            "/demoRequests/privacyContactEmail",
+        ),
+        (
+            "enabled demo duplicate Secret key",
+            ("--set-string", "secrets.demo.metricsBearerKey=redis-ca.pem"),
+            "secrets.demo data keys must be distinct",
+        ),
+    ):
+        _run_helm_command_expect_failure(
+            [
+                executable,
+                "template",
+                "hallu-defense",
+                str(CHART_DIR),
+                *value_args,
+                *demo_args,
+                *overrides,
+            ],
+            label=label,
+            expected_error=expected_error,
+        )
+    for label, args, expected_error in (
+        (
+            "enabled demo missing webhook egress",
+            _demo_helm_value_args(include_webhook_egress=False),
+            "/networkPolicy/console/demoWebhook",
+        ),
+        (
+            "enabled demo missing Redis egress",
+            _demo_helm_value_args(include_redis_egress=False),
+            "/networkPolicy/console/demoRedis",
+        ),
+    ):
+        _run_helm_command_expect_failure(
+            [
+                executable,
+                "template",
+                "hallu-defense",
+                str(CHART_DIR),
+                *value_args,
+                *args,
+            ],
+            label=label,
+            expected_error=expected_error,
+        )
     for cleanup_grace_seconds in (15, 20, 30):
         _run_helm_command(
             [
@@ -372,6 +495,25 @@ def run_helm_template_if_available(
         label="production helm template",
     )
     _validate_rendered_production_sandbox(production_result.stdout)
+    production_demo_result = _run_helm_command(
+        [
+            executable,
+            "template",
+            "hallu-defense",
+            str(CHART_DIR),
+            *production_args,
+            *demo_args,
+        ],
+        label="enabled production demo helm template",
+    )
+    _validate_rendered_demo_intake_manifest(
+        production_demo_result.stdout,
+        profile="enabled production demo",
+        webhook_cidr="192.0.2.30/32",
+        webhook_port=443,
+        redis_cidr="192.0.2.31/32",
+        redis_port=6380,
+    )
     for label, args, expected_error in (
         (
             "production sandbox missing existing claim",
@@ -613,7 +755,12 @@ def run_helm_template_if_available(
     return {
         "status": "passed",
         "command": HELM_TEMPLATE_COMMAND,
-        "checks": ["helm lint", "helm template", "negative values"],
+        "checks": [
+            "helm lint",
+            "disabled Helm templates",
+            "enabled demo Helm templates",
+            "negative values",
+        ],
     }
 
 
@@ -747,6 +894,47 @@ def _production_helm_value_args(
         args.extend(("--set", "networkPolicy.migrations.external[0].port=5432"))
     if include_console_egress:
         args.extend(("--set", "networkPolicy.console.external[0].port=443"))
+    return args
+
+
+def _demo_helm_value_args(
+    *,
+    include_webhook_egress: bool = True,
+    include_redis_egress: bool = True,
+    privacy_contact: str = "privacy@example.invalid",
+) -> list[str]:
+    args = [
+        "--set",
+        "demoRequests.enabled=true",
+        "--set-string",
+        f"demoRequests.privacyContactEmail={privacy_contact}",
+        "--set-string",
+        "demoRequests.webhookAllowedOrigin=https://crm.kind.invalid",
+        "--set-string",
+        "secrets.demo.name=hallu-defense-demo-v1",
+    ]
+    if include_webhook_egress:
+        args.extend(
+            [
+                "--set-string",
+                "networkPolicy.console.demoWebhook[0].name=demo-webhook",
+                "--set-string",
+                "networkPolicy.console.demoWebhook[0].cidr=192.0.2.30/32",
+                "--set",
+                "networkPolicy.console.demoWebhook[0].port=443",
+            ]
+        )
+    if include_redis_egress:
+        args.extend(
+            [
+                "--set-string",
+                "networkPolicy.console.demoRedis[0].name=demo-redis",
+                "--set-string",
+                "networkPolicy.console.demoRedis[0].cidr=192.0.2.31/32",
+                "--set",
+                "networkPolicy.console.demoRedis[0].port=6380",
+            ]
+        )
     return args
 
 
@@ -919,6 +1107,91 @@ def _validate_values_schema(
                 f"{cleanup_grace_seconds}"
             )
 
+    demo_schema = _mapping(
+        properties.get("demoRequests"),
+        "values.schema.properties.demoRequests",
+        errors,
+    )
+    demo_properties = _mapping(
+        demo_schema.get("properties"),
+        "values.schema.properties.demoRequests.properties",
+        errors,
+    )
+    if demo_properties.get("enabled") != {
+        "type": "boolean",
+        "default": False,
+    }:
+        errors.append(
+            "values.schema.json demoRequests.enabled must be boolean and default false"
+        )
+
+    enabled_candidate = copy.deepcopy(merged_kind_values)
+    enabled_candidate["demoRequests"].update(
+        {
+            "enabled": True,
+            "privacyContactEmail": "privacy@example.invalid",
+            "webhookAllowedOrigin": "https://crm.kind.invalid",
+        }
+    )
+    enabled_candidate["networkPolicy"]["console"].update(
+        {
+            "demoWebhook": [
+                {"name": "demo-webhook", "cidr": "192.0.2.30/32", "port": 443}
+            ],
+            "demoRedis": [
+                {"name": "demo-redis", "cidr": "192.0.2.31/32", "port": 6380}
+            ],
+        }
+    )
+    enabled_candidate["secrets"]["demo"]["name"] = "hallu-defense-demo-v1"
+    enabled_errors = list(validator.iter_errors(enabled_candidate))
+    if enabled_errors:
+        errors.append(
+            "values.schema.json must accept the complete enabled demo profile: "
+            + "; ".join(item.message for item in enabled_errors[:3])
+        )
+    else:
+        for length, email, should_accept in (
+            (254, DEMO_PRIVACY_EMAIL_254, True),
+            (255, DEMO_PRIVACY_EMAIL_255, False),
+        ):
+            boundary_candidate = copy.deepcopy(enabled_candidate)
+            boundary_candidate["demoRequests"]["privacyContactEmail"] = email
+            boundary_errors = list(validator.iter_errors(boundary_candidate))
+            if len(email) != length:
+                errors.append(
+                    f"internal demo privacy email fixture must contain {length} characters"
+                )
+            elif should_accept and boundary_errors:
+                errors.append(
+                    "values.schema.json must accept enabled demo privacy email length 254"
+                )
+            elif not should_accept and not boundary_errors:
+                errors.append(
+                    "values.schema.json must reject enabled demo privacy email length 255"
+                )
+        invalid_enabled_cases = {
+            "privacy contact": ("demoRequests", "privacyContactEmail"),
+            "webhook origin": ("demoRequests", "webhookAllowedOrigin"),
+            "webhook egress": ("networkPolicy", "console", "demoWebhook"),
+            "Redis egress": ("networkPolicy", "console", "demoRedis"),
+            "demo Secret name": ("secrets", "demo", "name"),
+        }
+        for label, path in invalid_enabled_cases.items():
+            invalid_candidate = copy.deepcopy(enabled_candidate)
+            target: dict[str, object] = invalid_candidate
+            for segment in path[:-1]:
+                nested = target.get(segment)
+                if not isinstance(nested, dict):
+                    nested = {}
+                    target[segment] = nested
+                target = nested
+            target[path[-1]] = [] if path[-1].startswith("demo") else ""
+            if not list(validator.iter_errors(invalid_candidate)):
+                errors.append(
+                    "values.schema.json must reject enabled demo without " + label
+                )
+
 
 def _iter_schema_nodes(
     value: object,
@@ -958,6 +1231,55 @@ def _validate_values(
     global_values = _mapping(values.get("global"), "values.global", errors)
     if global_values.get("tmpSizeLimit") != "64Mi":
         errors.append("values.global.tmpSizeLimit must default to the bounded 64Mi")
+    demo_requests = _mapping(
+        values.get("demoRequests"), "values.demoRequests", errors
+    )
+    if dict(demo_requests) != {
+        "enabled": False,
+        "privacyContactEmail": "",
+        "webhookAllowedOrigin": "",
+        "redisCaPath": "/run/hallu-defense/demo/redis-ca.pem",
+    }:
+        errors.append(
+            "values.demoRequests must default disabled with empty public metadata and the exact Redis CA path"
+        )
+    demo_secrets = _mapping(
+        _mapping(values.get("secrets"), "values.secrets", errors).get("demo"),
+        "values.secrets.demo",
+        errors,
+    )
+    expected_demo_secrets = {
+        "name": "",
+        "webhookUrlKey": "webhook-url",
+        "webhookHmacSecretKey": "webhook-hmac-secret",
+        "redisUrlKey": "redis-url",
+        "redisCaKey": "redis-ca.pem",
+        "metricsBearerKey": "metrics-bearer",
+    }
+    if dict(demo_secrets) != expected_demo_secrets:
+        errors.append(
+            "values.secrets.demo must expose an empty name and exactly five distinct key selectors"
+        )
+    elif len(set(str(value) for key, value in demo_secrets.items() if key != "name")) != 5:
+        errors.append("values.secrets.demo data key selectors must be distinct")
+    base_network = _mapping(
+        values.get("networkPolicy"), "values.networkPolicy", errors
+    )
+    base_console_network = _mapping(
+        base_network.get("console"), "values.networkPolicy.console", errors
+    )
+    for path in ("demoWebhook", "demoRedis"):
+        if base_console_network.get(path) != []:
+            errors.append(
+                f"values.networkPolicy.console.{path} must default to an empty allowlist"
+            )
+    merged_kind_demo = _mapping(
+        _deep_merge(values, kind_values).get("demoRequests"),
+        "kind merged demoRequests",
+        errors,
+    )
+    if merged_kind_demo.get("enabled") is not False:
+        errors.append("values-kind.yaml must keep demoRequests.enabled=false by default")
     kind_dependencies = _mapping(
         values.get("kindDependencies"), "values.kindDependencies", errors
     )
@@ -2029,6 +2351,71 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
     ):
         if marker not in console_template:
             errors.append(f"Console production OIDC template missing `{marker}`")
+    for marker in (
+        "strategy:\n    type: Recreate",
+        'required "demoRequests.privacyContactEmail is required when intake is enabled"',
+        'required "demoRequests.webhookAllowedOrigin is required when intake is enabled"',
+        "(gt (len $privacyContact) 254)",
+        "valid email address of at most 254 characters",
+        "HALLU_DEFENSE_DEMO_REQUESTS_ENABLED",
+        "HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL",
+        "HALLU_DEFENSE_DEMO_WEBHOOK_URL_FILE",
+        "/run/hallu-defense/demo/webhook-url",
+        "HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE",
+        "/run/hallu-defense/demo/webhook-hmac-secret",
+        "HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN",
+        "HALLU_DEFENSE_DEMO_REDIS_URL_FILE",
+        "/run/hallu-defense/demo/redis-url",
+        "HALLU_DEFENSE_DEMO_REDIS_CA_PATH",
+        ".Values.demoRequests.redisCaPath",
+        "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE",
+        "/run/hallu-defense/demo/metrics-bearer",
+        "mountPath: /run/hallu-defense/demo",
+        "readOnly: true",
+        "secretName: {{ .Values.secrets.demo.name | quote }}",
+        "defaultMode: 0440",
+        "path: webhook-url",
+        "path: webhook-hmac-secret",
+        "path: redis-url",
+        "path: redis-ca.pem",
+        "path: metrics-bearer",
+    ):
+        if marker not in console_template:
+            errors.append(f"Console demo intake template missing `{marker}`")
+    if console_template.count("path: /console") != 2:
+        errors.append("Console liveness/readiness probes must both target /console")
+    if "path: /\n" in console_template:
+        errors.append("Console probes must never target the public root route")
+    if console_template.count("timeoutSeconds: 5") != 2:
+        errors.append("Console liveness/readiness probes must each time out in 5 seconds")
+    expected_demo_key_markers = (
+        "- key: {{ .Values.secrets.demo.webhookUrlKey | quote }}",
+        "- key: {{ .Values.secrets.demo.webhookHmacSecretKey | quote }}",
+        "- key: {{ .Values.secrets.demo.redisUrlKey | quote }}",
+        "- key: {{ .Values.secrets.demo.redisCaKey | quote }}",
+        "- key: {{ .Values.secrets.demo.metricsBearerKey | quote }}",
+    )
+    for marker in expected_demo_key_markers:
+        if console_template.count(marker) != 1:
+            errors.append(
+                f"Console demo Secret projection must reference `{marker}` exactly once"
+            )
+    helpers_template = templates["_helpers.tpl"]
+    for marker in ("runAsUser: 10001", "runAsGroup: 10001", "fsGroup: 10001"):
+        if marker not in helpers_template:
+            errors.append(
+                f"Helm POSIX reader contract for 0440 Secret projections missing `{marker}`"
+            )
+    network_template = templates["application-egress-network-policies.yaml"]
+    for marker in (
+        "networkPolicy.console.demoWebhook requires explicit webhook /32 or /128 peers",
+        "networkPolicy.console.demoRedis requires explicit Redis /32 or /128 peers",
+        '(dict "path" "networkPolicy.console.demoWebhook" "peers" .Values.networkPolicy.console.demoWebhook)',
+        '(dict "path" "networkPolicy.console.demoRedis" "peers" .Values.networkPolicy.console.demoRedis)',
+        "concat .Values.networkPolicy.console.demoWebhook .Values.networkPolicy.console.demoRedis",
+    ):
+        if marker not in network_template:
+            errors.append(f"Console demo egress template missing `{marker}`")
     for forbidden_marker in (
         "NEXT_PUBLIC_",
         "HALLU_DEFENSE_CONSOLE_ALLOW_",
@@ -2072,6 +2459,12 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "valid Kubernetes Secret data key",
         "distinct precreated Secret",
         "hasKey $seenNames $name",
+        "secrets.demo.name is required when demoRequests.enabled=true",
+        "secrets.demo.webhookUrlKey",
+        "secrets.demo.webhookHmacSecretKey",
+        "secrets.demo.redisUrlKey",
+        "secrets.demo.redisCaKey",
+        "secrets.demo.metricsBearerKey",
     ):
         if marker not in secrets_template:
             errors.append(f"Helm precreated-Secret boundary missing `{marker}`")
@@ -2956,6 +3349,7 @@ def _validate_supporting_files(
     live_workflow_text: str,
     live_smoke_text: str,
     prod_compose_text: str,
+    marketing_doc_text: str,
     errors: list[str],
 ) -> None:
     script = "scripts/ci/check_helm_chart.py"
@@ -2963,6 +3357,26 @@ def _validate_supporting_files(
         errors.append(
             "docker-compose.prod.yml must never enable the kind-only image exception"
         )
+    if 'fetch("http://127.0.0.1:3000/console"' not in live_smoke_text:
+        errors.append("kind/Helm smoke Console probe must target /console")
+    if 'fetch("http://127.0.0.1:3000/"' in live_smoke_text:
+        errors.append("kind/Helm smoke Console probe must not target the public root")
+    if 'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"' not in live_smoke_text:
+        errors.append(
+            "kind/Helm smoke Console probe must expect disabled demo intake"
+        )
+    for marker in (
+        "## Production activation runbook",
+        "five `0440` Secret projections",
+        "Redis TLS/CA validation",
+        "printable ASCII",
+        "high-entropy",
+        "## Abort criteria and rollback",
+        "external Secret is not versioned by Helm",
+        "strategy `Recreate`",
+    ):
+        if marker not in marketing_doc_text:
+            errors.append(f"marketing deployment runbook missing `{marker}`")
     for marker in (
         "infra/k8s/helm/hallu-defense",
         "API, console, and worker Deployments",
@@ -3460,6 +3874,7 @@ def _validate_rendered_console_env(
     }
     expected = {
         "HALLU_DEFENSE_ENV": "production",
+        "HALLU_DEFENSE_DEMO_REQUESTS_ENABLED": "false",
         "HALLU_DEFENSE_CONSOLE_AUTH_MODE": "oidc",
         "HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN": public_origin,
         "HALLU_DEFENSE_CONSOLE_API_ORIGIN": api_origin,
@@ -3483,6 +3898,214 @@ def _validate_rendered_console_env(
             or name.startswith("HALLU_DEFENSE_CONSOLE_LOCAL_")
         ):
             errors.append(f"{profile} contains forbidden environment variable {name}")
+
+
+def _validate_rendered_demo_intake_manifest(
+    rendered: str,
+    *,
+    profile: str,
+    webhook_cidr: str,
+    webhook_port: int,
+    redis_cidr: str,
+    redis_port: int,
+) -> None:
+    docs = [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, Mapping)]
+    errors: list[str] = []
+    if any(doc.get("kind") == "Secret" for doc in docs):
+        errors.append(f"{profile} must not render Secret objects")
+    console = next(
+        (
+            doc
+            for doc in docs
+            if doc.get("kind") == "Deployment"
+            and _mapping(doc.get("metadata"), f"{profile}.metadata", errors).get(
+                "name"
+            )
+            == "hallu-defense-console"
+        ),
+        None,
+    )
+    if console is None:
+        errors.append(f"{profile} missing Console Deployment")
+    else:
+        deployment_spec = _mapping(
+            console.get("spec"), f"{profile}.console.spec", errors
+        )
+        if deployment_spec.get("strategy") != {"type": "Recreate"}:
+            errors.append(f"{profile} Console must use strategy Recreate")
+        pod_spec = _rendered_pod_spec(console, f"{profile}.console", errors)
+        pod_security = _mapping(
+            pod_spec.get("securityContext"),
+            f"{profile}.console.podSecurityContext",
+            errors,
+        )
+        if (
+            pod_security.get("runAsUser") != 10001
+            or pod_security.get("runAsGroup") != 10001
+            or pod_security.get("fsGroup") != 10001
+        ):
+            errors.append(
+                f"{profile} Console POSIX identity must read group-mode 0440 projections"
+            )
+        containers = _mapping_sequence(
+            pod_spec.get("containers"), f"{profile}.console.containers", errors
+        )
+        if containers:
+            container = containers[0]
+            environment = _mapping_sequence(
+                container.get("env"), f"{profile}.console.env", errors
+            )
+            demo_environment = {
+                str(item.get("name")): item.get("value")
+                for item in environment
+                if str(item.get("name", "")).startswith("HALLU_DEFENSE_DEMO_")
+                or str(item.get("name", "")).startswith("HALLU_DEFENSE_PRIVACY_")
+                or str(item.get("name", "")).startswith(
+                    "HALLU_DEFENSE_CONSOLE_METRICS_BEARER"
+                )
+            }
+            expected_demo_environment = {
+                "HALLU_DEFENSE_DEMO_REQUESTS_ENABLED": "true",
+                "HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL": "privacy@example.invalid",
+                "HALLU_DEFENSE_DEMO_WEBHOOK_URL_FILE": (
+                    "/run/hallu-defense/demo/webhook-url"
+                ),
+                "HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE": (
+                    "/run/hallu-defense/demo/webhook-hmac-secret"
+                ),
+                "HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN": (
+                    "https://crm.kind.invalid"
+                ),
+                "HALLU_DEFENSE_DEMO_REDIS_URL_FILE": (
+                    "/run/hallu-defense/demo/redis-url"
+                ),
+                "HALLU_DEFENSE_DEMO_REDIS_CA_PATH": (
+                    "/run/hallu-defense/demo/redis-ca.pem"
+                ),
+                "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE": (
+                    "/run/hallu-defense/demo/metrics-bearer"
+                ),
+            }
+            if demo_environment != expected_demo_environment:
+                errors.append(
+                    f"{profile} Console demo environment must contain only the enabled flag, public metadata, and five file pointers"
+                )
+            for probe_name in ("livenessProbe", "readinessProbe"):
+                probe = _mapping(
+                    container.get(probe_name),
+                    f"{profile}.console.{probe_name}",
+                    errors,
+                )
+                http_get = _mapping(
+                    probe.get("httpGet"),
+                    f"{profile}.console.{probe_name}.httpGet",
+                    errors,
+                )
+                if http_get.get("path") != "/console":
+                    errors.append(
+                        f"{profile} Console {probe_name} must target /console"
+                    )
+                if probe.get("timeoutSeconds") != 5:
+                    errors.append(
+                        f"{profile} Console {probe_name} must set timeoutSeconds=5"
+                    )
+            volume_mounts = _mapping_sequence(
+                container.get("volumeMounts"),
+                f"{profile}.console.volumeMounts",
+                errors,
+            )
+            demo_mount = next(
+                (mount for mount in volume_mounts if mount.get("name") == "demo-secrets"),
+                None,
+            )
+            if demo_mount != {
+                "name": "demo-secrets",
+                "mountPath": "/run/hallu-defense/demo",
+                "readOnly": True,
+            }:
+                errors.append(
+                    f"{profile} Console must mount demo-secrets read-only at the exact path"
+                )
+        volumes = _mapping_sequence(
+            pod_spec.get("volumes"), f"{profile}.console.volumes", errors
+        )
+        demo_volume = next(
+            (volume for volume in volumes if volume.get("name") == "demo-secrets"),
+            None,
+        )
+        if demo_volume is None:
+            errors.append(f"{profile} Console missing demo-secrets volume")
+        else:
+            secret = _mapping(
+                demo_volume.get("secret"), f"{profile}.console.demoSecret", errors
+            )
+            expected_items = [
+                {"key": "webhook-url", "path": "webhook-url"},
+                {"key": "webhook-hmac-secret", "path": "webhook-hmac-secret"},
+                {"key": "redis-url", "path": "redis-url"},
+                {"key": "redis-ca.pem", "path": "redis-ca.pem"},
+                {"key": "metrics-bearer", "path": "metrics-bearer"},
+            ]
+            if secret != {
+                "secretName": "hallu-defense-demo-v1",
+                "defaultMode": 0o440,
+                "items": expected_items,
+            }:
+                errors.append(
+                    f"{profile} must project exactly five demo Secret files with mode 0440"
+                )
+
+    console_policy = next(
+        (
+            doc
+            for doc in docs
+            if doc.get("kind") == "NetworkPolicy"
+            and _mapping(doc.get("metadata"), f"{profile}.policy.metadata", errors).get(
+                "name"
+            )
+            == "hallu-defense-console-egress"
+        ),
+        None,
+    )
+    if console_policy is None:
+        errors.append(f"{profile} missing Console NetworkPolicy")
+    else:
+        policy_spec = _mapping(
+            console_policy.get("spec"), f"{profile}.policy.spec", errors
+        )
+        egress = _mapping_sequence(
+            policy_spec.get("egress"), f"{profile}.policy.egress", errors
+        )
+        ip_destinations: list[tuple[str, int]] = []
+        for rule in egress:
+            destinations = _mapping_sequence(
+                rule.get("to"), f"{profile}.policy.egress.to", errors
+            )
+            ports = _mapping_sequence(
+                rule.get("ports"), f"{profile}.policy.egress.ports", errors
+            )
+            for destination in destinations:
+                ip_block = destination.get("ipBlock")
+                if not isinstance(ip_block, Mapping):
+                    continue
+                cidr = ip_block.get("cidr")
+                for port in ports:
+                    if isinstance(cidr, str) and isinstance(port.get("port"), int):
+                        ip_destinations.append((cidr, int(port["port"])))
+        expected_ip_destinations = {
+            (webhook_cidr, webhook_port),
+            (redis_cidr, redis_port),
+        }
+        if "production" in profile:
+            expected_ip_destinations.add(("198.51.100.20/32", 443))
+        if len(ip_destinations) != len(expected_ip_destinations) or set(
+            ip_destinations
+        ) != expected_ip_destinations:
+            errors.append(
+                f"{profile} Console egress must contain only OIDC (production), webhook, and Redis host destinations"
+            )
+    if errors:
+        raise HelmChartConfigError("\n".join(errors))
 
 
 def _validate_rendered_postgres_credentials(
@@ -6021,6 +6644,7 @@ def main() -> None:
         worker_runtime_text=WORKER_RUNTIME_PATH.read_text(encoding="utf-8"),
         readiness_text=READINESS_PATH.read_text(encoding="utf-8"),
         kind_vault_bootstrap_text=KIND_VAULT_BOOTSTRAP_PATH.read_text(encoding="utf-8"),
+        marketing_doc_text=MARKETING_DOC_PATH.read_text(encoding="utf-8"),
     )
     template_result = run_helm_template_if_available()
     suffix = (

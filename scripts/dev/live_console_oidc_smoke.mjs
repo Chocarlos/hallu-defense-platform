@@ -239,7 +239,7 @@ try {
   }
   await page.goto(providerLogoutUrl.href, { waitUntil: "domcontentloaded" });
 
-  await page.goto(consoleOrigin, { waitUntil: "domcontentloaded" });
+  await page.goto(`${consoleOrigin}/console`, { waitUntil: "domcontentloaded" });
   await page
     .getByRole("heading", { name: "Autenticacion requerida" })
     .waitFor({ timeout: 15_000 });

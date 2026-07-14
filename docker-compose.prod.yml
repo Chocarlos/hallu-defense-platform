@@ -115,6 +115,19 @@ secrets:
     file: ${HALLU_DEFENSE_POSTGRES_DSN_FILE:?set the runtime PostgreSQL DSN file path}
   hallu_migrations_postgres_dsn:
     file: ${HALLU_DEFENSE_POSTGRES_MIGRATION_DSN_FILE:?set the migration PostgreSQL DSN file path}
+  # Empty /dev/null fallbacks let the production landing run with intake
+  # disabled. Enabling intake without real mounted values fails closed when the
+  # Next runtime validates these files.
+  hallu_demo_webhook_url:
+    file: ${HALLU_DEFENSE_DEMO_WEBHOOK_URL_HOST_PATH:-/dev/null}
+  hallu_demo_webhook_hmac_secret:
+    file: ${HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_HOST_PATH:-/dev/null}
+  hallu_demo_redis_url:
+    file: ${HALLU_DEFENSE_DEMO_REDIS_URL_HOST_PATH:-/dev/null}
+  hallu_demo_redis_ca:
+    file: ${HALLU_DEFENSE_DEMO_REDIS_CA_HOST_PATH:-/dev/null}
+  hallu_console_metrics_bearer:
+    file: ${HALLU_DEFENSE_CONSOLE_METRICS_BEARER_HOST_PATH:-/dev/null}
 
 services:
   api:
@@ -219,8 +232,21 @@ services:
     restart: "no"
 
   console:
+    # File-backed demo credentials are root:10001/0440 on the Linux host. The
+    # image still runs as its non-root node user; only this supplemental group
+    # grants read access to the five mounted files.
+    group_add:
+      - "10001"
     environment: !override
       HALLU_DEFENSE_ENV: production
+      HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: ${HALLU_DEFENSE_DEMO_REQUESTS_ENABLED:-false}
+      HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL: ${HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL:-}
+      HALLU_DEFENSE_DEMO_WEBHOOK_URL_FILE: /run/secrets/hallu_demo_webhook_url
+      HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE: /run/secrets/hallu_demo_webhook_hmac_secret
+      HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN: ${HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN:-}
+      HALLU_DEFENSE_DEMO_REDIS_URL_FILE: /run/secrets/hallu_demo_redis_url
+      HALLU_DEFENSE_DEMO_REDIS_CA_PATH: /run/secrets/hallu_demo_redis_ca
+      HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE: /run/secrets/hallu_console_metrics_bearer
       HALLU_DEFENSE_CONSOLE_AUTH_MODE: oidc
       HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: ${HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN:?set the canonical public HTTPS Console origin}
       HALLU_DEFENSE_CONSOLE_API_ORIGIN: ${HALLU_DEFENSE_CONSOLE_API_ORIGIN:?set the canonical public HTTPS API origin}
@@ -230,6 +256,17 @@ services:
       HALLU_DEFENSE_CONSOLE_OIDC_TENANT_CLAIM: tenant_id
       HALLU_DEFENSE_CONSOLE_OIDC_ROLES_CLAIM: roles
       HALLU_DEFENSE_CONSOLE_OIDC_REQUIRED_ROLES: verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator
+    secrets:
+      - source: hallu_demo_webhook_url
+        target: hallu_demo_webhook_url
+      - source: hallu_demo_webhook_hmac_secret
+        target: hallu_demo_webhook_hmac_secret
+      - source: hallu_demo_redis_url
+        target: hallu_demo_redis_url
+      - source: hallu_demo_redis_ca
+        target: hallu_demo_redis_ca
+      - source: hallu_console_metrics_bearer
+        target: hallu_console_metrics_bearer
     ports: !override
       - 127.0.0.1:${HALLU_DEFENSE_CONSOLE_PORT:-3000}:3000
     read_only: true

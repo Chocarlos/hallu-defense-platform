@@ -84,7 +84,7 @@ describe("Console authentication route hardening", () => {
 
     expect(first.status).toBe(303);
     expect(first.headers.get("location")).toBe(
-      "https://console.example.test/?auth_error=login_failed"
+      "https://console.example.test/console?auth_error=login_failed"
     );
     expect(first.headers.get("location")).not.toContain(firstTransaction.state);
     expect(first.headers.get("location")).not.toContain(code);
@@ -127,7 +127,8 @@ describe("Console authentication route hardening", () => {
   });
 
   it("deletes a failed login transaction without rotating its prior session", async () => {
-    const prior = createConsoleSession(tokenSet("prior-token"));
+    const config = loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
+    const prior = createConsoleSession(config, tokenSet("prior-token"));
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async () => {
@@ -165,7 +166,8 @@ describe("Console authentication route hardening", () => {
 
   it("captures the active prior session in the one-shot login transaction", async () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => jsonResponse(discoveryDocument())));
-    const prior = createConsoleSession({
+    const config = loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
+    const prior = createConsoleSession(config, {
       accessToken: "A".repeat(64),
       expiresAtSeconds: Math.floor(Date.now() / 1000) + 600,
       tenantId: "tenant-a",
@@ -198,7 +200,7 @@ describe("Console authentication route hardening", () => {
     });
     vi.stubGlobal("fetch", fetchImpl);
     const config = loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
-    const prior = createConsoleSession(tokenSet("prior-token"));
+    const prior = createConsoleSession(config, tokenSet("prior-token"));
 
     const pendingLogin = login(
       nextRequest("https://console.example.test/auth/login", {
@@ -212,6 +214,7 @@ describe("Console authentication route hardening", () => {
       priorSessionId: prior.sessionId
     });
     const winner = rotateConsoleSession(
+      config,
       consumeAuthorizationTransaction(competing.state, competing.state),
       tokenSet("winner-token")
     );
@@ -225,9 +228,9 @@ describe("Console authentication route hardening", () => {
     const stale = consumeAuthorizationTransaction(state, state);
 
     expect(stale.priorSessionId).toBe(prior.sessionId);
-    expect(() => rotateConsoleSession(stale, tokenSet("orphan-token"))).toThrow(
-      AuthorizationStateError
-    );
+    expect(() =>
+      rotateConsoleSession(config, stale, tokenSet("orphan-token"))
+    ).toThrow(AuthorizationStateError);
     expect(getConsoleSession(winner.sessionId)).toBe(winner);
     expect(authStoreCountsForTests()).toEqual({ transactions: 0, sessions: 1 });
   });

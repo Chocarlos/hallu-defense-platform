@@ -156,3 +156,37 @@ Goal: promote the enterprise capabilities from static-config / local-JSONL evide
 - B7 Production profile + backup/restore + K8s: docker-compose.prod.yml overlay (fail-closed), Vault + MinIO wired, real retention/backup/restore drill + tenant deletion, Helm chart validated on kind. New FND-013/014, SEC-015/016, CI-028/029.
 
 Confirmed scope decisions (Carlos): sandbox = Docker container per run; live OIDC = local Keycloak in Compose; production = Compose prod-profile first, K8s/Helm (kind) last; calibration = versioned thresholds that block CI + reproducible confidence curves. Execution: each batch delegated as a bounded assignment; diff inspected and revalidated from master before integration. Detailed assignments: docs/development/fable-enterprise-batch-2.md.
+
+### M7 Public Launch Layer (integrated candidate)
+
+Goal: add a bilingual public entry point and a privacy-preserving demo-request
+boundary without extending earlier QA acceptance to unverified launch code. Six
+independent fronts started at checkpoint
+`fb111c1e15c87e40006844d62e37616a84ab796f`; selective root integration and
+corrections produced code candidate
+`d6c15bda15dda7a5e901f913d1007fd04d3089c5` with current local evidence.
+
+- TS-011: bilingual landing and privacy routes at `/`, `/en`, `/privacy`, and
+  `/en/privacy`; preserved authenticated Console at `/console`; localized
+  metadata/social card; responsive, keyboard, accessibility, reduced-motion,
+  and Web Vitals evidence at the required browser/viewport matrix.
+- SEC-020: disabled-by-default `/demo-request` intake with a versioned public
+  request/response contract, minimization and consent, no sensitive logging,
+  Redis-backed rate limiting/idempotency, generic failures, honeypot behavior,
+  webhook delivery, metrics, and fail-closed production configuration.
+- CI-033: deterministic Vitest and Playwright launch gates, BrowserStack
+  compatibility execution, production build checks, and CI wiring that cannot
+  turn missing credentials or unexecuted browsers into compatibility evidence.
+
+Integration decision: TS-011, SEC-020, and CI-033 are `tested`, not `accepted`.
+The exact candidate passes the three-engine 320/768/1440 production matrix
+(148 passed, 68 deliberate skips), the enabled-form matrix (59 passed, 40
+deliberate skips), Console tests/lint/types/build, the global code/security
+gates, and a scratch-only real Redis 7.0.15 plus HTTPS webhook intake smoke.
+Browser inspection confirmed bilingual semantics, metadata, responsive layout,
+tour control, privacy boundaries, Console separation, zero browser errors and a
+1200x630 social image. Acceptance remains blocked on native browser-UI zoom,
+manual screen-reader/contrast review, real BrowserStack sessions at the stated
+minimums, deployment-specific Redis/CRM/ingress/secrets evidence, and legal
+approval of controller/contact/retention. Kind and current Trivy image execution
+also remain unavailable locally because Docker Desktop's daemon was not active.

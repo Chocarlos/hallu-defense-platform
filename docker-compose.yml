@@ -101,6 +101,10 @@ services:
       dockerfile: infra/docker/console.Dockerfile
     environment:
       HALLU_DEFENSE_ENV: local
+      # Lead intake is deliberately off in the committed local profile. The
+      # public landing and privacy pages still render without CRM/Redis secrets.
+      HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"
+      HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL: ""
       HALLU_DEFENSE_CONSOLE_AUTH_MODE: unsigned-local
       HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: http://localhost:3000
       HALLU_DEFENSE_CONSOLE_API_ORIGIN: http://localhost:8000
@@ -109,6 +113,20 @@ services:
       HALLU_DEFENSE_CONSOLE_LOCAL_TENANT_ID: tenant-a
       HALLU_DEFENSE_CONSOLE_LOCAL_SUBJECT_ID: console-reviewer
       HALLU_DEFENSE_CONSOLE_LOCAL_ROLES: verifier,approval_reviewer,policy_evaluator,sandbox_runner,tool_operator
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch("http://127.0.0.1:3000/console", { redirect: "manual",
+          signal: AbortSignal.timeout(5000) }).then(async (response) => {
+          await response.body?.cancel(); if (response.status !== 200)
+          process.exit(1); }).catch(() => process.exit(1));
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 30s
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
