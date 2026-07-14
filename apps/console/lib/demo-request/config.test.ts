@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rootCertificates } from "node:tls";
 
 import { describe, expect, it } from "vitest";
 
@@ -92,6 +93,14 @@ describe("demo runtime configuration", () => {
     expect(() => loadDemoRuntimeConfig(fixture.env)).toThrow(DemoConfigurationError);
   });
 
+  it("rejects a non-certificate Redis trust file during startup", () => {
+    const fixture = productionFixture();
+    writeSecureSecret(fixture.caFile, "synthetic-ca-certificate");
+
+    expect(() => loadDemoRuntimeConfig(fixture.env)).toThrow(DemoConfigurationError);
+    expect(isDemoRequestIntakeEnabled(fixture.env)).toBe(false);
+  });
+
   it("rejects unbounded, relative, permission-unsafe, and non-HTTP bearer files", () => {
     const fixture = productionFixture();
     writeSecureSecret(fixture.metricsFile, Buffer.alloc(32));
@@ -124,10 +133,11 @@ function productionFixture() {
     redisFile,
     "rediss://demo:secret@redis.example.test:6380/0\n"
   );
-  writeSecureSecret(caFile, "synthetic-ca-certificate");
+  writeSecureSecret(caFile, rootCertificates[0] ?? "");
   writeSecureSecret(metricsFile, `metrics-bearer-value-${"x".repeat(32)}\n`);
   return {
     redisFile,
+    caFile,
     metricsFile,
     env: {
       HALLU_DEFENSE_ENV: "production",

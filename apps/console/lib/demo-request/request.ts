@@ -123,7 +123,7 @@ export function normalizeDemoRequest(value: unknown): NormalizedDemoRequest {
   if (value.consent !== true || value.privacy_version !== DEMO_PRIVACY_VERSION) {
     invalidSchema();
   }
-  if (value.website !== undefined && typeof value.website !== "string") {
+  if (typeof value.website !== "string") {
     invalidSchema();
   }
 
@@ -136,7 +136,7 @@ export function normalizeDemoRequest(value: unknown): NormalizedDemoRequest {
     useCase,
     consent: true,
     privacyVersion: DEMO_PRIVACY_VERSION,
-    honeypot: typeof value.website === "string" && value.website.trim() !== ""
+    honeypot: value.website.trim() !== ""
   };
 }
 

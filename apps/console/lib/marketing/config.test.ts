@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rootCertificates } from "node:tls";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -117,6 +118,17 @@ describe("public marketing config", () => {
       expect(safeContactEmail(email)).toBeNull();
     }
   });
+
+  it("uses exactly the same legal-contact decision as the intake runtime", () => {
+    const env = {
+      ...productionFixture(),
+      HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL: "team%security@example.invalid"
+    };
+
+    expect(safeContactEmail(env.HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL)).toBeNull();
+    expect(demoRuntimeConfig.isDemoRequestIntakeEnabled(env)).toBe(false);
+    expect(loadMarketingPublicConfig(env).demoRequestsEnabled).toBe(false);
+  });
 });
 
 function productionFixture(): Readonly<Record<string, string>> {
@@ -134,7 +146,7 @@ function productionFixture(): Readonly<Record<string, string>> {
     "rediss://demo:secret@redis.example.test:6380/0\n",
     "utf8"
   );
-  writeFileSync(caFile, "synthetic-ca-certificate", "utf8");
+  writeFileSync(caFile, rootCertificates[0] ?? "", "utf8");
   writeFileSync(metricsFile, `metrics-bearer-${"x".repeat(32)}\n`, "utf8");
   return {
     HALLU_DEFENSE_ENV: "production",

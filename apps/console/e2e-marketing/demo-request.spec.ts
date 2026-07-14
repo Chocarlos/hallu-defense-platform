@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const PUBLIC_REQUEST_ID = "dr_AbCdEfGhIjKlMnOpQrStUvWx";
 
@@ -45,33 +45,67 @@ const locales = [
 
 for (const locale of locales) {
   test(`@form ${locale.locale} two-step form manages focus, consent, and 202`, async ({
-    page
+    page,
+    browserName
   }) => {
     const payloads = await interceptDemoRequests(page, [202]);
-    await advanceToStepTwo(page, locale);
-
-    await page.getByRole("button", { name: locale.backButton, exact: true }).click();
+    await openHydratedStepOne(page, locale);
     const email = page.getByLabel(locale.emailLabel);
+    const continueButton = page.getByRole("button", { name: locale.continueButton });
+    const name = page.locator("#demo-name");
+    const company = page.locator("#demo-company");
+    const useCase = page.locator("#demo-use-case");
+    const consent = page.getByLabel(locale.consentLabel);
+    const privacyLink = page.locator('label[for="demo-consent"] a');
+    const backButton = page.getByRole("button", {
+      name: locale.backButton,
+      exact: true
+    });
+    const submitButton = page.getByRole("button", { name: locale.submitButton });
+
+    await email.fill(`${locale.locale}-e2e@example.invalid`);
     await expect(email).toBeFocused();
     await expect(email).toHaveValue(`${locale.locale}-e2e@example.invalid`);
-    await page.getByRole("button", { name: locale.continueButton }).click();
+    await tabTo(page, continueButton);
+    await page.keyboard.press("Enter");
     await expect(
       page.getByRole("heading", { level: 3, name: locale.stepTwo })
     ).toBeFocused();
 
-    const consent = page.getByLabel(locale.consentLabel);
-    await submitForm(page, locale.submitButton);
+    await tabTo(page, name);
+    await tabTo(page, company);
+    await tabTo(page, useCase);
+    await tabTo(page, consent);
+    await expect(privacyLink).toHaveAttribute("href", locale.privacyPath);
+    await tabFromConsentToBack(page, browserName, privacyLink, backButton);
+    await tabTo(page, submitButton);
+    await page.keyboard.press("Enter");
     expect(await consent.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(
       true
     );
+    await expect(consent).toBeFocused();
     expect(payloads).toHaveLength(0);
-    await expect(page.locator('label[for="demo-consent"] a')).toHaveAttribute(
-      "href",
-      locale.privacyPath
-    );
 
-    await checkConsent(consent);
-    await submitForm(page, locale.submitButton);
+    await page.keyboard.press("Space");
+    await expect(consent).toBeChecked();
+    await tabFromConsentToBack(page, browserName, privacyLink, backButton);
+    await page.keyboard.press("Enter");
+    await expect(email).toBeFocused();
+    await expect(email).toHaveValue(`${locale.locale}-e2e@example.invalid`);
+
+    await tabTo(page, continueButton);
+    await page.keyboard.press("Enter");
+    await expect(
+      page.getByRole("heading", { level: 3, name: locale.stepTwo })
+    ).toBeFocused();
+    await tabTo(page, name);
+    await tabTo(page, company);
+    await tabTo(page, useCase);
+    await tabTo(page, consent);
+    await expect(consent).toBeChecked();
+    await tabFromConsentToBack(page, browserName, privacyLink, backButton);
+    await tabTo(page, submitButton);
+    await page.keyboard.press("Enter");
     const status = page.getByRole("status").filter({ hasText: locale.success });
     await expect(status).toContainText(locale.success);
     await expect(status).toBeFocused();
@@ -127,17 +161,88 @@ for (const locale of locales) {
   });
 }
 
+test("@form captures the current DOM email when React state missed the change", async ({
+  page
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "chromium-desktop-1440",
+    "The DOM/state fallback is framework-level; the full keyboard flow covers every browser and viewport."
+  );
+
+  const locale = locales[0];
+  const currentDomEmail = "current-dom-value@example.invalid";
+  const payloads = await interceptDemoRequests(page, [202]);
+  await openHydratedStepOne(page, locale);
+  const email = page.getByLabel(locale.emailLabel);
+
+  // React can finish hydration after the browser value changes but before an
+  // onChange reaches controlled state. Setting the native value without an
+  // input event reproduces that exact DOM-newer-than-state invariant without
+  // claiming that Playwright controls React's event-replay timing.
+  await email.evaluate((input: HTMLInputElement, value) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set;
+    if (setter === undefined) throw new Error("HTMLInputElement.value setter is unavailable.");
+    setter.call(input, value);
+  }, currentDomEmail);
+  await expect(email).toHaveValue(currentDomEmail);
+  await email.press("Tab");
+  await expect(page.getByRole("button", { name: locale.continueButton })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { level: 3, name: locale.stepTwo })
+  ).toBeFocused();
+
+  await checkConsent(page.getByLabel(locale.consentLabel));
+  await submitForm(page, locale.submitButton);
+  await expect(page.getByRole("status").filter({ hasText: locale.success })).toBeFocused();
+  await expect.poll(() => payloads.length).toBe(1);
+  assertPayload(payloads[0], locale.locale, currentDomEmail);
+});
+
 async function advanceToStepTwo(
   page: Page,
   locale: (typeof locales)[number]
 ): Promise<void> {
-  await page.goto(locale.path);
-  await expect(page.locator('[data-demo-form-hydrated="true"]')).toBeVisible();
+  await openHydratedStepOne(page, locale);
   await page.getByLabel(locale.emailLabel).fill(`${locale.locale}-e2e@example.invalid`);
   await page.getByRole("button", { name: locale.continueButton }).click();
   await expect(
     page.getByRole("heading", { level: 3, name: locale.stepTwo })
   ).toBeFocused();
+}
+
+async function openHydratedStepOne(
+  page: Page,
+  locale: (typeof locales)[number]
+): Promise<void> {
+  await page.goto(locale.path);
+  await expect(page.locator('[data-demo-form-hydrated="true"]')).toBeVisible();
+}
+
+async function tabTo(
+  page: Page,
+  target: Locator
+): Promise<void> {
+  await page.keyboard.press("Tab");
+  await expect(target).toBeFocused();
+}
+
+async function tabFromConsentToBack(
+  page: Page,
+  browserName: "chromium" | "firefox" | "webkit",
+  privacyLink: Locator,
+  backButton: Locator
+): Promise<void> {
+  // Playwright WebKit mirrors Safari's default keyboard preference, where Tab
+  // skips links. Chromium and Firefox must expose the privacy link in sequence;
+  // WebKit must follow its actual checkbox-to-Back sequence without a fake focus.
+  if (browserName !== "webkit") {
+    await tabTo(page, privacyLink);
+  }
+  await tabTo(page, backButton);
 }
 
 async function checkConsent(consent: ReturnType<Page["getByLabel"]>): Promise<void> {
@@ -177,11 +282,15 @@ async function interceptDemoRequests(
   return payloads;
 }
 
-function assertPayload(payload: Record<string, unknown> | undefined, locale: "es" | "en") {
+function assertPayload(
+  payload: Record<string, unknown> | undefined,
+  locale: "es" | "en",
+  expectedEmail = `${locale}-e2e@example.invalid`
+) {
   expect(payload).toBeDefined();
   expect(payload).toMatchObject({
     locale,
-    email: `${locale}-e2e@example.invalid`,
+    email: expectedEmail,
     use_case: "rag_verification",
     consent: true,
     privacy_version: "privacy.v1",

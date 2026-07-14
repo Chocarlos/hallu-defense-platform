@@ -21,6 +21,8 @@ describe("demo request service", () => {
     expect(response.status).toBe(202);
     expect(body).toMatch(/^\{"request_id":"dr_[A-Za-z0-9_-]{24}"\}$/u);
     expect(body).not.toContain("person@example.invalid");
+    expect(store.consumeGlobal).toHaveBeenCalledOnce();
+    expect(store.beginDelivery).toHaveBeenCalledOnce();
     expect(store.finalize).toHaveBeenCalledOnce();
     expect(store.release).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledOnce();
@@ -31,12 +33,14 @@ describe("demo request service", () => {
     expect(JSON.stringify(reservation)).not.toContain("person@example.invalid");
   });
 
-  it("matches the accepted public HTTP contract without Redis or webhook", async () => {
+  it("matches the accepted public contract, quotas, and state transitions without a webhook", async () => {
     const store = reservingStore();
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
     const handler = createHandler({ store, fetchImpl });
     const accepted = await handler(validRequest());
     vi.mocked(store.reserve).mockClear();
+    vi.mocked(store.consumeGlobal).mockClear();
+    vi.mocked(store.beginDelivery).mockClear();
     vi.mocked(store.finalize).mockClear();
     fetchImpl.mockClear();
 
@@ -47,9 +51,38 @@ describe("demo request service", () => {
     expect(headerRecord(honeypot.headers)).toEqual(headerRecord(accepted.headers));
     expect(honeypot.headers.has("server-timing")).toBe(false);
     expect(honeypot.headers.has("set-cookie")).toBe(false);
-    expect(store.reserve).not.toHaveBeenCalled();
-    expect(store.finalize).not.toHaveBeenCalled();
+    expect(store.consumeGlobal).toHaveBeenCalledOnce();
+    expect(store.reserve).toHaveBeenCalledOnce();
+    expect(store.beginDelivery).toHaveBeenCalledOnce();
+    expect(store.finalize).toHaveBeenCalledOnce();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("applies the same public response floor to real and honeypot successes", async () => {
+    const store = reservingStore();
+    const sleep = vi.fn(async () => undefined);
+    const handler = createDemoRequestHandler({
+      config,
+      store,
+      metrics: new DemoMetrics(),
+      fetchImpl: vi.fn(async () => new Response(null, { status: 204 })),
+      now: () => new Date("2026-07-13T12:00:00.000Z"),
+      secretReader: () => secret,
+      leaseToken: () => "00000000-0000-4000-8000-000000000001",
+      monotonicNow: () => 0,
+      sleep
+    });
+
+    await handler(validRequest());
+    await handler(
+      validRequest({
+        submission_id: "123e4567-e89b-42d3-a456-426614174001",
+        website: "bot.invalid"
+      })
+    );
+
+    expect(sleep).toHaveBeenNthCalledWith(1, 300);
+    expect(sleep).toHaveBeenNthCalledWith(2, 300);
   });
 
   it.each([
@@ -117,6 +150,37 @@ describe("demo request service", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("counts a same-origin malformed request against the global boundary", async () => {
+    const store = reservingStore();
+    const response = await createHandler({ store })(
+      validRequest({ consent: false })
+    );
+
+    expect(response.status).toBe(422);
+    expect(store.consumeGlobal).toHaveBeenCalledOnce();
+    expect(store.reserve).not.toHaveBeenCalled();
+  });
+
+  it("does not redeliver after a successful webhook when finalization is ambiguous", async () => {
+    const store = reservingStore();
+    vi.mocked(store.reserve)
+      .mockImplementationOnce(async (input) => ({
+        status: "reserved",
+        requestId: input.requestId
+      }))
+      .mockImplementationOnce(async (input) => ({
+        status: "pending",
+        requestId: input.requestId
+      }));
+    vi.mocked(store.finalize).mockRejectedValueOnce(new Error("lost acknowledgement"));
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const handler = createHandler({ store, fetchImpl });
+
+    await expect(handler(validRequest())).resolves.toMatchObject({ status: 202 });
+    await expect(handler(validRequest())).resolves.toMatchObject({ status: 503 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("releases its CAS reservation and sanitizes webhook failures", async () => {
     const store = reservingStore();
     const fetchImpl = vi.fn<typeof fetch>(async () => {
@@ -146,7 +210,8 @@ describe("demo request service", () => {
   it("returns 503 without inspecting PII when capture is disabled", async () => {
     const response = await createDemoRequestHandler({
       config: { enabled: false, environment: "development", productionLike: false },
-      metrics: new DemoMetrics()
+      metrics: new DemoMetrics(),
+      minimumResponseMilliseconds: 0
     })(validRequest());
     expect(response.status).toBe(503);
     expect(await response.text()).toBe('{"error":"Demo requests are unavailable."}');
@@ -167,7 +232,8 @@ function createHandler(
     fetchImpl: overrides.fetchImpl ?? vi.fn(async () => new Response(null, { status: 204 })),
     now: () => new Date("2026-07-13T12:00:00.000Z"),
     secretReader: () => secret,
-    leaseToken: () => "00000000-0000-4000-8000-000000000001"
+    leaseToken: () => "00000000-0000-4000-8000-000000000001",
+    minimumResponseMilliseconds: 0
   });
 }
 
@@ -181,11 +247,19 @@ function reservingStore(
     | "rate_email" = "reserved"
 ): DemoStore {
   return {
-    reserve: vi.fn(async (input) =>
-      status === "conflict" || status === "rate_global" || status === "rate_email"
-        ? { status }
-        : { status, requestId: input.requestId }
+    consumeGlobal: vi.fn(async () =>
+      status === "rate_global" ? "rate_global" : "allowed"
     ),
+    reserve: vi.fn(async (input) => {
+      if (status === "conflict" || status === "rate_email") {
+        return { status };
+      }
+      return {
+        status: status === "rate_global" ? "reserved" : status,
+        requestId: input.requestId
+      };
+    }),
+    beginDelivery: vi.fn(async () => true),
     finalize: vi.fn(async () => true),
     release: vi.fn(async () => true)
   };

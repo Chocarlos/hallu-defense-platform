@@ -6,7 +6,7 @@ import { defineConfig } from "@playwright/test";
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(configDir, "../..");
 const port = Number(process.env.MARKETING_E2E_PORT ?? "3200");
-const baseURL = `http://localhost:${port}`;
+const baseURL = `http://127.0.0.1:${port}`;
 const mode = process.env.MARKETING_E2E_MODE ?? "production";
 
 if (mode !== "production" && mode !== "form") {
@@ -79,8 +79,8 @@ export default defineConfig({
       `npm --prefix "${repoRoot}" run build --workspace @hallu-defense/contracts && ` +
       `npm --prefix "${repoRoot}" run build --workspace @hallu-defense/sdk && ` +
       (mode === "form"
-        ? `npx next dev --port ${port}`
-        : `npm run build && npx next start --port ${port}`),
+        ? `npx next dev --hostname 127.0.0.1 --port ${port}`
+        : `npm run build && node ./e2e-marketing/serve-standalone.mjs --port ${port}`),
     cwd: configDir,
     url: baseURL,
     reuseExistingServer: false,

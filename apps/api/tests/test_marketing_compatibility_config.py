@@ -31,6 +31,7 @@ REQUIRED_PATHS = (
     "apps/console/e2e-marketing/performance-lab.spec.ts",
     "apps/console/e2e-marketing/progressive-enhancement.spec.ts",
     "apps/console/e2e-marketing/run-marketing-suite.mjs",
+    "apps/console/e2e-marketing/serve-standalone.mjs",
     "apps/console/scripts/run-browserstack-marketing.mjs",
     "Makefile",
     ".github/workflows/ci.yml",
@@ -197,6 +198,88 @@ def test_gate_rejects_browserstack_remote_on_pull_requests(tmp_path: Path) -> No
     )
 
     with pytest.raises(MarketingCompatibilityConfigError, match="github.event_name"):
+        validate(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED: ${{ vars.HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED || 'false' }}",
+        "BROWSERSTACK_WEBHOOK_STUB: ${{ vars.BROWSERSTACK_WEBHOOK_STUB || 'false' }}",
+    ],
+)
+def test_gate_rejects_missing_browserstack_live_form_isolation_marker(
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    _copy_fixture(tmp_path)
+    workflow = tmp_path / ".github/workflows/ci.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(marker, "missing-live-form-marker"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="missing"):
+        validate(tmp_path)
+
+
+def test_gate_rejects_next_start_for_production_marketing_e2e(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    config = tmp_path / "apps/console/playwright.marketing.config.ts"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "node ./e2e-marketing/serve-standalone.mjs --port",
+            "npx next start --port",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="serve-standalone"):
+        validate(tmp_path)
+
+
+def test_gate_rejects_missing_standalone_static_copy(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    helper = tmp_path / "apps/console/e2e-marketing/serve-standalone.mjs"
+    helper.write_text(
+        helper.read_text(encoding="utf-8").replace(
+            "cpSync(source, destination",
+            "disabledCopy(source, destination",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="cpSync"):
+        validate(tmp_path)
+
+
+def test_gate_rejects_missing_live_browserstack_form_submission(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    runner = tmp_path / "apps/console/scripts/run-browserstack-marketing.mjs"
+    runner.write_text(
+        runner.read_text(encoding="utf-8").replace(
+            "await completePlaywrightDemoRequest(",
+            "await inspectPlaywrightDemoFormWithoutSubmitting(",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="completePlaywright"):
+        validate(tmp_path)
+
+
+def test_gate_rejects_missing_live_selenium_form_submission(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    runner = tmp_path / "apps/console/scripts/run-browserstack-marketing.mjs"
+    runner.write_text(
+        runner.read_text(encoding="utf-8").replace(
+            "await completeSeleniumDemoRequest(",
+            "await inspectSeleniumDemoFormWithoutSubmitting(",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="completeSelenium"):
         validate(tmp_path)
 
 
