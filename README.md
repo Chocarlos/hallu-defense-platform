@@ -17,16 +17,17 @@ La aceptación integral más reciente corresponde exclusivamente al commit
 [ledger de aceptación QA](docs/qa/2026-07-13-mass-qa-acceptance.md). No debe
 extrapolarse a cambios posteriores.
 
-El checkpoint WIP `fb111c1e15c87e40006844d62e37616a84ab796f` añade la
-landing bilingüe, las rutas de privacidad, la captación de demo y sus gates de
-compatibilidad. Su auditoría actual conserva los tres requisitos nuevos por
-debajo de aceptación:
+La capa pública M7 se integró mediante el flujo de seis frentes desde el
+checkpoint `fb111c1e15c87e40006844d62e37616a84ab796f`; el candidato de código
+validado culmina en `d6c15bda15dda7a5e901f913d1007fd04d3089c5`. Los tres
+requisitos de lanzamiento avanzan a `tested`, sin extender la aceptación
+histórica ni certificar un despliegue concreto:
 
 | Requisito | Estado | Evidencia y bloqueo actual |
 | --- | --- | --- |
-| TS-011 | `implemented` | Rutas ES/EN, metadata, social card y pruebas unitarias existen; el gate Playwright está rojo por el tour con teclado, hay overflow horizontal reproducible a 320 px y faltan revisión manual y presupuestos LCP/INP/CLS. |
-| SEC-020 | `implemented` | El intake está desactivado por defecto y tiene validación, Redis/webhook y tests con dobles; faltan ejecución real Redis/CRM, contrato público versionado y cierre de divergencias de configuración, honeypot e idempotencia downstream. |
-| CI-033 | `implemented` | Se recolectan 90 casos y la configuración BrowserStack valida; la ejecución local terminó con 25 passed, 2 skipped y 63 failed, y no hubo ejecución BrowserStack por ausencia de credenciales. |
+| TS-011 | `tested` | `/`, `/en` y ambas rutas de privacidad se validaron en Chromium, Firefox y WebKit a 320/768/1440; la fase de producción terminó 148 passed, 68 skips deliberados y 0 fallos. Axe, teclado, reduced motion, CSP, mejora progresiva y presupuestos sintéticos LCP/INP/CLS pasan; la inspección visual confirmó cero overflow y la tarjeta social PNG 1200x630. Quedan revisión manual con lector de pantalla/contraste y zoom nativo de navegador. |
+| SEC-020 | `tested` | Contrato TS público V1 compartido, activación unificada y fail-closed, formulario SSR inerte hasta hidratación, Redis TLS/CA, límites 60/min y 3/h, idempotencia por payload, guard de despacho, HMAC y métricas sin PII están implementados. Un smoke scratch real con Redis 7.0.15 y webhook HTTPS loopback verificó 202/422/429/503, concurrencia, TTL, firma y no duplicación; producción aún requiere secretos, Redis/CRM reales, dominio y aprobación legal. |
+| CI-033 | `tested` | En el HEAD de código exacto, la matriz `standalone` terminó 148 passed/68 skipped y la matriz de formulario 59 passed/40 skipped, ambas sin fallos. La configuración BrowserStack y su catálogo mínimo están cableados y se validan estáticamente, pero no se reclama compatibilidad remota sin credenciales y session IDs reales. |
 
 Esto no equivale a certificar cualquier despliegue como listo para producción: cada entorno debe completar sus propios checks de infraestructura, identidad, secretos, restauración y carga. En particular, el smoke de recuperación del worker de ingesta tras crash/restart permanece rechazado hasta resolver su causa raíz; no se presenta como evidencia aceptada.
 

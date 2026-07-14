@@ -23,8 +23,10 @@ Production activation requires all of the following before changing the flag:
 6. a file-backed Console metrics bearer containing 32–256 printable ASCII
    characters of high-entropy material;
 7. an isolated CRM/webhook stub proving signature bytes, timeout, error handling,
-   idempotency, and absence of PII from logs, metrics, traces, and errors; and
-8. an operator-confirmed CRM rule that deletes inactive leads after 90 days.
+   idempotency, and absence of PII from logs, metrics, traces, and errors;
+8. a CRM consumer that treats the `Idempotency-Key` header as a create-once
+   boundary and returns success for an already accepted key; and
+9. an operator-confirmed CRM rule that deletes inactive leads after 90 days.
 
 The file pointers consumed by the Next runtime are:
 
@@ -39,6 +41,86 @@ permit a disabled production landing; enabling intake without real content makes
 runtime validation fail closed. Helm mounts a distinct, precreated
 `secrets.demo.name` Secret only when `demoRequests.enabled=true`. Helm never
 renders secret values into release history.
+
+## Public wire contract V1
+
+The canonical source is
+`apps/console/lib/demo-request/public-contract.ts`. The form builder, request
+parser and response helpers import these V1 types; extra request fields are
+rejected. Requests use `Content-Type: application/json`, are limited to 8 KiB,
+and have this exact shape:
+
+```json
+{
+  "submission_id": "123e4567-e89b-42d3-a456-426614174000",
+  "locale": "es",
+  "email": "person@example.invalid",
+  "name": "Optional name",
+  "company": "Optional company",
+  "use_case": "rag_verification",
+  "consent": true,
+  "privacy_version": "privacy.v1",
+  "website": ""
+}
+```
+
+`submission_id` is a UUIDv4. `locale` is `es` or `en`; `use_case` is one of
+`rag_verification`, `high_risk_tools`, `code_agents`, or
+`enterprise_governance`. `name` and `company` are the only optional fields.
+`website` is a required wire field and must be empty for a human submission; it
+is the honeypot and is never forwarded to the CRM.
+
+Acceptance is exactly HTTP 202 with a no-store JSON body:
+
+```json
+{"request_id":"dr_0123456789abcdefghijklmn"}
+```
+
+The identifier is `dr_` plus 24 URL-safe characters and is derived without
+reflecting the email or submission ID. Public failures use only HTTP 400, 415,
+422, 429, or 503 with `{"error":"<generic message>"}`; 429 may include a
+numeric `Retry-After`. Responses never return raw form fields, payload hashes,
+Redis keys, webhook details, or internal exceptions.
+
+Before client hydration the server-rendered form is intentionally inert: it has
+no action or method, the email control has no submission name, and both the
+input and button are disabled with an accessible status message. This prevents
+native Enter/click submission from transmitting PII before the consent step
+when JavaScript is unavailable. The launch gate inspects URL, request headers,
+and body for this boundary in both languages.
+
+After origin/Fetch Metadata validation, every request consumes the Redis global
+budget before its body is parsed: 60 requests per minute. Valid parsed requests
+also consume an email-scoped budget of 3 per hour and a payload-bound,
+submission-scoped idempotency record for 24 hours. Redis server time prevents
+application-clock skew, and every Lua key shares the
+`hallu-defense:{demo-request-v1}` Cluster hash tag.
+
+Immediately before webhook delivery, the record enters `dispatching` for 24
+hours. A lost final Redis acknowledgement therefore cannot cause local
+redelivery after a successful webhook; explicit webhook failures release the
+record for retry. The deliberate tradeoff is availability: a process crash
+after `dispatching` but before confirmed delivery can suppress retries for the
+TTL. Production must alert on this state and the CRM must honor
+`Idempotency-Key`. Honeypot requests consume the same local boundaries and
+public minimum response floor but never call the external webhook, so no claim
+is made that they reproduce a real webhook outage exactly.
+
+## Current local evidence
+
+At code candidate `d6c15bda15dda7a5e901f913d1007fd04d3089c5`, a scratch-only
+integration used WSL Redis 7.0.15 plus a loopback HTTPS webhook with a
+self-signed CA trusted only by the test. It verified 202 acceptance, 503 pending
+and Redis-down behavior, 422 payload conflict, email and global 429 boundaries,
+approximately 24-hour idempotency TTL, exact-byte HMAC, concurrent/duplicate
+suppression, protected metrics, and no PII in metrics. Five expected unique
+webhook deliveries occurred. The measured public response floor was 308 ms for
+a real request and 331 ms for the honeypot; scratch state was removed on exit.
+
+This is deterministic local integration evidence, not proof of a production
+Redis Cluster, CRM, ingress, egress policy, retention job, or legal approval.
+Those checks must be repeated against the exact staging and production
+configuration before activation.
 
 ## Egress
 
@@ -212,11 +294,24 @@ make browserstack-marketing-config
 make browserstack-marketing
 ```
 
-The local marketing matrix collects Chromium, Firefox, and WebKit at 320, 768,
-and 1440 px and includes axe, public routes, language, privacy noindex, keyboard
-tour interaction, reduced motion, synthetic 200% zoom, overflow, disabled form,
-and `/console` routing. Axe complements rather than replaces manual keyboard,
-focus, contrast, zoom, motion, and screen-reader review.
+The production phase serves the copied `.next/standalone` artifact and runs
+Chromium, Firefox, and WebKit at 320, 768, and 1440 px. It covers CSP nonces,
+axe WCAG 2.2 AA baseline, public routes/language/privacy, keyboard tour, reduced
+motion, progressive enhancement, overflow, disabled intake, `/console`
+routing, and desktop-Chromium synthetic LCP/interaction/CLS budgets. A separate
+hydrated-form phase covers both languages, two-step keyboard/focus/consent/202,
+422/503 retries with one submission ID, malformed 202 responses, no-JavaScript
+PII boundaries, and the DOM-newer-than-React-state regression.
+
+At `d6c15bd`, production ran 216 cases: 148 passed, 68 deliberate project-scope
+skips, 0 failed. The form phase ran 99: 59 passed, 40 deliberate skips, 0
+failed. The skips keep single-engine or desktop-only labs from being
+misrepresented as cross-matrix execution; they are not failures. The automated
+"200%" check is explicitly Chromium `deviceScaleFactor: 2` equivalence at a
+720 CSS-pixel viewport, not browser UI zoom. Native 200% zoom and manual focus,
+contrast, motion, and screen-reader review remain release checks. Axe and
+synthetic lab budgets complement rather than replace them or field Core Web
+Vitals.
 
 The BrowserStack command is intentionally skip-safe when credentials are absent
 and then makes no compatibility claim. With credentials it first queries the

@@ -7811,3 +7811,138 @@ Remaining risks:
 - The current dependency/image drift requires exact pinned-runtime CI and fresh
   Trivy scans before SEC-011 can return to `accepted`. No deployment, legal,
   CRM, domain, consent-copy or production-readiness claim is accepted here.
+
+## 2026-07-14 - Six-front public-launch integration and candidate closure
+
+Slice selected:
+
+- Execute the repository's persistent six-front workflow for the Hallu Defense
+  bilingual launch layer, starting every front from checkpoint
+  `fb111c1e15c87e40006844d62e37616a84ab796f` on integration branch
+  `codex/hallu-defense-landing`.
+- Keep root as the sole integration authority; require bounded leader branches,
+  tests, documentation, traceability, self-audit, commits and reproducible
+  handoffs. Do not push, merge another worktree, or touch persistent user data.
+
+Implementation:
+
+- Created six persistent Codex conversations/worktrees for non-overlapping
+  fronts: A public UX/SEO/accessibility, B demo intake/runtime security, C
+  marketing-to-Console session boundary, D Compose/Helm/deployment, E local and
+  BrowserStack compatibility gates, and F independent claims/traceability
+  audit. The registry with thread IDs, branches, worktrees, process/output
+  paths and the shared checkpoint is stored outside the repository under
+  `$CODEX_HOME/tmp/hallu-defense-six-front-fb111c1-registry.json`.
+- Root independently inspected and selectively integrated the leaders through
+  commits `14aaef4`, `abf6830`, `43026a9`, `7b01931`, `bb40913`, and `5e475e9`.
+  Reproducible audit findings were corrected in `dc28b9e`, `e913efe`, and
+  `2ee8662`. A final independent audit then found a pre-consent native no-JS
+  form POST that could carry email in its body. Root made the SSR form inert in
+  `6320030` and strengthened the static guard plus five negative regressions in
+  final code candidate `d6c15bda15dda7a5e901f913d1007fd04d3089c5`; the same
+  auditor's read-only recheck returned `MERGEABLE`. No leader merged, pushed,
+  or edited another worktree.
+- Final launch code provides public `/`, `/en`, `/privacy`, `/en/privacy`, one
+  explicit `/opengraph-image` PNG endpoint, and the isolated operational
+  `/console` boundary. Runtime pages carry per-response CSP nonces, localized
+  canonical/hreflang/x-default/JSON-LD metadata, progressive enhancement,
+  reduced-motion handling, a keyboard-operable tour, and responsive 320/768/
+  1440 layouts.
+- The demo boundary now shares exact V1 request/202/error TypeScript contracts
+  across builder, parser and response helpers. Public/runtime activation uses
+  one fail-closed validation boundary; the request requires the wire honeypot,
+  validates origin/provenance/media/body/fields, and never returns PII.
+- Before hydration the SSR form exposes no action, method or email field name,
+  disables both input and submission, and connects its visible status through
+  `aria-describedby`. The ES/EN no-JavaScript regressions cover Enter and click
+  while inspecting URL, request headers and `postData()` for encoded PII.
+- Redis consumes a 60/min global budget before body parsing and a 3/hour email
+  budget after normalization. Redis TIME, payload-bound 24-hour idempotency,
+  one Cluster hash tag, leases/CAS and a pre-webhook `dispatching` state close
+  clock, cross-slot, retry and ambiguous-finalize duplicate paths. Explicit
+  webhook failure releases for retry; successful delivery remains 202 even if
+  the final acknowledgement is lost.
+- HMAC delivery signs exact bytes, follows no redirect, minimizes the CRM
+  payload, and requires HTTPS plus an exact allowed origin. Redis production
+  configuration requires `rediss://` and a CA file that parses as X.509 trust
+  material. Metrics require a bearer token and retain only bounded,
+  low-cardinality, non-PII outcomes.
+- Compose and Helm keep intake disabled by default and require five external,
+  read-only secret files, explicit egress peers, privacy contact, exact origins
+  and fail-closed runtime validation before activation. BrowserStack live form
+  flags now reach both Playwright and Selenium paths; production E2E serves the
+  actual copied `.next/standalone` artifact.
+
+Validation:
+
+- `make lint`, `make typecheck`, `make test`, `make build`, `make contracts`,
+  `make policy-test`, `make sandbox-test`, and `make evals-smoke` passed. The
+  final global test gate reported 2,760 Python tests passed / 27 deselected,
+  plus SDK
+  17, agent-adapters 11, MCP 41 and Console 255 tests. Mypy checked 59 Python
+  source files; all TypeScript workspaces passed. Contracts validated 79 schemas
+  with 79 valid and 79 invalid examples, 72 generated interfaces and 58 focused
+  Python tests. Policy reported 164 Python tests and 31/31 OPA tests; sandbox
+  reported 309 Python tests. The eval smoke passed two scenarios; its generated
+  latency-only drift was restored rather than committed as durable evidence.
+- OpenAPI export/check used the worktree-local `.venv` with
+  `PYTHONPATH=<root>/apps/api/src`; the committed artifact was current. The
+  optimized Next.js build passed without the former metadata warning and its
+  production checker scanned 339 artifacts.
+- `make security-check` passed with a checksum-verified native Gitleaks 8.30.1
+  because Docker Desktop's daemon was unavailable. Gitleaks scanned the current
+  snapshot and full history with 77 exact reviewed synthetic fingerprints;
+  the secondary secret scan, auth, encryption, secrets, audit, approvals,
+  persistence, production/Helm/marketing, migrations, Python dependency,
+  sandbox/container/observability gates all passed. Both npm audits reported 0
+  vulnerabilities.
+- `make marketing-e2e-production` executed 216 tests on the exact code
+  candidate: 148 passed, 68 deliberate scope skips, 0 failed across Chromium,
+  Firefox and WebKit at 320/768/1440. It covered CSP, axe WCAG 2.2 AA baseline,
+  locale/privacy routes, keyboard tour, reduced motion, overflow, no-JavaScript
+  content and synthetic LCP <=2500 ms, interaction <=200 ms and CLS <=0.1.
+- `make marketing-e2e-form` executed 99 tests: 59 passed, 40 deliberate scope
+  skips, 0 failed. It covered both languages, full keyboard/focus order,
+  consent, 202 success, 422/503 retry with one submission ID, malformed 202,
+  no-JavaScript PII containment across URL/headers/body and the
+  DOM-newer-than-React-state regression. The marketing compatibility guard and
+  all 23 focused Python tests passed.
+  `browserstack-marketing-config` passed but emitted no remote compatibility
+  result because credentials/session IDs were unavailable.
+- A scratch-only live script used WSL Redis 7.0.15 and a loopback HTTPS webhook
+  with a self-signed test CA. It verified accepted 202, pending/Redis-down 503,
+  conflict 422, fourth-email/global-61 boundaries, approximately 24-hour TTL,
+  exact-byte HMAC, concurrent/duplicate suppression, five expected unique
+  deliveries, protected metrics and no PII. Real versus honeypot responses
+  measured 308 ms versus 331 ms under the common 300 ms floor; cleanup removed
+  scratch state on exit.
+- Independent in-app browser inspection of the production standalone build
+  confirmed Spanish/English semantics, canonic/hreflang/x-default metadata,
+  privacy `noindex, follow`, the pausable tour, Console separation, zero
+  marketing console errors and zero overflow at the supported in-app sizes.
+  Local Playwright screenshots were inspected at 320, 768 and 1440; a full-page
+  capture after the bounded reveal fallback showed every section. The served
+  social card returned HTTP 200 `image/png` at exactly 1200x630.
+
+Remaining risks:
+
+- TS-011, SEC-020 and CI-033 advance from `implemented` to `tested`, not
+  `accepted`. The previously recorded checkpoint failures are retained above as
+  historical audit evidence; this entry records their verified closure in the
+  integrated candidate.
+- Native browser-UI 200% zoom, manual screen-reader/contrast review and real
+  BrowserStack minimum-version sessions remain pending. The automated 2x
+  device-scale check is labeled as an equivalence only, and synthetic lab
+  budgets are not field Core Web Vitals.
+- Production activation still requires an approved legal controller/privacy
+  contact and retention process, real domain/DNS/ingress, target Redis TLS and
+  cluster evidence, five versioned secret files, egress controls, CRM/webhook
+  credentials and a downstream consumer that honors `Idempotency-Key`.
+- `dispatching` favors duplicate prevention over availability: a process crash
+  after the state change but before confirmed webhook delivery can suppress a
+  retry for up to 24 hours. Honeypot traffic intentionally never calls the
+  webhook and cannot mirror a real webhook outage exactly.
+- Docker Desktop's unavailable daemon prevented current Kind and Trivy image
+  execution. Static Helm, production-profile and exact image-matrix gates pass,
+  but no deployment, image CVE status, remote workflow, legal approval or
+  production-readiness claim is made from those static results.
