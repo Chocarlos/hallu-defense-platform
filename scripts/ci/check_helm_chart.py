@@ -3460,6 +3460,7 @@ def _validate_rendered_console_env(
     }
     expected = {
         "HALLU_DEFENSE_ENV": "production",
+        "HALLU_DEFENSE_DEMO_REQUESTS_ENABLED": "false",
         "HALLU_DEFENSE_CONSOLE_AUTH_MODE": "oidc",
         "HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN": public_origin,
         "HALLU_DEFENSE_CONSOLE_API_ORIGIN": api_origin,

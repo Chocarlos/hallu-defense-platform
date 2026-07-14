@@ -84,7 +84,7 @@ describe("Console authentication route hardening", () => {
 
     expect(first.status).toBe(303);
     expect(first.headers.get("location")).toBe(
-      "https://console.example.test/?auth_error=login_failed"
+      "https://console.example.test/console?auth_error=login_failed"
     );
     expect(first.headers.get("location")).not.toContain(firstTransaction.state);
     expect(first.headers.get("location")).not.toContain(code);

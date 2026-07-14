@@ -83,7 +83,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // The Strict session cookie is intentionally absent on the cross-site IdP
     // callback. Rotate the exact session captured in the one-shot transaction.
     const session = rotateConsoleSession(transaction, tokenSet);
-    const response = NextResponse.redirect(config.publicOrigin, 303);
+    const response = NextResponse.redirect(
+      new URL("/console", config.publicOrigin),
+      303
+    );
     response.cookies.set(sessionCookieName(config), session.sessionId, {
       httpOnly: true,
       secure: config.productionLike,
@@ -96,7 +99,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     secureResponse(response);
     return response;
   } catch {
-    const failureUrl = new URL(config.publicOrigin);
+    const failureUrl = new URL("/console", config.publicOrigin);
     failureUrl.searchParams.set("auth_error", "login_failed");
     const response = NextResponse.redirect(failureUrl, 303);
     clearTransactionCookie(response, config);

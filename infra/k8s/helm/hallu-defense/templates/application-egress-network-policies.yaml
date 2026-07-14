@@ -57,6 +57,12 @@
 {{- if and (not .Values.kindDependencies.enabled) (empty .Values.networkPolicy.console.external) }}
 {{- fail "networkPolicy.console.external requires explicit production OIDC CIDRs and ports" }}
 {{- end }}
+{{- if and .Values.demoRequests.enabled (empty .Values.networkPolicy.console.demoWebhook) }}
+{{- fail "networkPolicy.console.demoWebhook requires explicit webhook /32 or /128 peers when demoRequests.enabled=true" }}
+{{- end }}
+{{- if and .Values.demoRequests.enabled (empty .Values.networkPolicy.console.demoRedis) }}
+{{- fail "networkPolicy.console.demoRedis requires explicit Redis /32 or /128 peers when demoRequests.enabled=true" }}
+{{- end }}
 {{- if and .Values.worker.enabled (not .Values.kindDependencies.enabled) (empty .Values.networkPolicy.worker.external) }}
 {{- fail "networkPolicy.worker.external requires explicit production CIDRs and ports" }}
 {{- end }}
@@ -106,7 +112,7 @@
 {{- fail "networkPolicy.kubernetesApi[].port must be between 1 and 65535" }}
 {{- end }}
 {{- end }}
-{{- range $role := list "api" "console" "worker" "migrations" }}
+{{- range $role := list "api" "worker" "migrations" }}
 {{- $roleConfig := index $.Values.networkPolicy $role }}
 {{- range $peer := $roleConfig.external }}
 {{- $_ := required (printf "networkPolicy.%s.external[].name is required" $role) $peer.name }}
@@ -116,6 +122,21 @@
 {{- end }}
 {{- if or (lt (int $peer.port) 1) (gt (int $peer.port) 65535) }}
 {{- fail (printf "networkPolicy.%s.external[].port must be between 1 and 65535" $role) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $peerGroup := list
+      (dict "path" "networkPolicy.console.external" "peers" .Values.networkPolicy.console.external)
+      (dict "path" "networkPolicy.console.demoWebhook" "peers" .Values.networkPolicy.console.demoWebhook)
+      (dict "path" "networkPolicy.console.demoRedis" "peers" .Values.networkPolicy.console.demoRedis) }}
+{{- range $peer := $peerGroup.peers }}
+{{- $_ := required (printf "%s[].name is required" $peerGroup.path) $peer.name }}
+{{- $cidr := required (printf "%s[].cidr is required" $peerGroup.path) $peer.cidr | trim }}
+{{- if not (or (regexMatch "^[0-9.]+/32$" $cidr) (regexMatch "^[0-9A-Fa-f:]+/128$" $cidr)) }}
+{{- fail (printf "%s CIDRs must identify exactly one host (/32 IPv4 or /128 IPv6)" $peerGroup.path) }}
+{{- end }}
+{{- if or (lt (int $peer.port) 1) (gt (int $peer.port) 65535) }}
+{{- fail (printf "%s[].port must be between 1 and 65535" $peerGroup.path) }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -184,6 +205,16 @@ spec:
       ports:
         - protocol: TCP
           port: {{ int $peer.port }}
+    {{- end }}
+    {{- if .Values.demoRequests.enabled }}
+    {{- range $peer := concat .Values.networkPolicy.console.demoWebhook .Values.networkPolicy.console.demoRedis }}
+    - to:
+        - ipBlock:
+            cidr: {{ $peer.cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ int $peer.port }}
+    {{- end }}
     {{- end }}
 {{- if .Values.migrations.enabled }}
 ---

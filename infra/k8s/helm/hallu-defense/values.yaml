@@ -96,6 +96,11 @@ networkPolicy:
     # Console performs server-side OIDC discovery, token exchange, and JWKS
     # retrieval. Production supplies only exact IdP/egress-gateway host CIDRs.
     external: []
+    # Lead intake is separate from OIDC. Standard NetworkPolicy cannot express
+    # FQDNs, so operators map the exact webhook and Redis hosts to stable /32 or
+    # /128 egress-gateway addresses.
+    demoWebhook: []
+    demoRedis: []
   worker:
     external: []
   migrations:
@@ -187,6 +192,14 @@ console:
     limits:
       cpu: 500m
       memory: 512Mi
+
+demoRequests:
+  # Disabled is the deployable default until domain, legal approval, the CRM,
+  # Redis TLS, and all file-backed credentials are supplied.
+  enabled: false
+  privacyContactEmail: ""
+  webhookAllowedOrigin: ""
+  redisCaPath: /run/hallu-defense/demo/redis-ca.pem
 
 worker:
   enabled: true
@@ -323,3 +336,10 @@ secrets:
     name: ""
   kindRedisTls:
     name: ""
+  demo:
+    name: ""
+    webhookUrlKey: webhook-url
+    webhookHmacSecretKey: webhook-hmac-secret
+    redisUrlKey: redis-url
+    redisCaKey: redis-ca.pem
+    metricsBearerKey: metrics-bearer

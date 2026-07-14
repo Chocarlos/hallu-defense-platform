@@ -4,6 +4,7 @@ import {
   browserRuntimeConfig,
   ConsoleRuntimeConfigError,
   loadConsoleRuntimeConfig,
+  loadPublicRuntimeConfig,
   parseIssuer,
   parseOrigin
 } from "./runtime-config";
@@ -20,6 +21,20 @@ const productionOidcEnvironment = {
 } as const;
 
 describe("Console runtime configuration", () => {
+  it("loads the public boundary without OIDC or API settings", () => {
+    expect(
+      loadPublicRuntimeConfig({
+        HALLU_DEFENSE_ENV: "production",
+        HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: "https://console.example.test"
+      })
+    ).toEqual({
+      allowInsecureLocalHttp: false,
+      environment: "production",
+      productionLike: true,
+      publicOrigin: "https://console.example.test"
+    });
+  });
+
   it("loads different runtime origins from the same module without a baked localhost", () => {
     const first = loadConsoleRuntimeConfig(productionOidcEnvironment);
     const second = loadConsoleRuntimeConfig({

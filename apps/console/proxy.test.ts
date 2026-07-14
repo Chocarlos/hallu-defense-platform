@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { contentSecurityPolicy } from "./proxy";
+import { contentSecurityPolicy, requiresAuthenticatedRuntime } from "./proxy";
 
 describe("Console response security policy", () => {
   it("binds scripts and styles to a nonce and denies framing", () => {
@@ -18,5 +18,19 @@ describe("Console response security policy", () => {
     expect(policy).toContain("upgrade-insecure-requests");
     expect(policy).not.toContain("'unsafe-inline'");
     expect(policy).not.toContain("https://cdn.");
+  });
+
+  it.each([
+    ["/", false],
+    ["/en", false],
+    ["/privacy", false],
+    ["/demo-request", false],
+    ["/metrics", false],
+    ["/console", true],
+    ["/console/runs", true],
+    ["/auth/login", true],
+    ["/api/verification/run", true]
+  ])("classifies the runtime boundary for %s", (pathname, expected) => {
+    expect(requiresAuthenticatedRuntime(pathname)).toBe(expected);
   });
 });
