@@ -7695,3 +7695,119 @@ Remaining risks:
 - Deployment readiness remains environment-specific. The existing rejected
   ingestion crash/restart lane is still open and was not changed by this
   documentation slice.
+
+## 2026-07-13 - Front F systemic launch claims and traceability audit
+
+Slice selected:
+
+- Independently audit WIP checkpoint
+  `fb111c1e15c87e40006844d62e37616a84ab796f` on branch
+  `codex/hallu-front-f-audit-fb111c1` against both launch briefs, without
+  changing product code or extending the accepted QA commit's evidence.
+- Inventory launch claims, routes, contracts, privacy/security controls,
+  configuration, tests and evidence; close the missing traceability for
+  TS-011, SEC-020 and CI-033 and record reproducible false positives.
+
+Implementation:
+
+- Added the WIP public-launch milestone to `PLAN_MASTER.md` and introduced
+  TS-011, SEC-020 and CI-033 in the traceability matrix as `implemented`, not
+  `tested` or `accepted`.
+- Scoped historical QA to exact commit `3bb45a548e4288934937f9397ce89710c53e7504`.
+  Demoted SEC-011 from `accepted` to `tested` because the checkpoint changes
+  the Console dependency graph, lockfile, image inputs and launch code without
+  a current Trivy run. Corrected CI-008 and stale Console/Kind evidence so it
+  cannot be read as execution of the WIP checkpoint.
+- Updated the root README with a checkpoint-specific status table and explicit
+  blockers. No product, test, workflow or infrastructure file was edited.
+
+Validation:
+
+- Verified branch, clean starting state and exact HEAD with `git status`,
+  `git branch --show-current` and `git rev-parse HEAD`. The shared CPython
+  3.12 environment was used only after setting `PYTHONPATH` to this worktree;
+  `hallu_defense.__file__` resolved to this worktree's
+  `apps/api/src/hallu_defense/__init__.py` before every Python gate batch.
+- `npm ci` completed. Console unit tests passed 178/178 across 29 files;
+  `test:e2e-static` passed 35/35; lint and typecheck passed; the production
+  build passed and its checker scanned 385 artifacts. The host Node/npm
+  24.14.0/11.13.0 differ from the pinned 24.18.0/11.16.0 CI lane, so these
+  local results are not represented as pinned-runtime CI.
+- Marketing Playwright collected 90 cases, but the full execution failed with
+  25 passed, 2 skipped and 63 failed. Firefox and WebKit could not launch
+  because their executables were absent; Chromium reproducibly failed the tour
+  keyboard test at 320, 768 and 1440. A one-test Chromium desktop rerun failed
+  the same `aria-selected` assertion. BrowserStack configuration passed while
+  explicitly reporting no remote result; username/access-key credentials and
+  the optional local-tunnel identifier were absent.
+- Read-only browser inspection confirmed ES/EN and privacy routes, language
+  metadata, localized headings, the disabled intake state and the rendered
+  1200x630 social card. At a 320x800 viewport, document client width was 305
+  while scroll width was 320 and a horizontal scrollbar was visible. The
+  existing headless `scrollWidth <= clientWidth + 1` assertion passed, so the
+  headed/headless divergence remains unresolved. No manual screen-reader or
+  contrast record or LCP/INP/CLS measurement was found.
+- A focused marketing-copy inventory found no prices, ratings, testimonials,
+  customer logos, open-source claim, GitHub-as-primary CTA, or claim of current
+  certification/production activation; the FAQ explicitly disclaims the last
+  category. Absolute phrases such as verifying “every” claim/action or “never”
+  declaring success are treated as product narrative, not accepted capability
+  evidence.
+- Marketing, production-profile, Helm and container-scan configuration gates
+  passed; Helm lint/template passed. Full and production-only npm audit each
+  reported 0 vulnerabilities. Docker client was present but its daemon was
+  unavailable, so no Compose runtime, Kind, Redis, networked CRM/webhook stub
+  or image scan was executed. Required production/BrowserStack secrets were
+  absent.
+- Current Redis tests inspect calls/Lua through fakes rather than execute Redis;
+  webhook tests mock `fetch`. The audit reproduced public/runtime enable-state
+  divergence, found honeypot bypass of Redis, payload-unbound idempotency and
+  downstream delivery assumptions, and confirmed the demo request/response
+  contract is local rather than versioned in JSON Schema/OpenAPI/contracts.
+  The exact config reproduction returned `{"public":true,"runtime":false}`.
+  With an injected 150 ms webhook stub, one run returned the same 202/body for
+  honeypot and real requests but measured 18 ms versus 154 ms. A simulated
+  post-delivery finalize failure returned 503, then a retry returned 202 after
+  a second webhook delivery (`webhookDeliveries:2`), demonstrating that local
+  duplicate prevention depends on downstream honoring `Idempotency-Key`.
+- `check_traceability_matrix.py` now validates 197 rows and
+  `check_foundation_docs.py` validates the root README plus 8 ADRs. Before the
+  audit, the matrix checker passed 194 rows despite all three brief-only IDs
+  being absent, confirming a semantic false negative. `check_worklog.py`
+  validates 128 entries; the combined foundation/traceability/worklog test
+  selection passed 23/23, and the documentation-only `git diff --check`
+  completed without an error.
+- `git diff --check 77b969a..fb111c1e` fails on extra EOF blank lines in eight
+  pre-existing demo-request files. They were not corrected because product
+  code is read-only for Front F; this documentation diff is checked separately.
+
+Remaining risks:
+
+- TS-011 remains blocked by the red keyboard-tour gate, horizontal overflow,
+  incomplete enabled-form/zoom/accessibility coverage, hydration-dependent
+  reveal content, invalid references from inactive tabs to unmounted panels,
+  localhost metadata fallback, and absent Web Vitals budgets.
+- SEC-020 lacks real Redis concurrency/TTL/cluster evidence, real HTTP webhook
+  behavior and no-PII log/trace evidence. Public/runtime config can disagree;
+  honeypot requests bypass Redis; idempotency is not payload-bound and ambiguous
+  delivery depends on downstream honoring `Idempotency-Key`; demo secret mounts
+  are not covered by the runtime secret-file preflight.
+- The minimal contract repair need not change the wire payload: add
+  `apps/console/lib/demo-request/public-contract.ts` with
+  `DemoRequestPayloadV1`, `DemoRequestAcceptedResponseV1` and
+  `DemoRequestErrorResponseV1`; have `buildDemoRequestPayload`,
+  `readAndNormalizeDemoRequest`, `acceptedResponse` and `errorResponse` consume
+  those symbols, while retaining `NormalizedDemoRequest` as the internal
+  camel-case model. Add a builder-to-parser parity test and version the shapes
+  in `docs/deployment/marketing-launch.md`. The launch briefs require one exact
+  public contract but do not expressly require `packages/contracts`/JSON
+  Schema for this Next.js route; adding schemas/exports there is the stricter
+  repository-wide contract-discipline option, not the minimum wire-preserving
+  correction.
+- CI-033 has no BrowserStack session evidence. Helm readiness and rollout waits
+  cover `/console` HTTP health, but the Kind smoke's explicit post-rollout fetch
+  inspects `/`; it does not prove authenticated-session behavior or expected
+  `/console` content. Other readiness prechecks also touch the public root.
+- The current dependency/image drift requires exact pinned-runtime CI and fresh
+  Trivy scans before SEC-011 can return to `accepted`. No deployment, legal,
+  CRM, domain, consent-copy or production-readiness claim is accepted here.
