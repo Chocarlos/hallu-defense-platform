@@ -23,6 +23,7 @@
     "sandbox",
     "api",
     "console",
+    "demoRequests",
     "worker",
     "migrations",
     "kindDependencies",
@@ -250,7 +251,28 @@
           }
         },
         "api": { "$ref": "#/definitions/externalPolicy" },
-        "console": { "$ref": "#/definitions/externalPolicy" },
+        "console": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["external", "demoWebhook", "demoRedis"],
+          "properties": {
+            "external": {
+              "type": "array",
+              "maxItems": 64,
+              "items": { "$ref": "#/definitions/namedCidrPortPeer" }
+            },
+            "demoWebhook": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "$ref": "#/definitions/namedCidrPortPeer" }
+            },
+            "demoRedis": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "$ref": "#/definitions/namedCidrPortPeer" }
+            }
+          }
+        },
         "worker": { "$ref": "#/definitions/externalPolicy" },
         "migrations": { "$ref": "#/definitions/externalPolicy" }
       }
@@ -404,6 +426,20 @@
           }
         },
         "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "demoRequests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "privacyContactEmail", "webhookAllowedOrigin", "redisCaPath"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "privacyContactEmail": { "type": "string", "maxLength": 320 },
+        "webhookAllowedOrigin": { "$ref": "#/definitions/httpsOriginOrEmpty" },
+        "redisCaPath": {
+          "type": "string",
+          "const": "/run/hallu-defense/demo/redis-ca.pem"
+        }
       }
     },
     "worker": {
@@ -566,7 +602,7 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["runtime", "bootstrap", "migrations", "kindPostgres", "kindVault", "kindRedisTls"],
+      "required": ["runtime", "bootstrap", "migrations", "kindPostgres", "kindVault", "kindRedisTls", "demo"],
       "properties": {
         "runtime": {
           "type": "object",
@@ -599,7 +635,20 @@
         },
         "kindPostgres": { "$ref": "#/definitions/secretNameReference" },
         "kindVault": { "$ref": "#/definitions/secretNameReference" },
-        "kindRedisTls": { "$ref": "#/definitions/secretNameReference" }
+        "kindRedisTls": { "$ref": "#/definitions/secretNameReference" },
+        "demo": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "webhookUrlKey", "webhookHmacSecretKey", "redisUrlKey", "redisCaKey", "metricsBearerKey"],
+          "properties": {
+            "name": { "$ref": "#/definitions/dnsSubdomainOrEmpty" },
+            "webhookUrlKey": { "$ref": "#/definitions/secretKey" },
+            "webhookHmacSecretKey": { "$ref": "#/definitions/secretKey" },
+            "redisUrlKey": { "$ref": "#/definitions/secretKey" },
+            "redisCaKey": { "$ref": "#/definitions/secretKey" },
+            "metricsBearerKey": { "$ref": "#/definitions/secretKey" }
+          }
+        }
       }
     }
   },

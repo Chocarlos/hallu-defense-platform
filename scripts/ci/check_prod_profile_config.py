@@ -330,10 +330,15 @@ def _validate_file_backed_secrets(
         "hallu_bootstrap_vault_token": "${HALLU_DEFENSE_BOOTSTRAP_VAULT_TOKEN_FILE:?set the bootstrap Vault token file path}",
         "hallu_runtime_postgres_dsn": "${HALLU_DEFENSE_POSTGRES_DSN_FILE:?set the runtime PostgreSQL DSN file path}",
         "hallu_migrations_postgres_dsn": "${HALLU_DEFENSE_POSTGRES_MIGRATION_DSN_FILE:?set the migration PostgreSQL DSN file path}",
+        "hallu_demo_webhook_url": "${HALLU_DEFENSE_DEMO_WEBHOOK_URL_HOST_PATH:-/dev/null}",
+        "hallu_demo_webhook_hmac_secret": "${HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_HOST_PATH:-/dev/null}",
+        "hallu_demo_redis_url": "${HALLU_DEFENSE_DEMO_REDIS_URL_HOST_PATH:-/dev/null}",
+        "hallu_demo_redis_ca": "${HALLU_DEFENSE_DEMO_REDIS_CA_HOST_PATH:-/dev/null}",
+        "hallu_console_metrics_bearer": "${HALLU_DEFENSE_CONSOLE_METRICS_BEARER_HOST_PATH:-/dev/null}",
     }
     if set(secrets) != set(expected_files):
         errors.append(
-            "prod profile must declare exactly four file-backed runtime secrets"
+            "prod profile must declare exactly nine scoped file-backed runtime secrets"
         )
         return
     for name, expected_file in expected_files.items():
@@ -396,13 +401,18 @@ def _validate_service_secret_mounts(
         return
     if tuple(str(mount.get("source", "")) for mount in mounts) != expected_sources:
         errors.append(f"prod {service_label} has incorrect secret sources")
-    expected_targets = (
-        ("hallu_defense_vault_token", "hallu_defense_postgres_dsn")
-        if len(expected_sources) == 2
-        else ("hallu_defense_postgres_dsn",)
-        if expected_sources == ("hallu_migrations_postgres_dsn",)
-        else ("hallu_defense_vault_token",)
-    )
+    target_by_source = {
+        "hallu_runtime_vault_token": "hallu_defense_vault_token",
+        "hallu_bootstrap_vault_token": "hallu_defense_vault_token",
+        "hallu_runtime_postgres_dsn": "hallu_defense_postgres_dsn",
+        "hallu_migrations_postgres_dsn": "hallu_defense_postgres_dsn",
+        "hallu_demo_webhook_url": "hallu_demo_webhook_url",
+        "hallu_demo_webhook_hmac_secret": "hallu_demo_webhook_hmac_secret",
+        "hallu_demo_redis_url": "hallu_demo_redis_url",
+        "hallu_demo_redis_ca": "hallu_demo_redis_ca",
+        "hallu_console_metrics_bearer": "hallu_console_metrics_bearer",
+    }
+    expected_targets = tuple(target_by_source[source] for source in expected_sources)
     for mount, expected_target in zip(mounts, expected_targets, strict=True):
         if mount.get("target") != expected_target or set(mount) != {"source", "target"}:
             errors.append(
@@ -632,6 +642,18 @@ def _validate_base_and_overlay_parse(
             + ", ".join(sorted(str(key) for key in forbidden_console_env))
         )
     _validate_hardened_service(console, service_label="console", errors=errors)
+    _validate_service_secret_mounts(
+        console,
+        service_label="console",
+        expected_sources=(
+            "hallu_demo_webhook_url",
+            "hallu_demo_webhook_hmac_secret",
+            "hallu_demo_redis_url",
+            "hallu_demo_redis_ca",
+            "hallu_console_metrics_bearer",
+        ),
+        errors=errors,
+    )
     console_tmpfs = _string_sequence(console.get("tmpfs"), "prod console tmpfs", errors)
     if not any(
         mount.startswith("/app/apps/console/.next/cache:")

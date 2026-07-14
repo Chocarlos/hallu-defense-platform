@@ -101,6 +101,10 @@ services:
       dockerfile: infra/docker/console.Dockerfile
     environment:
       HALLU_DEFENSE_ENV: local
+      # Lead intake is deliberately off in the committed local profile. The
+      # public landing and privacy pages still render without CRM/Redis secrets.
+      HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"
+      HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL: ""
       HALLU_DEFENSE_CONSOLE_AUTH_MODE: unsigned-local
       HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: http://localhost:3000
       HALLU_DEFENSE_CONSOLE_API_ORIGIN: http://localhost:8000

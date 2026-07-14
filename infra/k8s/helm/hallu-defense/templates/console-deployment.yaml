@@ -34,6 +34,20 @@
 {{- if ne $apiAudience .Values.oidc.audience -}}
 {{- fail "console.oidc.apiAudience must exactly match oidc.audience" -}}
 {{- end -}}
+{{- if .Values.demoRequests.enabled -}}
+{{- $privacyContact := required "demoRequests.privacyContactEmail is required when intake is enabled" .Values.demoRequests.privacyContactEmail -}}
+{{- if not (regexMatch "^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$" $privacyContact) -}}
+{{- fail "demoRequests.privacyContactEmail must be a bounded email address" -}}
+{{- end -}}
+{{- $webhookOrigin := required "demoRequests.webhookAllowedOrigin is required when intake is enabled" .Values.demoRequests.webhookAllowedOrigin -}}
+{{- if not (regexMatch $originPattern $webhookOrigin) -}}
+{{- fail "demoRequests.webhookAllowedOrigin must be an exact canonical HTTPS origin" -}}
+{{- end -}}
+{{- $demoKeys := list .Values.secrets.demo.webhookUrlKey .Values.secrets.demo.webhookHmacSecretKey .Values.secrets.demo.redisUrlKey .Values.secrets.demo.redisCaKey .Values.secrets.demo.metricsBearerKey -}}
+{{- if ne (len $demoKeys) (len (uniq $demoKeys)) -}}
+{{- fail "secrets.demo data keys must be distinct" -}}
+{{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -69,6 +83,26 @@ spec:
           env:
             - name: HALLU_DEFENSE_ENV
               value: production
+            - name: HALLU_DEFENSE_DEMO_REQUESTS_ENABLED
+              value: {{ .Values.demoRequests.enabled | quote }}
+            {{- if .Values.demoRequests.privacyContactEmail }}
+            - name: HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL
+              value: {{ .Values.demoRequests.privacyContactEmail | quote }}
+            {{- end }}
+            {{- if .Values.demoRequests.enabled }}
+            - name: HALLU_DEFENSE_DEMO_WEBHOOK_URL_FILE
+              value: /run/hallu-defense/demo/webhook-url
+            - name: HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE
+              value: /run/hallu-defense/demo/webhook-hmac-secret
+            - name: HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN
+              value: {{ .Values.demoRequests.webhookAllowedOrigin | quote }}
+            - name: HALLU_DEFENSE_DEMO_REDIS_URL_FILE
+              value: /run/hallu-defense/demo/redis-url
+            - name: HALLU_DEFENSE_DEMO_REDIS_CA_PATH
+              value: {{ .Values.demoRequests.redisCaPath | quote }}
+            - name: HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE
+              value: /run/hallu-defense/demo/metrics-bearer
+            {{- end }}
             - name: HALLU_DEFENSE_CONSOLE_AUTH_MODE
               value: oidc
             - name: HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN
@@ -90,15 +124,20 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.demoRequests.enabled }}
+            - name: demo-secrets
+              mountPath: /run/hallu-defense/demo
+              readOnly: true
+            {{- end }}
           livenessProbe:
             httpGet:
-              path: /
+              path: /console
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /
+              path: /console
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -108,6 +147,23 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: {{ .Values.global.tmpSizeLimit | quote }}
+        {{- if .Values.demoRequests.enabled }}
+        - name: demo-secrets
+          secret:
+            secretName: {{ .Values.secrets.demo.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.demo.webhookUrlKey | quote }}
+                path: webhook-url
+              - key: {{ .Values.secrets.demo.webhookHmacSecretKey | quote }}
+                path: webhook-hmac-secret
+              - key: {{ .Values.secrets.demo.redisUrlKey | quote }}
+                path: redis-url
+              - key: {{ .Values.secrets.demo.redisCaKey | quote }}
+                path: redis-ca.pem
+              - key: {{ .Values.secrets.demo.metricsBearerKey | quote }}
+                path: metrics-bearer
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

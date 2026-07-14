@@ -62,7 +62,7 @@ describe("OIDC callback Strict-session rotation", () => {
     const replacement = getConsoleSession(replacementId);
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(`${consoleOrigin}/`);
+    expect(response.headers.get("location")).toBe(`${consoleOrigin}/console`);
     expect(getConsoleSession(prior.sessionId)).toBeNull();
     expect(replacement).not.toBeNull();
     expect(replacement?.accessToken).toMatch(/^eyJ/u);
@@ -78,7 +78,7 @@ describe("OIDC callback Strict-session rotation", () => {
     const replay = await callback(callbackRequest(transaction.state, issuer));
     expect(replay.status).toBe(303);
     expect(replay.headers.get("location")).toBe(
-      `${consoleOrigin}/?auth_error=login_failed`
+      `${consoleOrigin}/console?auth_error=login_failed`
     );
     expect(getConsoleSession(replacementId)).toBe(replacement);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -99,7 +99,7 @@ describe("OIDC callback Strict-session rotation", () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      `${consoleOrigin}/?auth_error=login_failed`
+      `${consoleOrigin}/console?auth_error=login_failed`
     );
     expect(response.cookies.get(sessionCookieName)).toBeUndefined();
     expect(getConsoleSession(prior.sessionId)).toBe(prior);

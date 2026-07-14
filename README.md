@@ -178,7 +178,10 @@ Servicios principales:
 - API: <http://localhost:8000>
 - Swagger UI: <http://localhost:8000/docs>
 - OpenAPI JSON: <http://localhost:8000/openapi.json>
-- Consola DevEx: <http://localhost:3000>
+- Landing ES: <http://localhost:3000/>
+- Landing EN: <http://localhost:3000/en>
+- Privacidad ES/EN: <http://localhost:3000/privacy> y <http://localhost:3000/en/privacy>
+- Consola DevEx autenticada: <http://localhost:3000/console>
 - Health: <http://localhost:8000/health>
 - Readiness: <http://localhost:8000/ready>
 
@@ -383,6 +386,8 @@ make policy-test
 make sandbox-test
 make evals-smoke
 make security-check
+make marketing-e2e-list
+make browserstack-marketing-config
 ```
 
 Gates documentales y de configuración:
@@ -409,6 +414,7 @@ Si cambias contratos públicos, valida JSON Schema, Pydantic, TypeScript, OpenAP
 La plataforma incluye Compose para desarrollo, perfil de producción validado y chart Helm para Kubernetes:
 
 - [Perfil de producción](docs/deployment/production-profile.md)
+- [Lanzamiento de marketing, captación y compatibilidad web](docs/deployment/marketing-launch.md)
 - [Despliegue Helm/Kubernetes](docs/deployment/kubernetes-helm.md)
 - [Sandbox Jobs en Kubernetes](docs/deployment/kubernetes-sandbox-jobs.md)
 - [Materialización del bearer de métricas](docs/deployment/metrics-bearer-token-materializer.md)

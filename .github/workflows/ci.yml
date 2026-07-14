@@ -120,6 +120,8 @@ jobs:
         run: python scripts/ci/check_observability_config.py
       - name: Check production profile config
         run: python scripts/ci/check_prod_profile_config.py
+      - name: Check marketing infrastructure and compatibility config
+        run: python scripts/ci/check_marketing_compatibility_config.py
       - name: Check Helm chart
         run: python scripts/ci/check_helm_chart.py
 
@@ -155,10 +157,23 @@ jobs:
         run: npm --workspace @hallu-defense/console run check:build
       - name: Test Console e2e runtime and cleanup contracts
         run: npm --workspace @hallu-defense/console run test:e2e-static
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright marketing browser matrix
+        run: npx playwright install --with-deps chromium firefox webkit
       - name: Run browser e2e
         run: npm run test:e2e
         env:
           E2E_PYTHON_BIN: ${{ steps.setup-python.outputs.python-path }}
           E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Run separate marketing browser matrix
+        run: npm --workspace @hallu-defense/console run test:e2e:marketing
+      - name: Validate BrowserStack matrix contract
+        run: npm --workspace @hallu-defense/console run test:browserstack:config
+      - name: Run BrowserStack marketing matrix when credentials exist
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          BROWSERSTACK_BASE_URL: ${{ secrets.BROWSERSTACK_BASE_URL }}
+          BROWSERSTACK_LOCAL: ${{ vars.BROWSERSTACK_LOCAL || 'false' }}
+          BROWSERSTACK_LOCAL_IDENTIFIER: ${{ secrets.BROWSERSTACK_LOCAL_IDENTIFIER }}
+          BROWSERSTACK_WEBHOOK_STUB: ${{ vars.BROWSERSTACK_WEBHOOK_STUB || 'false' }}
+        run: npm --workspace @hallu-defense/console run test:browserstack:marketing

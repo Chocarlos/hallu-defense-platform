@@ -1,12 +1,20 @@
 import type { Metadata } from "next";
-import "./globals.css";
+
+import "../globals.css";
 
 export const metadata: Metadata = {
   title: "Hallu Defense Console",
-  description: "Operational console for hallucination defense runs"
+  description: "Consola operativa autenticada de Hallu Defense",
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true
+  }
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function ConsoleRootLayout({
+  children
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="es">
       <body>
@@ -18,4 +26,3 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     </html>
   );
 }
-

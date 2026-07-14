@@ -92,6 +92,7 @@ jobs:
       - run: python scripts/ci/check_metrics_token_materializer.py
       - run: python scripts/ci/check_observability_config.py
       - run: python scripts/ci/check_prod_profile_config.py
+      - run: python scripts/ci/check_marketing_compatibility_config.py
       - run: python scripts/ci/check_helm_chart.py
       - run: npm audit --audit-level=high
       - run: npm audit --omit=dev --audit-level=high
