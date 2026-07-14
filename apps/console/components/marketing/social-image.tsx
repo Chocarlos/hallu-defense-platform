@@ -3,9 +3,8 @@ import { ImageResponse } from "next/og";
 export const alt =
   "Hallu Defense — evidencia/evidence, política/policy y trazabilidad/traceability";
 export const size = { width: 1200, height: 630 };
-export const contentType = "image/png";
 
-export default function OpenGraphImage() {
+export function renderSocialImage(): ImageResponse {
   return new ImageResponse(
     <div
       style={{

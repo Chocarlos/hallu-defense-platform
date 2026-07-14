@@ -3,6 +3,9 @@ import type { Metadata } from "next";
 import "../globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(
+    process.env.HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN ?? "http://localhost:3000"
+  ),
   title: "Hallu Defense Console",
   description: "Consola operativa autenticada de Hallu Defense",
   robots: {
