@@ -861,8 +861,9 @@ def _validate_keycloak_realm_client(realm: Mapping[str, object], errors: list[st
             )
     if "secret" in console_client:
         errors.append(f"Keycloak public client {KEYCLOAK_CONSOLE_CLIENT_ID} must not have a secret")
-    attributes = console_client.get("attributes")
-    if not isinstance(attributes, Mapping) or attributes.get("pkce.code.challenge.method") != "S256":
+    raw_attributes = console_client.get("attributes")
+    attributes = raw_attributes if isinstance(raw_attributes, Mapping) else {}
+    if attributes.get("pkce.code.challenge.method") != "S256":
         errors.append(f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must require PKCE S256")
     expected_redirects = {
         f"http://localhost:{port}/auth/callback"
@@ -885,6 +886,37 @@ def _validate_keycloak_realm_client(realm: Mapping[str, object], errors: list[st
     ):
         errors.append(
             f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must use only exact local callback URIs"
+        )
+    expected_local_origins = {
+        f"http://localhost:{port}" for port in (3000, 3100)
+    } | {f"http://127.0.0.1:{port}" for port in (3000, 3100)}
+    web_origins = console_client.get("webOrigins")
+    web_origin_values = (
+        [origin for origin in web_origins if isinstance(origin, str)]
+        if isinstance(web_origins, Sequence) and not isinstance(web_origins, str)
+        else []
+    )
+    if (
+        len(web_origin_values) != len(expected_local_origins)
+        or set(web_origin_values) != expected_local_origins
+        or any("*" in value for value in web_origin_values)
+    ):
+        errors.append(
+            f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must use only exact local web origins"
+        )
+    post_logout_redirects = attributes.get("post.logout.redirect.uris")
+    post_logout_values = (
+        post_logout_redirects.split("##")
+        if isinstance(post_logout_redirects, str)
+        else []
+    )
+    if (
+        len(post_logout_values) != len(expected_local_origins)
+        or set(post_logout_values) != expected_local_origins
+        or any("*" in value for value in post_logout_values)
+    ):
+        errors.append(
+            f"Keycloak client {KEYCLOAK_CONSOLE_CLIENT_ID} must use only exact local post-logout root URIs"
         )
     mappers = console_client.get("protocolMappers")
     mapper_list = (
