@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DemoMetrics } from "./metrics";
 import { createDemoMetricsHandler } from "./metrics-route";
 
-const token = "metrics-bearer-token-with-at-least-32-characters";
+const token = "x".repeat(48);
 
 describe("demo metrics route", () => {
   it("requires a bearer read from file and exposes only bounded labels", () => {
@@ -48,6 +48,18 @@ describe("demo metrics route", () => {
     expect(response.status).toBe(503);
   });
 
+  it("fails closed when the bearer file cannot be represented by the HTTP parser", () => {
+    const response = createDemoMetricsHandler({
+      config: { enabled: true, bearerFile: "/secret" },
+      secretReader: () => Buffer.alloc(32)
+    })(
+      new Request("https://defense.example.test/metrics", {
+        headers: { authorization: `Bearer ${token}` }
+      })
+    );
+    expect(response.status).toBe(503);
+  });
+
   it("does not accept malformed, prefixed, or differently sized credentials", () => {
     const handler = createDemoMetricsHandler({
       config: { enabled: true, bearerFile: "/secret" },
@@ -67,5 +79,19 @@ describe("demo metrics route", () => {
         ).status
       ).toBe(401);
     }
+  });
+
+  it("returns 401 for an Authorization bearer larger than an unsigned 16-bit length", () => {
+    const handler = createDemoMetricsHandler({
+      config: { enabled: true, bearerFile: "/secret" },
+      secretReader: () => Buffer.from(token, "utf8")
+    });
+    const response = handler(
+      new Request("https://defense.example.test/metrics", {
+        headers: { authorization: `Bearer ${"z".repeat(65_536)}` }
+      })
+    );
+
+    expect(response.status).toBe(401);
   });
 });

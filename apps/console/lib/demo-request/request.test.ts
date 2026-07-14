@@ -51,7 +51,13 @@ describe("demo request boundary", () => {
     );
   });
 
-  it.each(["text/plain", "application/problem+json", ""])(
+  it.each([
+    "text/plain",
+    "application/problem+json",
+    "application/json; charset=iso-8859-1",
+    "application/json; profile=unexpected",
+    ""
+  ])(
     "returns 415 semantics for an invalid media type: %s",
     async (contentType) => {
       const request = validRequest({}, { "content-type": contentType });
@@ -60,6 +66,14 @@ describe("demo request boundary", () => {
       });
     }
   );
+
+  it("accepts an explicit UTF-8 JSON charset", async () => {
+    await expect(
+      readAndNormalizeDemoRequest(
+        validRequest({}, { "content-type": 'application/json; charset="UTF-8"' })
+      )
+    ).resolves.toMatchObject({ email: "security@example.invalid" });
+  });
 
   it("enforces 8192 bytes against declared and streamed bodies", async () => {
     const json = JSON.stringify(validPayload());
@@ -77,6 +91,9 @@ describe("demo request boundary", () => {
       readAndNormalizeDemoRequest(
         validRequest({}, { "content-length": String(DEMO_REQUEST_MAX_BYTES + 1) })
       )
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      readAndNormalizeDemoRequest(validRequest({}, { "content-length": "1" }))
     ).rejects.toMatchObject({ status: 400 });
   });
 

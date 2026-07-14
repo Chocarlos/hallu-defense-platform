@@ -1,10 +1,15 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { DemoConfigurationError, loadDemoRuntimeConfig } from "./config";
+import {
+  DemoConfigurationError,
+  isDemoRequestIntakeEnabled,
+  loadDemoRuntimeConfig,
+  readSecretBytes
+} from "./config";
 
 describe("demo runtime configuration", () => {
   it("is disabled in development when launch inputs are absent", () => {
@@ -17,10 +22,23 @@ describe("demo runtime configuration", () => {
   });
 
   it("fails closed in production when enabled launch inputs are absent", () => {
+    const env = {
+      HALLU_DEFENSE_ENV: "production",
+      HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "true"
+    } as const;
+    expect(() => loadDemoRuntimeConfig(env)).toThrow(DemoConfigurationError);
+    expect(isDemoRequestIntakeEnabled(env)).toBe(false);
+  });
+
+  it("treats the Next.js production runtime as production-like when the deployment environment is absent", () => {
+    const fixture = productionFixture();
+    writeSecureSecret(fixture.redisFile, "redis://redis.example.test:6379/0\n");
+
     expect(() =>
       loadDemoRuntimeConfig({
-        HALLU_DEFENSE_ENV: "production",
-        HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "true"
+        ...fixture.env,
+        HALLU_DEFENSE_ENV: undefined,
+        NODE_ENV: "production"
       })
     ).toThrow(DemoConfigurationError);
   });
@@ -36,6 +54,29 @@ describe("demo runtime configuration", () => {
     });
     expect(JSON.stringify(config)).not.toContain("metrics-bearer-value");
     expect(JSON.stringify(config)).not.toContain("webhook-hmac-value");
+    expect(isDemoRequestIntakeEnabled(fixture.env)).toBe(true);
+  });
+
+  it("accepts a 254-character privacy contact and fails closed at 255", () => {
+    const fixture = productionFixture();
+    const maxLengthEmail = `${"a".repeat(64)}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(53)}.invalid`;
+    const overlongEmail = `${"a".repeat(64)}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(54)}.invalid`;
+    expect(maxLengthEmail).toHaveLength(254);
+    expect(overlongEmail).toHaveLength(255);
+
+    expect(
+      loadDemoRuntimeConfig({
+        ...fixture.env,
+        HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL: maxLengthEmail
+      })
+    ).toMatchObject({ enabled: true, privacyContactEmail: maxLengthEmail });
+
+    const overlongEnv = {
+      ...fixture.env,
+      HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL: overlongEmail
+    };
+    expect(() => loadDemoRuntimeConfig(overlongEnv)).toThrow(DemoConfigurationError);
+    expect(isDemoRequestIntakeEnabled(overlongEnv)).toBe(false);
   });
 
   it("rejects webhook origin drift and plaintext production Redis", () => {
@@ -47,8 +88,26 @@ describe("demo runtime configuration", () => {
       })
     ).toThrow(DemoConfigurationError);
 
-    writeFileSync(fixture.redisFile, "redis://redis.example.test:6379/0\n", "utf8");
+    writeSecureSecret(fixture.redisFile, "redis://redis.example.test:6379/0\n");
     expect(() => loadDemoRuntimeConfig(fixture.env)).toThrow(DemoConfigurationError);
+  });
+
+  it("rejects unbounded, relative, permission-unsafe, and non-HTTP bearer files", () => {
+    const fixture = productionFixture();
+    writeSecureSecret(fixture.metricsFile, Buffer.alloc(32));
+    expect(() => loadDemoRuntimeConfig(fixture.env)).toThrow(DemoConfigurationError);
+
+    writeSecureSecret(fixture.metricsFile, Buffer.alloc(8 * 1024 + 1, 0x78));
+    expect(() => readSecretBytes(fixture.metricsFile)).toThrow(DemoConfigurationError);
+    expect(() => readSecretBytes("relative-secret-file")).toThrow(
+      DemoConfigurationError
+    );
+
+    writeSecureSecret(fixture.metricsFile, Buffer.alloc(32, 0x78));
+    chmodSync(fixture.metricsFile, 0o666);
+    expect(() => readSecretBytes(fixture.metricsFile, "linux")).toThrow(
+      DemoConfigurationError
+    );
   });
 });
 
@@ -59,17 +118,17 @@ function productionFixture() {
   const redisFile = join(directory, "redis-url");
   const caFile = join(directory, "redis-ca.pem");
   const metricsFile = join(directory, "metrics-bearer");
-  writeFileSync(webhookFile, "https://crm.example.test/hooks/demo\n", "utf8");
-  writeFileSync(hmacFile, `webhook-hmac-value-${"x".repeat(32)}\n`, "utf8");
-  writeFileSync(
+  writeSecureSecret(webhookFile, "https://crm.example.test/hooks/demo\n");
+  writeSecureSecret(hmacFile, `webhook-hmac-value-${"x".repeat(32)}\n`);
+  writeSecureSecret(
     redisFile,
-    "rediss://demo:secret@redis.example.test:6380/0\n",
-    "utf8"
+    "rediss://demo:secret@redis.example.test:6380/0\n"
   );
-  writeFileSync(caFile, "synthetic-ca-certificate", "utf8");
-  writeFileSync(metricsFile, `metrics-bearer-value-${"x".repeat(32)}\n`, "utf8");
+  writeSecureSecret(caFile, "synthetic-ca-certificate");
+  writeSecureSecret(metricsFile, `metrics-bearer-value-${"x".repeat(32)}\n`);
   return {
     redisFile,
+    metricsFile,
     env: {
       HALLU_DEFENSE_ENV: "production",
       HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "true",
@@ -83,5 +142,15 @@ function productionFixture() {
       HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE: metricsFile
     }
   } as const;
+}
+
+function writeSecureSecret(path: string, contents: string | Uint8Array): void {
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // The file does not exist yet.
+  }
+  writeFileSync(path, contents);
+  chmodSync(path, 0o440);
 }
 

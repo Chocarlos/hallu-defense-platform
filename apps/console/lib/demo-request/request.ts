@@ -21,6 +21,8 @@ const ALLOWED_FIELDS = new Set([
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const EMAIL_LOCAL_RE = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/u;
 const DOMAIN_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u;
+const JSON_CONTENT_TYPE_RE =
+  /^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/iu;
 
 export function validateDemoRequestSource(request: Request, expectedOrigin: string): void {
   const url = new URL(request.url);
@@ -45,14 +47,11 @@ export function validateDemoRequestSource(request: Request, expectedOrigin: stri
 export async function readAndNormalizeDemoRequest(
   request: Request
 ): Promise<NormalizedDemoRequest> {
-  const mediaType = request.headers
-    .get("content-type")
-    ?.split(";", 1)[0]
-    ?.trim()
-    .toLowerCase();
+  const contentType = request.headers.get("content-type");
   const contentEncoding = request.headers.get("content-encoding");
   if (
-    mediaType !== "application/json" ||
+    contentType === null ||
+    !JSON_CONTENT_TYPE_RE.test(contentType) ||
     (contentEncoding !== null && contentEncoding.trim().toLowerCase() !== "identity")
   ) {
     throw new DemoRequestError(415, "Request content type is invalid.", "invalid");
@@ -88,6 +87,9 @@ export async function readAndNormalizeDemoRequest(
     }
   } finally {
     reader.releaseLock();
+  }
+  if (declaredLength !== null && Number(declaredLength) !== totalBytes) {
+    invalidRequest();
   }
 
   let parsed: unknown;
