@@ -82,7 +82,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
     // The Strict session cookie is intentionally absent on the cross-site IdP
     // callback. Rotate the exact session captured in the one-shot transaction.
-    const session = rotateConsoleSession(transaction, tokenSet);
+    const session = rotateConsoleSession(config, transaction, tokenSet);
     const response = NextResponse.redirect(
       new URL("/console", config.publicOrigin),
       303

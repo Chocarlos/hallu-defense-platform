@@ -10,30 +10,30 @@ import {
 
 export function proxy(request: NextRequest): NextResponse {
   const pathname = request.nextUrl.pathname;
-  let productionLike: boolean;
-  try {
-    productionLike = requiresAuthenticatedRuntime(pathname)
-      ? loadConsoleRuntimeConfig().productionLike
-      : loadPublicRuntimeConfig().productionLike;
-  } catch {
-    if (!requiresAuthenticatedRuntime(pathname)) {
+  const authenticatedRuntimeRequired = requiresAuthenticatedRuntime(pathname);
+  let productionLike = process.env.NODE_ENV === "production";
+  if (authenticatedRuntimeRequired) {
+    try {
+      productionLike = loadConsoleRuntimeConfig().productionLike;
+    } catch {
+      try {
+        // The public boundary is intentionally independent of API/OIDC. Keep
+        // production transport policy even when private runtime validation
+        // fails later on an authenticated-only setting.
+        productionLike = loadPublicRuntimeConfig().productionLike;
+      } catch {
+        // NODE_ENV remains the conservative deployment fallback when even the
+        // public boundary is malformed.
+      }
+      return unavailableResponse(productionLike);
+    }
+  } else {
+    try {
+      productionLike = loadPublicRuntimeConfig().productionLike;
+    } catch {
       // Public marketing and privacy pages remain available even when the
       // authenticated Console runtime is not configured. Route handlers such
       // as /demo-request retain their own fail-closed configuration boundary.
-      productionLike = process.env.NODE_ENV === "production";
-    } else {
-      const response = new NextResponse(
-        "Console runtime configuration is unavailable.",
-        { status: 503 }
-      );
-      applySecurityHeaders(
-        response,
-        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-        false
-      );
-      response.headers.set("cache-control", "no-store, max-age=0");
-      response.headers.set("x-robots-tag", "noindex, nofollow, noarchive");
-      return response;
     }
   }
 
@@ -50,17 +50,7 @@ export function proxy(request: NextRequest): NextResponse {
     }
     return response;
   } catch {
-    const response = new NextResponse(
-      "Console runtime configuration is unavailable.",
-      { status: 503 }
-    );
-    applySecurityHeaders(
-      response,
-      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-      false
-    );
-    response.headers.set("cache-control", "no-store, max-age=0");
-    return response;
+    return unavailableResponse(productionLike);
   }
 }
 
@@ -81,6 +71,22 @@ function shouldNoIndex(pathname: string): boolean {
     pathname === "/demo-request" ||
     pathname === "/metrics"
   );
+}
+
+function unavailableResponse(productionLike: boolean): NextResponse {
+  const response = new NextResponse(
+    "Console runtime configuration is unavailable.",
+    { status: 503 }
+  );
+  applySecurityHeaders(
+    response,
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    productionLike
+  );
+  response.headers.set("cache-control", "no-store, max-age=0");
+  response.headers.set("pragma", "no-cache");
+  response.headers.set("x-robots-tag", "noindex, nofollow, noarchive");
+  return response;
 }
 
 export const config = {
