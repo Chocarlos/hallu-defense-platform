@@ -257,8 +257,16 @@ def validate(root: Path = REPO_ROOT) -> None:
         "hasNoTransparentContent",
         'element.querySelectorAll("*")',
         "getComputedStyle(current).opacity",
-        "cannot place form PII",
-        "leakingRequests",
+        "cannot transmit form PII without JavaScript",
+        "inputWasEnabled",
+        "buttonWasEnabled",
+        "leakingChannels",
+        "containsEncodedValue(request.url(), email)",
+        "request.headers()",
+        "request.postData()",
+        "expect(inputWasEnabled).toBe(false)",
+        "expect(buttonWasEnabled).toBe(false)",
+        "expect(leakingChannels).toEqual([])",
         "new URL(page.url()).search",
     ):
         _require(texts[progressive_label], marker, progressive_label, errors)
