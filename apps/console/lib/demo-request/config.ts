@@ -1,7 +1,12 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 const PRODUCTION_LIKE_ENVIRONMENTS = new Set(["production", "staging"]);
 const SECRET_FILE_MAX_BYTES = 8 * 1024;
+const METRICS_BEARER_MIN_BYTES = 32;
+const METRICS_BEARER_MAX_BYTES = 256;
+const PRIVACY_CONTACT_EMAIL_MAX_CHARACTERS = 254;
+const SECURE_POSIX_SECRET_MODES = new Set([0o400, 0o440, 0o600, 0o640]);
 
 export interface DisabledDemoRuntimeConfig {
   readonly enabled: false;
@@ -43,7 +48,9 @@ export function loadDemoRuntimeConfig(
   env: EnvironmentSource = process.env
 ): DemoRuntimeConfig {
   const environment = (env.HALLU_DEFENSE_ENV ?? "local").trim().toLowerCase();
-  const productionLike = PRODUCTION_LIKE_ENVIRONMENTS.has(environment);
+  const nodeEnvironment = (env.NODE_ENV ?? "").trim().toLowerCase();
+  const productionLike =
+    PRODUCTION_LIKE_ENVIRONMENTS.has(environment) || nodeEnvironment === "production";
   const enabled = strictBoolean(env.HALLU_DEFENSE_DEMO_REQUESTS_ENABLED);
   if (!enabled) {
     return { enabled: false, environment, productionLike };
@@ -69,18 +76,102 @@ export function loadDemoMetricsRuntimeConfig(
   return { enabled: true, bearerFile };
 }
 
-export function readSecretBytes(path: string): Buffer {
-  const bytes = readFileSync(path);
-  if (bytes.byteLength === 0 || bytes.byteLength > SECRET_FILE_MAX_BYTES) {
+export function readSecretBytes(
+  path: string,
+  platform: NodeJS.Platform = process.platform
+): Buffer {
+  if (!isAbsolute(path)) {
     throw new DemoConfigurationError();
   }
-  if (bytes.at(-1) === 0x0a) {
-    const withoutLf = bytes.subarray(0, bytes.byteLength - 1);
-    return withoutLf.at(-1) === 0x0d
-      ? Buffer.from(withoutLf.subarray(0, withoutLf.byteLength - 1))
-      : Buffer.from(withoutLf);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY);
+    const stat = fstatSync(descriptor);
+    const permissions = stat.mode & 0o777;
+    if (
+      !stat.isFile() ||
+      stat.size <= 0 ||
+      stat.size > SECRET_FILE_MAX_BYTES ||
+      (platform !== "win32" && !SECURE_POSIX_SECRET_MODES.has(permissions))
+    ) {
+      throw new DemoConfigurationError();
+    }
+
+    const bounded = Buffer.alloc(SECRET_FILE_MAX_BYTES + 1);
+    let totalBytes = 0;
+    while (totalBytes < bounded.byteLength) {
+      const bytesRead = readSync(
+        descriptor,
+        bounded,
+        totalBytes,
+        bounded.byteLength - totalBytes,
+        null
+      );
+      if (bytesRead === 0) {
+        break;
+      }
+      totalBytes += bytesRead;
+    }
+    if (totalBytes !== stat.size || totalBytes > SECRET_FILE_MAX_BYTES) {
+      throw new DemoConfigurationError();
+    }
+
+    const bytes = bounded.subarray(0, totalBytes);
+    const secret = stripSingleTrailingNewline(bytes);
+    if (secret.byteLength === 0) {
+      throw new DemoConfigurationError();
+    }
+    return secret;
+  } catch (error) {
+    if (error instanceof DemoConfigurationError) {
+      throw error;
+    }
+    throw new DemoConfigurationError();
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
   }
-  return Buffer.from(bytes);
+}
+
+/**
+ * Public rendering projection for the marketing surface. Unlike the strict
+ * startup loader above, an invalid private intake configuration is represented
+ * as disabled so a secret-mount problem cannot leak through a landing-page
+ * error. Server instrumentation must continue to call loadDemoRuntimeConfig()
+ * directly so enabled production intake still fails closed before readiness.
+ */
+export function isDemoRequestIntakeEnabled(
+  env: EnvironmentSource = process.env
+): boolean {
+  try {
+    return loadDemoRuntimeConfig(env).enabled;
+  } catch (error) {
+    if (error instanceof DemoConfigurationError) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export function isValidMetricsBearer(bytes: Uint8Array): boolean {
+  if (
+    bytes.byteLength < METRICS_BEARER_MIN_BYTES ||
+    bytes.byteLength > METRICS_BEARER_MAX_BYTES
+  ) {
+    return false;
+  }
+  return bytes.every((byte) => byte >= 0x21 && byte <= 0x7e);
+}
+
+function stripSingleTrailingNewline(bytes: Uint8Array): Buffer {
+  if (bytes.at(-1) !== 0x0a) {
+    return Buffer.from(bytes);
+  }
+  const withoutLf = bytes.subarray(0, bytes.byteLength - 1);
+  return withoutLf.at(-1) === 0x0d
+    ? Buffer.from(withoutLf.subarray(0, withoutLf.byteLength - 1))
+    : Buffer.from(withoutLf);
 }
 
 function loadEnabledConfig(
@@ -95,7 +186,10 @@ function loadEnabledConfig(
     env,
     "HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL"
   ).toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(privacyContactEmail)) {
+  if (
+    privacyContactEmail.length > PRIVACY_CONTACT_EMAIL_MAX_CHARACTERS ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(privacyContactEmail)
+  ) {
     throw new DemoConfigurationError();
   }
 
@@ -123,7 +217,7 @@ function loadEnabledConfig(
     throw new DemoConfigurationError();
   }
   const metricsBearer = readSecretBytes(metricsBearerFile);
-  if (metricsBearer.byteLength < 32 || metricsBearer.byteLength > 256) {
+  if (!isValidMetricsBearer(metricsBearer)) {
     throw new DemoConfigurationError();
   }
   if (redisCaPath !== undefined && readSecretBytes(redisCaPath).byteLength === 0) {

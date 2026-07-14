@@ -1,11 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 
 import {
+  isValidMetricsBearer,
   loadDemoMetricsRuntimeConfig,
   readSecretBytes,
   type DemoMetricsRuntimeConfig
 } from "./config";
 import { demoMetrics, type DemoMetrics } from "./metrics";
+
+const TOKEN_MAX_BYTES = 256;
+const TOKEN_OVERSIZE_SENTINEL_BYTES = TOKEN_MAX_BYTES + 1;
+const TOKEN_FRAME_BYTES = 2 + TOKEN_MAX_BYTES;
 
 export interface MetricsHandlerDependencies {
   readonly config?: DemoMetricsRuntimeConfig;
@@ -30,7 +35,7 @@ export function createDemoMetricsHandler(
     } catch {
       return plainResponse("Metrics are unavailable.\n", 503);
     }
-    if (expectedToken.byteLength < 32 || expectedToken.byteLength > 256) {
+    if (!isValidMetricsBearer(expectedToken)) {
       return plainResponse("Metrics are unavailable.\n", 503);
     }
     const suppliedToken = parseBearer(request.headers.get("authorization"));
@@ -55,23 +60,38 @@ function parseBearer(value: string | null): Uint8Array | null {
   if (value === null) {
     return null;
   }
-  const match = /^Bearer ([\x21-\x7e]{1,256})$/iu.exec(value);
-  return match?.[1] === undefined ? null : Buffer.from(match[1], "utf8");
+  const match = /^Bearer ([\x21-\x7e]+)$/iu.exec(value);
+  if (match?.[1] === undefined) {
+    return null;
+  }
+  return match[1].length > TOKEN_MAX_BYTES
+    ? new Uint8Array(TOKEN_OVERSIZE_SENTINEL_BYTES)
+    : Buffer.from(match[1], "utf8");
 }
 
 function constantTimeTokenEqual(
   supplied: Uint8Array | null,
   expected: Uint8Array
 ): boolean {
-  if (supplied === null || supplied.byteLength !== expected.byteLength) {
-    const padded = Buffer.alloc(expected.byteLength);
-    if (supplied !== null) {
-      Buffer.from(supplied).copy(padded, 0, 0, Math.min(supplied.byteLength, padded.byteLength));
-    }
-    timingSafeEqual(padded, Buffer.from(expected));
-    return false;
+  const suppliedFrame = frameToken(supplied);
+  const expectedFrame = frameToken(expected);
+  const equal = timingSafeEqual(suppliedFrame, expectedFrame);
+  return (
+    supplied !== null &&
+    supplied.byteLength <= TOKEN_MAX_BYTES &&
+    expected.byteLength <= TOKEN_MAX_BYTES &&
+    equal
+  );
+}
+
+function frameToken(value: Uint8Array | null): Buffer {
+  const frame = Buffer.alloc(TOKEN_FRAME_BYTES);
+  const length = value?.byteLength ?? 0;
+  frame.writeUInt16BE(Math.min(length, TOKEN_OVERSIZE_SENTINEL_BYTES), 0);
+  if (value !== null) {
+    frame.set(value.subarray(0, TOKEN_MAX_BYTES), 2);
   }
-  return timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  return frame;
 }
 
 function plainResponse(body: string, status: number): Response {

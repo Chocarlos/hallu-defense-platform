@@ -7,7 +7,12 @@ import {
   type EnabledDemoRuntimeConfig
 } from "./config";
 import { DemoRequestError } from "./contracts";
-import { createLeaseToken, deriveDemoRequestId, digestNormalizedEmail } from "./identity";
+import {
+  createLeaseToken,
+  deriveDemoRequestId,
+  digestNormalizedDemoRequest,
+  digestNormalizedEmail
+} from "./identity";
 import {
   demoMetrics,
   type DemoMetricsRecorder
@@ -103,9 +108,9 @@ async function processEnabledRequest(
   const reservation = await reserve(dependencies.store, {
     submissionIdDigest,
     emailDigest: digestNormalizedEmail(hmacSecret, demoRequest.email),
+    payloadDigest: digestNormalizedDemoRequest(demoRequest),
     requestId,
     leaseToken: dependencies.leaseToken(),
-    nowMilliseconds: dependencies.now().getTime()
   });
   if (reservation.status === "rate_global") {
     throw new DemoRequestError(429, "Too many requests.", "rate_limited", 60);
@@ -113,9 +118,15 @@ async function processEnabledRequest(
   if (reservation.status === "rate_email") {
     throw new DemoRequestError(429, "Too many requests.", "rate_limited", 3_600);
   }
-  if (reservation.status === "duplicate" || reservation.status === "pending") {
+  if (reservation.status === "duplicate") {
     dependencies.metrics.recordDemoResult("accepted");
     return acceptedResponse(requiredReservationRequestId(reservation));
+  }
+  if (reservation.status === "pending") {
+    unavailable();
+  }
+  if (reservation.status === "conflict") {
+    throw new DemoRequestError(422, "Request payload is invalid.", "invalid");
   }
 
   const reservedRequestId = requiredReservationRequestId(reservation);

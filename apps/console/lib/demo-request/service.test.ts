@@ -27,10 +27,11 @@ describe("demo request service", () => {
     expect(metrics.render()).not.toContain("person@example.invalid");
     const reservation = vi.mocked(store.reserve).mock.calls[0]?.[0];
     expect(reservation?.emailDigest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(reservation?.payloadDigest).toMatch(/^[0-9a-f]{64}$/u);
     expect(JSON.stringify(reservation)).not.toContain("person@example.invalid");
   });
 
-  it("makes a honeypot publicly indistinguishable without Redis or webhook", async () => {
+  it("matches the accepted public HTTP contract without Redis or webhook", async () => {
     const store = reservingStore();
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
     const handler = createHandler({ store, fetchImpl });
@@ -43,15 +44,9 @@ describe("demo request service", () => {
 
     expect(honeypot.status).toBe(accepted.status);
     expect(await honeypot.text()).toBe(await accepted.text());
-    for (const name of [
-      "content-type",
-      "cache-control",
-      "pragma",
-      "vary",
-      "x-content-type-options"
-    ]) {
-      expect(honeypot.headers.get(name)).toBe(accepted.headers.get(name));
-    }
+    expect(headerRecord(honeypot.headers)).toEqual(headerRecord(accepted.headers));
+    expect(honeypot.headers.has("server-timing")).toBe(false);
+    expect(honeypot.headers.has("set-cookie")).toBe(false);
     expect(store.reserve).not.toHaveBeenCalled();
     expect(store.finalize).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -59,7 +54,8 @@ describe("demo request service", () => {
 
   it.each([
     ["duplicate", 202],
-    ["pending", 202],
+    ["pending", 503],
+    ["conflict", 422],
     ["rate_global", 429],
     ["rate_email", 429]
   ] as const)("maps Redis %s to the public contract", async (status, expectedStatus) => {
@@ -72,6 +68,37 @@ describe("demo request service", () => {
     if (expectedStatus === 429) {
       expect(response.headers.get("retry-after")).toMatch(/^(60|3600)$/u);
     }
+  });
+
+  it("does not report a concurrent retry accepted before the original delivery resolves", async () => {
+    const store = reservingStore();
+    vi.mocked(store.reserve)
+      .mockImplementationOnce(async (input) => ({
+        status: "reserved",
+        requestId: input.requestId
+      }))
+      .mockImplementationOnce(async (input) => ({
+        status: "pending",
+        requestId: input.requestId
+      }));
+    let rejectWebhook: ((reason: Error) => void) | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Promise<Response>((_resolve, reject) => {
+          rejectWebhook = reject;
+        })
+    );
+    const handler = createHandler({ store, fetchImpl });
+
+    const original = handler(validRequest());
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    const retry = await handler(validRequest());
+    expect(retry.status).toBe(503);
+
+    rejectWebhook?.(new Error("synthetic upstream failure"));
+    await expect(original).resolves.toMatchObject({ status: 503 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(store.release).toHaveBeenCalledOnce();
   });
 
   it("fails closed when Redis is unavailable", async () => {
@@ -145,12 +172,17 @@ function createHandler(
 }
 
 function reservingStore(
-  status: "reserved" | "duplicate" | "pending" | "rate_global" | "rate_email" =
-    "reserved"
+  status:
+    | "reserved"
+    | "duplicate"
+    | "pending"
+    | "conflict"
+    | "rate_global"
+    | "rate_email" = "reserved"
 ): DemoStore {
   return {
     reserve: vi.fn(async (input) =>
-      status === "rate_global" || status === "rate_email"
+      status === "conflict" || status === "rate_global" || status === "rate_email"
         ? { status }
         : { status, requestId: input.requestId }
     ),
@@ -201,3 +233,11 @@ const config: EnabledDemoRuntimeConfig = {
   redisCaPath: "/run/secrets/redis-ca.pem",
   metricsBearerFile: "/run/secrets/metrics-bearer"
 };
+
+function headerRecord(headers: Headers): Readonly<Record<string, string>> {
+  const result: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+}
