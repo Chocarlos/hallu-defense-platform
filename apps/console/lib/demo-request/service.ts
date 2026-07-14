@@ -7,6 +7,10 @@ import {
   type EnabledDemoRuntimeConfig
 } from "./config";
 import { DemoRequestError } from "./contracts";
+import type {
+  DemoRequestAcceptedResponseV1,
+  DemoRequestErrorResponseV1
+} from "./public-contract";
 import {
   createLeaseToken,
   deriveDemoRequestId,
@@ -185,18 +189,23 @@ function requiredReservationRequestId(reservation: DemoReservation): string {
 }
 
 function acceptedResponse(requestId: string): Response {
-  return jsonResponse({ request_id: requestId }, 202);
+  const body: DemoRequestAcceptedResponseV1 = { request_id: requestId };
+  return jsonResponse(body, 202);
 }
 
 function errorResponse(status: number, message: string, retryAfterSeconds?: number): Response {
-  const response = jsonResponse({ error: message }, status);
+  const body: DemoRequestErrorResponseV1 = { error: message };
+  const response = jsonResponse(body, status);
   if (retryAfterSeconds !== undefined) {
     response.headers.set("retry-after", String(retryAfterSeconds));
   }
   return response;
 }
 
-function jsonResponse(body: Readonly<Record<string, string>>, status: number): Response {
+function jsonResponse(
+  body: DemoRequestAcceptedResponseV1 | DemoRequestErrorResponseV1,
+  status: number
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {

@@ -9,7 +9,7 @@ export function MarketingRoot({
 }: Readonly<{ children: ReactNode; locale: MarketingLocale }>) {
   const copy = getMarketingContent(locale);
   return (
-    <html lang={copy.htmlLang}>
+    <html lang={copy.htmlLang} className={styles.marketingHtml}>
       <body className={styles.marketingBody}>
         <a className={styles.skipLink} href="#main-content">
           {copy.skipLink}

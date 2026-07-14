@@ -1,8 +1,10 @@
 import type { MetadataRoute } from "next";
 
-import { loadMarketingPublicConfig } from "../lib/marketing/config";
+import { loadRuntimeMarketingPublicConfig } from "../lib/marketing/runtime-config";
 import { buildMarketingSitemap } from "../lib/marketing/seo";
 
-export default function sitemap(): MetadataRoute.Sitemap {
-  return buildMarketingSitemap(loadMarketingPublicConfig().siteOrigin);
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  return buildMarketingSitemap(
+    (await loadRuntimeMarketingPublicConfig()).siteOrigin
+  );
 }

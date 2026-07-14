@@ -4,7 +4,7 @@ import {
   DEMO_USE_CASES,
   MARKETING_LOCALES,
   MARKETING_SECTION_IDS,
-  SDK_SNIPPET,
+  SDK_SNIPPETS,
   marketingContent
 } from "./content";
 
@@ -17,6 +17,12 @@ describe("marketing content", () => {
     );
     expect(marketingContent.es.workflow.steps).toHaveLength(marketingContent.en.workflow.steps.length);
     expect(marketingContent.es.surfaces.items).toHaveLength(marketingContent.en.surfaces.items.length);
+    expect(Object.keys(marketingContent.es.hero.system)).toEqual(
+      Object.keys(marketingContent.en.hero.system)
+    );
+    expect(Object.keys(marketingContent.es.demo)).toEqual(
+      Object.keys(marketingContent.en.demo)
+    );
   });
 
   it("preserves the approved headlines and public anchors", () => {
@@ -38,9 +44,21 @@ describe("marketing content", () => {
   });
 
   it("uses the real SDK surface and the shared demo enum", () => {
-    expect(SDK_SNIPPET).toContain('import { HalluDefenseClient } from "@hallu-defense/sdk";');
-    expect(SDK_SNIPPET).toContain("client.runVerification");
+    expect(SDK_SNIPPETS.es).toContain('import { HalluDefenseClient } from "@hallu-defense/sdk";');
+    expect(SDK_SNIPPETS.en).toContain("client.runVerification");
+    expect(SDK_SNIPPETS.es).toContain("La política interna permite esta acción.");
+    expect(SDK_SNIPPETS.en).toContain("The internal policy allows this action.");
+    expect(SDK_SNIPPETS.en).not.toContain("La política interna");
     expect(DEMO_USE_CASES).toContain("code_agents");
     expect(DEMO_USE_CASES).not.toContain("code_evidence");
+  });
+
+  it("keeps legal status provisional and expresses CRM retention as an operator duty", () => {
+    expect(marketingContent.es.privacy.sections[0]?.title.toLowerCase()).toContain("provisional");
+    expect(marketingContent.en.privacy.sections[0]?.title.toLowerCase()).toContain("provisional");
+    expect(marketingContent.es.footer.launchNoteEnabled).toContain("debe eliminar");
+    expect(marketingContent.en.footer.launchNoteEnabled).toContain("must delete");
+    expect(marketingContent.es.privacy.sections[3]?.body).toContain("hasta 24 horas");
+    expect(marketingContent.en.privacy.sections[3]?.body).toContain("up to 24 hours");
   });
 });

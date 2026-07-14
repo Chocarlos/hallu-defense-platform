@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
 
 import { PrivacyPage } from "../../../components/marketing/privacy-page";
-import { loadMarketingPublicConfig } from "../../../lib/marketing/config";
+import { loadRuntimeMarketingPublicConfig } from "../../../lib/marketing/runtime-config";
 import { buildPrivacyMetadata } from "../../../lib/marketing/seo";
 
-export function generateMetadata(): Metadata {
-  const config = loadMarketingPublicConfig();
+export async function generateMetadata(): Promise<Metadata> {
+  const config = await loadRuntimeMarketingPublicConfig();
   return buildPrivacyMetadata("es", config.siteOrigin);
 }
 
-export default function SpanishPrivacyPage() {
-  const config = loadMarketingPublicConfig();
+export default async function SpanishPrivacyPage() {
+  const config = await loadRuntimeMarketingPublicConfig();
   return <PrivacyPage locale="es" contactEmail={config.privacyContactEmail} />;
 }

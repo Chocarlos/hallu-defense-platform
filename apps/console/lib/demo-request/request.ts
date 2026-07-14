@@ -6,18 +6,9 @@ import {
   type DemoUseCase,
   type NormalizedDemoRequest
 } from "./contracts";
+import { DEMO_REQUEST_PAYLOAD_FIELDS_V1 } from "./public-contract";
 
-const ALLOWED_FIELDS = new Set([
-  "submission_id",
-  "locale",
-  "email",
-  "name",
-  "company",
-  "use_case",
-  "consent",
-  "privacy_version",
-  "website"
-]);
+const ALLOWED_FIELDS = new Set<string>(DEMO_REQUEST_PAYLOAD_FIELDS_V1);
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const EMAIL_LOCAL_RE = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/u;
 const DOMAIN_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u;

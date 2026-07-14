@@ -14,7 +14,8 @@ export const MARKETING_SECTION_IDS = [
   "faq"
 ] as const;
 
-export const SDK_SNIPPET = `import { HalluDefenseClient } from "@hallu-defense/sdk";
+function sdkSnippet(message: string): string {
+  return `import { HalluDefenseClient } from "@hallu-defense/sdk";
 
 const client = new HalluDefenseClient({
   baseUrl: "http://localhost:8000",
@@ -23,12 +24,18 @@ const client = new HalluDefenseClient({
 
 const run = await client.runVerification({
   tenant_id: "local-dev",
-  message_text: "La política interna permite esta acción.",
+  message_text: "${message}",
   task_type: "document_qa",
   documents: []
 });
 
 console.log(run.trace_id, run.final_decision);`;
+}
+
+export const SDK_SNIPPETS = Object.freeze({
+  es: sdkSnippet("La política interna permite esta acción."),
+  en: sdkSnippet("The internal policy allows this action.")
+}) satisfies Readonly<Record<MarketingLocale, string>>;
 
 export interface MarketingCopy {
   readonly locale: MarketingLocale;
@@ -42,8 +49,10 @@ export interface MarketingCopy {
   readonly skipLink: string;
   readonly navigation: {
     readonly label: string;
+    readonly footerLabel: string;
     readonly items: readonly { readonly id: (typeof MARKETING_SECTION_IDS)[number]; readonly label: string }[];
     readonly languageLabel: string;
+    readonly footerLanguageLabel: string;
     readonly languageShort: string;
     readonly console: string;
   };
@@ -54,6 +63,16 @@ export interface MarketingCopy {
     readonly primaryCta: string;
     readonly secondaryCta: string;
     readonly proofPoints: readonly string[];
+    readonly system: {
+      readonly label: string;
+      readonly service: string;
+      readonly status: string;
+      readonly claimLabel: string;
+      readonly claim: string;
+      readonly stages: readonly [string, string, string, string];
+      readonly decision: string;
+      readonly outcome: string;
+    };
   };
   readonly tour: {
     readonly eyebrow: string;
@@ -127,6 +146,7 @@ export interface MarketingCopy {
     readonly submit: string;
     readonly submitting: string;
     readonly success: string;
+    readonly reference: string;
     readonly genericError: string;
     readonly validationError: string;
     readonly tooManyRequests: string;
@@ -143,7 +163,8 @@ export interface MarketingCopy {
     readonly statement: string;
     readonly privacy: string;
     readonly console: string;
-    readonly launchNote: string;
+    readonly launchNoteDisabled: string;
+    readonly launchNoteEnabled: string;
   };
   readonly privacy: {
     readonly title: string;
@@ -170,6 +191,7 @@ export const marketingContent = {
     skipLink: "Saltar al contenido principal",
     navigation: {
       label: "Navegación principal",
+      footerLabel: "Navegación del pie",
       items: [
         { id: "platform", label: "Plataforma" },
         { id: "how-it-works", label: "Cómo funciona" },
@@ -177,6 +199,7 @@ export const marketingContent = {
         { id: "faq", label: "FAQ" }
       ],
       languageLabel: "Ver sitio en inglés",
+      footerLanguageLabel: "Cambiar el pie al inglés",
       languageShort: "EN",
       console: "Abrir consola"
     },
@@ -186,7 +209,17 @@ export const marketingContent = {
       subtitle: "Hallu Defense conecta cada afirmación y acción con evidencia real, reglas explícitas y una decisión auditable antes de que el riesgo llegue a producción.",
       primaryCta: "Solicitar demo",
       secondaryCta: "Explorar la plataforma",
-      proofPoints: ["Evidencia por afirmación", "Aprobación antes de actuar", "Trazabilidad de extremo a extremo"]
+      proofPoints: ["Evidencia por afirmación", "Aprobación antes de actuar", "Trazabilidad de extremo a extremo"],
+      system: {
+        label: "Decisión ilustrativa del sistema de verificación",
+        service: "sistema-de-verificación",
+        status: "activo",
+        claimLabel: "afirmación",
+        claim: "La política permite publicar sin revisión.",
+        stages: ["afirmación", "evidencia", "política", "decisión"],
+        decision: "require_human_review",
+        outcome: "evidencia vinculada · auditoría lista"
+      }
     },
     tour: {
       eyebrow: "Tour interactivo",
@@ -269,7 +302,8 @@ export const marketingContent = {
       submit: "Solicitar demo",
       submitting: "Enviando solicitud",
       success: "Solicitud recibida. Conserva el identificador mostrado para cualquier seguimiento.",
-      genericError: "No pudimos enviar la solicitud. Inténtalo de nuevo con el mismo identificador.",
+      reference: "Referencia",
+      genericError: "No pudimos enviar la solicitud. Reinténtalo: el formulario conservará el identificador del intento.",
       validationError: "Revisa los campos y el consentimiento antes de continuar.",
       tooManyRequests: "Se alcanzó el límite de solicitudes. Inténtalo más tarde.",
       unavailable: "La recepción segura de solicitudes no está disponible temporalmente.",
@@ -291,24 +325,25 @@ export const marketingContent = {
       statement: "Evidencia, política y trazabilidad para cada decisión de IA.",
       privacy: "Privacidad",
       console: "Consola",
-      launchNote: "La captación real permanece desactivada hasta contar con dominio, secretos y aprobación legal."
+      launchNoteDisabled: "La captación real permanece desactivada hasta contar con dominio, secretos y aprobación legal.",
+      launchNoteEnabled: "Las solicitudes usan privacy.v1 y transmiten solo los campos declarados; el operador del CRM debe eliminar los leads inactivos a los 90 días."
     },
     privacy: {
       title: "Aviso de privacidad",
       intro: "Este aviso describe el tratamiento previsto para las solicitudes de demo de Hallu Defense.",
       back: "Volver al inicio",
       sections: [
-        { title: "Responsable provisional", body: "Hallu Defense figura provisionalmente como responsable del tratamiento, sujeto a revisión legal antes de activar la captación en producción." },
+        { title: "Responsable provisional", body: "Hallu Defense se identifica provisionalmente como responsable del tratamiento. El operador debe confirmar la identificación jurídica y el contacto antes de activar la captación en producción." },
         { title: "Datos", body: "Se solicita un correo; el nombre y la empresa son opcionales. También se conserva el caso de uso, el consentimiento y la versión privacy.v1. No se solicitan datos sensibles." },
         { title: "Finalidad y base", body: "Los datos se usarán únicamente para gestionar la solicitud y preparar una conversación técnica. El envío requiere consentimiento expreso." },
-        { title: "Conservación", body: "El operador del CRM deberá eliminar los leads inactivos a los 90 días. Hallu Defense no debe persistir estos datos localmente." },
+        { title: "Conservación", body: "Los campos sin procesar no se persisten localmente. El estado seudónimo temporal para antiabuso e idempotencia se conserva hasta 24 horas; el operador del CRM debe eliminar los leads inactivos a los 90 días." },
         { title: "Destinatarios", body: "La información podrá enviarse al CRM configurado mediante un webhook seguro. No se incluyen IP, user-agent, referrer ni parámetros UTM." },
         { title: "Derechos y seguridad", body: "Las solicitudes de acceso, corrección o eliminación se atenderán mediante el contacto indicado. La transmisión y el acceso deben permanecer protegidos por controles técnicos y organizativos." }
       ],
       contactTitle: "Contacto de privacidad",
       contactConfigured: "Escribe a",
       contactMissing: "El correo de privacidad se publicará después de la revisión legal y antes de activar solicitudes reales.",
-      legalNotice: "Documento operativo pendiente de revisión legal; no constituye asesoramiento jurídico."
+      legalNotice: "Documento operativo sujeto a validación jurídica continua por el operador; no constituye asesoramiento jurídico."
     }
   },
   en: {
@@ -323,6 +358,7 @@ export const marketingContent = {
     skipLink: "Skip to main content",
     navigation: {
       label: "Primary navigation",
+      footerLabel: "Footer navigation",
       items: [
         { id: "platform", label: "Platform" },
         { id: "how-it-works", label: "How it works" },
@@ -330,6 +366,7 @@ export const marketingContent = {
         { id: "faq", label: "FAQ" }
       ],
       languageLabel: "View site in Spanish",
+      footerLanguageLabel: "Switch the footer to Spanish",
       languageShort: "ES",
       console: "Open console"
     },
@@ -339,7 +376,17 @@ export const marketingContent = {
       subtitle: "Hallu Defense connects every claim and action to real evidence, explicit policy, and an auditable decision before risk reaches production.",
       primaryCta: "Request a demo",
       secondaryCta: "Explore the platform",
-      proofPoints: ["Claim-level evidence", "Approval before action", "End-to-end traceability"]
+      proofPoints: ["Claim-level evidence", "Approval before action", "End-to-end traceability"],
+      system: {
+        label: "Illustrative verification-system decision",
+        service: "verification-system",
+        status: "live",
+        claimLabel: "claim",
+        claim: "Policy allows publishing without review.",
+        stages: ["claim", "evidence", "policy", "decision"],
+        decision: "require_human_review",
+        outcome: "evidence linked · audit ready"
+      }
     },
     tour: {
       eyebrow: "Interactive tour",
@@ -422,7 +469,8 @@ export const marketingContent = {
       submit: "Request a demo",
       submitting: "Sending request",
       success: "Request received. Keep the displayed identifier for any follow-up.",
-      genericError: "We could not send the request. Try again with the same identifier.",
+      reference: "Reference",
+      genericError: "We could not send the request. Retry: the form will preserve the attempt identifier.",
       validationError: "Review the fields and consent before continuing.",
       tooManyRequests: "The request limit has been reached. Try again later.",
       unavailable: "Secure request intake is temporarily unavailable.",
@@ -444,24 +492,25 @@ export const marketingContent = {
       statement: "Evidence, policy, and traceability for every AI decision.",
       privacy: "Privacy",
       console: "Console",
-      launchNote: "Real lead intake remains disabled until domain, secrets, and legal approval are available."
+      launchNoteDisabled: "Real lead intake remains disabled until domain, secrets, and legal approval are available.",
+      launchNoteEnabled: "Requests use privacy.v1 and transmit only the stated fields; the CRM operator must delete inactive leads after 90 days."
     },
     privacy: {
       title: "Privacy notice",
       intro: "This notice describes the intended processing for Hallu Defense demo requests.",
       back: "Back to home",
       sections: [
-        { title: "Provisional controller", body: "Hallu Defense is provisionally identified as the controller, subject to legal review before production lead intake is activated." },
+        { title: "Provisional controller", body: "Hallu Defense is provisionally identified as the controller. The operator must confirm the legal identity and contact before production lead intake is activated." },
         { title: "Data", body: "An email is required; name and company are optional. The use case, consent, and privacy.v1 version are also retained. Sensitive data is not requested." },
         { title: "Purpose and basis", body: "Data is used only to handle the request and prepare a technical conversation. Submission requires explicit consent." },
-        { title: "Retention", body: "The CRM operator must delete inactive leads after 90 days. Hallu Defense must not persist this data locally." },
+        { title: "Retention", body: "Raw form fields are not persisted locally. Temporary pseudonymous anti-abuse and idempotency state is retained for up to 24 hours; the CRM operator must delete inactive leads after 90 days." },
         { title: "Recipients", body: "Information may be sent to the configured CRM through a secure webhook. IP, user-agent, referrer, and UTM parameters are excluded." },
         { title: "Rights and security", body: "Requests for access, correction, or deletion will be handled through the listed contact. Transmission and access must remain protected by technical and organizational controls." }
       ],
       contactTitle: "Privacy contact",
       contactConfigured: "Write to",
       contactMissing: "The privacy email will be published after legal review and before real requests are enabled.",
-      legalNotice: "Operational draft pending legal review; it is not legal advice."
+      legalNotice: "Operational document subject to ongoing legal validation by the operator; it is not legal advice."
     }
   }
 } as const satisfies Record<MarketingLocale, MarketingCopy>;

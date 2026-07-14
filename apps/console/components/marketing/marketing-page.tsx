@@ -9,7 +9,7 @@ import {
 
 import {
   getMarketingContent,
-  SDK_SNIPPET,
+  SDK_SNIPPETS,
   type MarketingLocale
 } from "../../lib/marketing/content";
 import {
@@ -92,25 +92,32 @@ export function MarketingPage({
                 ))}
               </ul>
             </div>
-            <div className={styles.heroSystem} aria-label={copy.tour.title}>
+            <div
+              className={styles.heroSystem}
+              role="group"
+              aria-label={copy.hero.system.label}
+            >
               <div className={styles.systemHeader}>
                 <span className={styles.systemStatus}>
-                  <span aria-hidden="true" /> policy.v1
+                  <span aria-hidden="true" /> {copy.hero.system.service} / {copy.hero.system.status}
                 </span>
                 <span>trace_7e4a</span>
               </div>
               <div className={styles.systemClaim}>
-                <span>claim_01</span>
-                <strong>{copy.tour.steps[0]?.detail}</strong>
+                <span>{copy.hero.system.claimLabel}</span>
+                <strong>{copy.hero.system.claim}</strong>
               </div>
               <div className={styles.systemFlow} aria-hidden="true">
-                <span>claim</span><i /><span>evidence</span><i /><span>policy</span><i /><span>decision</span>
+                <span>{copy.hero.system.stages[0]}</span><i />
+                <span>{copy.hero.system.stages[1]}</span><i />
+                <span>{copy.hero.system.stages[2]}</span><i />
+                <span>{copy.hero.system.stages[3]}</span>
               </div>
               <div className={styles.systemDecision}>
                 <ShieldCheck aria-hidden="true" size={22} />
                 <span>
-                  require_human_review
-                  <small>evidence linked · audit ready</small>
+                  {copy.hero.system.decision}
+                  <small>{copy.hero.system.outcome}</small>
                 </span>
               </div>
             </div>
@@ -198,7 +205,7 @@ export function MarketingPage({
             </div>
             <div className={styles.codeCard}>
               <div><span>{copy.integrations.snippetLabel}</span><span>verification.ts</span></div>
-              <pre tabIndex={0}><code>{SDK_SNIPPET}</code></pre>
+              <pre tabIndex={0}><code>{SDK_SNIPPETS[locale]}</code></pre>
             </div>
           </Reveal>
         </section>
@@ -249,12 +256,22 @@ export function MarketingPage({
 
       <footer className={styles.footer}>
         <div><Brand /><p>{copy.footer.statement}</p></div>
-        <nav aria-label={copy.navigation.label}>
+        <nav aria-label={copy.navigation.footerLabel}>
           <a href={privacyPath}>{copy.footer.privacy}</a>
           <a href="/console">{copy.footer.console}</a>
-          <a href={copy.alternatePath} hrefLang={locale === "es" ? "en" : "es"}>{copy.navigation.languageShort}</a>
+          <a
+            href={copy.alternatePath}
+            hrefLang={locale === "es" ? "en" : "es"}
+            aria-label={copy.navigation.footerLanguageLabel}
+          >
+            {copy.navigation.languageShort}
+          </a>
         </nav>
-        <small>{copy.footer.launchNote}</small>
+        <small>
+          {demoRequestsEnabled
+            ? copy.footer.launchNoteEnabled
+            : copy.footer.launchNoteDisabled}
+        </small>
       </footer>
     </>
   );

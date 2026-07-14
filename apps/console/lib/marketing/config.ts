@@ -1,5 +1,11 @@
+import {
+  isDemoRequestIntakeEnabled,
+  type EnvironmentSource
+} from "../demo-request/config";
+
 const LOCAL_MARKETING_ORIGIN = "http://localhost:3000";
-const SIMPLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const PRODUCTION_LIKE_ENVIRONMENTS = new Set(["production", "staging"]);
 
 export interface MarketingPublicConfig {
   readonly demoRequestsEnabled: boolean;
@@ -7,51 +13,99 @@ export interface MarketingPublicConfig {
   readonly siteOrigin: string;
 }
 
+export class MarketingConfigurationError extends Error {
+  constructor() {
+    super("Public marketing configuration is invalid.");
+    this.name = "MarketingConfigurationError";
+  }
+}
+
 export function loadMarketingPublicConfig(
-  env: Readonly<Record<string, string | undefined>> = process.env
+  env: EnvironmentSource = process.env
 ): MarketingPublicConfig {
+  const environment = env.HALLU_DEFENSE_ENV?.trim().toLowerCase() ?? "local";
+  const productionLike =
+    PRODUCTION_LIKE_ENVIRONMENTS.has(environment) ||
+    (env.NODE_ENV?.trim().toLowerCase() === "production" && environment !== "test");
+  const runtimeEnabled = isDemoRequestIntakeEnabled(env);
+  const privacyContactEmail = safeContactEmail(
+    env.HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL
+  );
   return Object.freeze({
-    demoRequestsEnabled: env.HALLU_DEFENSE_DEMO_REQUESTS_ENABLED === "true",
-    privacyContactEmail: safeContactEmail(
-      env.HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL
-    ),
-    siteOrigin: resolveMarketingOrigin(env.HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN)
+    demoRequestsEnabled: runtimeEnabled && privacyContactEmail !== null,
+    privacyContactEmail,
+    siteOrigin: resolveMarketingOrigin(
+      env.HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN,
+      productionLike
+    )
   });
 }
 
-export function resolveMarketingOrigin(value: string | undefined): string {
-  if (value === undefined || value === "" || value.trim() !== value) {
-    return LOCAL_MARKETING_ORIGIN;
-  }
+export function resolveMarketingOrigin(
+  value: string | undefined,
+  productionLike = false
+): string {
   try {
-    const url = new URL(value);
     if (
-      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      value === undefined ||
+      value === "" ||
+      value.trim() !== value ||
+      /[\u0000-\u001f\u007f]/u.test(value)
+    ) {
+      throw new MarketingConfigurationError();
+    }
+    const url = new URL(value);
+    const loopback = LOCAL_HOSTNAMES.has(url.hostname);
+    if (
       url.username !== "" ||
       url.password !== "" ||
       url.pathname !== "/" ||
       url.search !== "" ||
       url.hash !== "" ||
-      url.origin !== value
+      url.origin !== value ||
+      (url.protocol !== "https:" &&
+        !(url.protocol === "http:" && !productionLike && loopback))
     ) {
-      return LOCAL_MARKETING_ORIGIN;
+      throw new MarketingConfigurationError();
     }
     return url.origin;
   } catch {
+    if (productionLike) {
+      throw new MarketingConfigurationError();
+    }
     return LOCAL_MARKETING_ORIGIN;
   }
 }
 
-function safeContactEmail(value: string | undefined): string | null {
+export function safeContactEmail(value: string | undefined): string | null {
   if (
     value === undefined ||
     value === "" ||
     value.length > 254 ||
     value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/u.test(value) ||
-    !SIMPLE_EMAIL.test(value)
+    /[^\x21-\x7e]/u.test(value) ||
+    /[%?#&,]/u.test(value)
   ) {
     return null;
   }
-  return value;
+  const separator = value.lastIndexOf("@");
+  if (separator <= 0 || separator !== value.indexOf("@")) {
+    return null;
+  }
+  const local = value.slice(0, separator);
+  const domain = value.slice(separator + 1);
+  const labels = domain.split(".");
+  if (
+    local.length > 64 ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/u.test(local) ||
+    local.includes("..") ||
+    labels.length < 2 ||
+    labels.some(
+      (label) =>
+        !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label)
+    )
+  ) {
+    return null;
+  }
+  return `${local}@${domain.toLowerCase()}`;
 }
