@@ -1,189 +1,488 @@
+import { createHash } from "node:crypto";
+import { Agent as HttpsAgent } from "node:https";
 import process from "node:process";
 
-import { chromium, firefox } from "playwright";
+import { chromium, firefox, webkit } from "@playwright/test";
 import { Builder, By } from "selenium-webdriver";
 
 const CATALOG_URL = "https://api.browserstack.com/automate/browsers.json";
 const HUB_URL = "https://hub-cloud.browserstack.com/wd/hub";
 const PLAYWRIGHT_ENDPOINT = "wss://cdp.browserstack.com/playwright";
 const SAFE_EMAIL = "browserstack-smoke@example.invalid";
+const DEFAULT_BUILD_NAME = "hallu-defense-marketing";
+const EXPECTED_HEADLINE = "La confianza no se asume. Se demuestra.";
 
-const minimumRequirements = [
-  { key: "chrome-111", browser: "chrome", version: "111", mobile: false },
-  { key: "edge-111", browser: "edge", version: "111", mobile: false },
-  { key: "firefox-111", browser: "firefox", version: "111", mobile: false },
-  { key: "safari-16.4", browser: "safari", version: "16.4", mobile: false },
-  { key: "ios-safari-16.4", browser: "safari", version: "16.4", mobile: true }
-];
+const CATALOG_TIMEOUT_MS = 20_000;
+const REMOTE_CONNECT_TIMEOUT_MS = 60_000;
+const NAVIGATION_TIMEOUT_MS = 60_000;
+const ASSERTION_TIMEOUT_MS = 15_000;
+const SESSION_DETAILS_TIMEOUT_MS = 15_000;
+const MAX_CATALOG_BYTES = 5_000_000;
+const MAX_DIAGNOSTIC_DIGESTS = 20;
 
-const checkOnly = process.argv.includes("--check-config");
-const username = clean(process.env.BROWSERSTACK_USERNAME);
-const accessKey = clean(process.env.BROWSERSTACK_ACCESS_KEY);
+const minimumRequirements = Object.freeze([
+  Object.freeze({
+    key: "chrome-111",
+    mobile: false,
+    catalogBrowser: "chrome",
+    versionField: "browserVersion",
+    versionPrefix: "111",
+    browserName: "chrome"
+  }),
+  Object.freeze({
+    key: "edge-111",
+    mobile: false,
+    catalogBrowser: "edge",
+    versionField: "browserVersion",
+    versionPrefix: "111",
+    browserName: "edge"
+  }),
+  Object.freeze({
+    key: "firefox-111",
+    mobile: false,
+    catalogBrowser: "firefox",
+    versionField: "browserVersion",
+    versionPrefix: "111",
+    browserName: "firefox"
+  }),
+  Object.freeze({
+    key: "safari-16.4",
+    mobile: false,
+    catalogBrowser: "safari",
+    versionField: "browserVersion",
+    versionPrefix: "16.4",
+    browserName: "safari"
+  }),
+  Object.freeze({
+    key: "ios-safari-16.4",
+    mobile: true,
+    catalogOs: "ios",
+    versionField: "osVersion",
+    versionPrefix: "16.4",
+    requiresDevice: true,
+    browserName: "safari"
+  })
+]);
 
-if (checkOnly) {
-  validateStaticContract();
+const currentRequirements = Object.freeze([
+  Object.freeze({
+    key: "current-chrome",
+    catalogBrowser: "chrome",
+    capabilityBrowser: "chrome",
+    engine: "chromium",
+    branded: true,
+    preferredOs: "windows"
+  }),
+  Object.freeze({
+    key: "current-edge",
+    catalogBrowser: "edge",
+    capabilityBrowser: "edge",
+    engine: "chromium",
+    branded: true,
+    preferredOs: "windows"
+  }),
+  Object.freeze({
+    key: "current-firefox",
+    catalogBrowser: "firefox",
+    capabilityBrowser: "playwright-firefox",
+    engine: "firefox",
+    branded: false,
+    preferredOs: "windows"
+  }),
+  Object.freeze({
+    key: "current-webkit",
+    catalogBrowser: "safari",
+    capabilityBrowser: "playwright-webkit",
+    engine: "webkit",
+    branded: false,
+    preferredOs: "osx"
+  })
+]);
+
+const playwrightEngines = Object.freeze({ chromium, firefox, webkit });
+
+class ConfigurationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ConfigurationError";
+  }
+}
+
+class RunnerError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RunnerError";
+  }
+}
+
+try {
+  const checkOnly = parseArguments(process.argv.slice(2));
+  if (checkOnly) {
+    validateStaticContract();
+    console.log(
+      "Validated BrowserStack marketing runner contract; no remote compatibility result was claimed."
+    );
+  } else {
+    await runRemoteMatrix();
+  }
+} catch (error) {
+  const message =
+    error instanceof ConfigurationError || error instanceof RunnerError
+      ? error.message
+      : "Unexpected internal runner failure.";
+  console.error(`BrowserStack marketing gate failed: ${message}`);
+  process.exitCode = 1;
+}
+
+async function runRemoteMatrix() {
+  const credentials = readCredentials(process.env);
+  if (credentials === undefined) {
+    console.log(
+      "BrowserStack marketing gate skipped: BROWSERSTACK_USERNAME and BROWSERSTACK_ACCESS_KEY are absent. No compatibility result is claimed."
+    );
+    return;
+  }
+
+  const runtime = readRuntimeConfiguration(process.env);
+  const catalog = await fetchCatalog(credentials);
+  const { minimumMatrix, playwrightMatrix } = resolveMatrices(catalog);
+
   console.log(
-    "Validated BrowserStack marketing runner contract; no remote compatibility result was claimed."
+    JSON.stringify(
+      {
+        event: "browserstack-marketing-matrix",
+        source: CATALOG_URL,
+        playwright: playwrightMatrix.map(({ requirement, entry }) => ({
+          requirement: requirement.key,
+          capabilityBrowser: requirement.capabilityBrowser,
+          engine: requirement.engine,
+          ...publicCatalogEntry(entry)
+        })),
+        seleniumMinimums: minimumMatrix.map(({ requirement, entry }) => ({
+          requirement: requirement.key,
+          browserName: requirement.browserName,
+          ...publicCatalogEntry(entry)
+        }))
+      },
+      null,
+      2
+    )
   );
-  process.exit(0);
+
+  for (const target of playwrightMatrix) {
+    await runPlaywrightSmoke({
+      ...target,
+      runtime,
+      credentials
+    });
+  }
+  for (const target of minimumMatrix) {
+    await runSeleniumSmoke({
+      ...target,
+      runtime,
+      credentials
+    });
+  }
+
+  console.log("BrowserStack marketing matrix completed without reducing required minimums.");
 }
 
-if (username === undefined && accessKey === undefined) {
-  console.log(
-    "BrowserStack marketing gate skipped: BROWSERSTACK_USERNAME and BROWSERSTACK_ACCESS_KEY are absent. No compatibility result is claimed."
+function parseArguments(args) {
+  if (args.length === 0) return false;
+  if (args.length === 1 && args[0] === "--check-config") return true;
+  throw new ConfigurationError("Only the optional --check-config argument is supported.");
+}
+
+function readCredentials(environment) {
+  const username = optionalEnvironmentString(environment, "BROWSERSTACK_USERNAME", 256);
+  const accessKey = optionalEnvironmentString(environment, "BROWSERSTACK_ACCESS_KEY", 512);
+  if (username === undefined && accessKey === undefined) return undefined;
+  if (username === undefined || accessKey === undefined) {
+    throw new ConfigurationError("BrowserStack credentials must be supplied together.");
+  }
+  return Object.freeze({ username, accessKey });
+}
+
+function readRuntimeConfiguration(environment) {
+  const local = booleanEnvironment(environment, "BROWSERSTACK_LOCAL", false);
+  const localIdentifier = optionalEnvironmentString(
+    environment,
+    "BROWSERSTACK_LOCAL_IDENTIFIER",
+    256
   );
-  process.exit(0);
-}
-if (username === undefined || accessKey === undefined) {
-  throw new Error("BrowserStack credentials must be supplied together.");
-}
-
-const baseURL = validatedBaseUrl(process.env.BROWSERSTACK_BASE_URL);
-const local = process.env.BROWSERSTACK_LOCAL === "true";
-const localIdentifier = clean(process.env.BROWSERSTACK_LOCAL_IDENTIFIER);
-if (local && localIdentifier === undefined) {
-  throw new Error("BrowserStack Local requires BROWSERSTACK_LOCAL_IDENTIFIER.");
-}
-if (!local && baseURL.protocol !== "https:") {
-  throw new Error("Remote BrowserStack smoke requires an HTTPS synthetic staging URL.");
-}
-if (
-  process.env.HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED === "true" &&
-  process.env.BROWSERSTACK_WEBHOOK_STUB !== "true"
-) {
-  throw new Error("Enabled form smoke requires an explicit isolated webhook stub.");
-}
-
-const catalog = await fetchCatalog(username, accessKey);
-const minimumMatrix = minimumRequirements.map((requirement) => {
-  const match = catalog.find((entry) => matchesMinimum(entry, requirement));
-  if (match === undefined) {
-    throw new Error(
-      `BrowserStack catalog does not expose required exact minimum ${requirement.key}; matrix was not reduced.`
+  if (local && localIdentifier === undefined) {
+    throw new ConfigurationError(
+      "BrowserStack Local requires BROWSERSTACK_LOCAL_IDENTIFIER."
     );
   }
-  return { requirement: requirement.key, entry: match };
-});
+  if (!local && localIdentifier !== undefined) {
+    throw new ConfigurationError(
+      "BROWSERSTACK_LOCAL_IDENTIFIER is only valid when BROWSERSTACK_LOCAL=true."
+    );
+  }
 
-const playwrightMatrix = ["chrome", "edge", "firefox"].map((browser) => {
-  const candidates = catalog.filter(
-    (entry) => !entry.mobile && normalizeBrowser(entry.browser) === browser
+  const liveFormEnabled = booleanEnvironment(
+    environment,
+    "HALLU_DEFENSE_MARKETING_LIVE_FORM_ENABLED",
+    false
   );
-  const latest = candidates.sort(compareVersionsDescending)[0];
-  if (latest === undefined) {
-    throw new Error(`BrowserStack catalog exposes no desktop ${browser} candidate.`);
+  const webhookStub = booleanEnvironment(environment, "BROWSERSTACK_WEBHOOK_STUB", false);
+  if (liveFormEnabled && !webhookStub) {
+    throw new ConfigurationError(
+      "Enabled form smoke requires an explicit isolated webhook stub."
+    );
   }
-  return latest;
-});
 
-console.log(
-  JSON.stringify(
-    {
-      source: CATALOG_URL,
-      playwright: playwrightMatrix.map(publicCatalogEntry),
-      seleniumMinimums: minimumMatrix.map(({ requirement, entry }) => ({
-        requirement,
-        ...publicCatalogEntry(entry)
-      }))
-    },
-    null,
-    2
-  )
-);
+  const rawBaseUrl = requiredEnvironmentString(environment, "BROWSERSTACK_BASE_URL", 2_048);
+  const baseURL = validatedBaseUrl(rawBaseUrl, local);
+  const buildName =
+    optionalEnvironmentString(environment, "BROWSERSTACK_BUILD_NAME", 255) ??
+    DEFAULT_BUILD_NAME;
 
-for (const entry of playwrightMatrix) {
-  await runPlaywrightSmoke({
-    entry,
+  return Object.freeze({
     baseURL,
-    username,
-    accessKey,
-    local,
-    localIdentifier
-  });
-}
-for (const { requirement, entry } of minimumMatrix) {
-  await runSeleniumSmoke({
-    requirement,
-    entry,
-    baseURL,
-    username,
-    accessKey,
+    buildName,
     local,
     localIdentifier
   });
 }
 
-console.log("BrowserStack marketing matrix completed without reducing required minimums.");
-
-function validateStaticContract() {
-  if (SAFE_EMAIL.endsWith("@example.invalid") === false) {
-    throw new Error("BrowserStack smoke email must use example.invalid.");
+function optionalEnvironmentString(environment, name, maximumLength) {
+  const raw = environment[name];
+  // GitHub Actions materializes absent secrets as empty strings. Treat that
+  // representation as absent, while rejecting whitespace and control chars.
+  if (raw === undefined || raw === "") return undefined;
+  if (
+    typeof raw !== "string" ||
+    raw.trim() !== raw ||
+    raw.length > maximumLength ||
+    /[\u0000-\u001f\u007f]/u.test(raw)
+  ) {
+    throw new ConfigurationError(`${name} is malformed.`);
   }
-  if (minimumRequirements.length !== 5) {
-    throw new Error("BrowserStack minimum matrix is incomplete.");
-  }
-  const keys = new Set(minimumRequirements.map(({ key }) => key));
-  for (const required of [
-    "chrome-111",
-    "edge-111",
-    "firefox-111",
-    "safari-16.4",
-    "ios-safari-16.4"
-  ]) {
-    if (!keys.has(required)) {
-      throw new Error(`BrowserStack minimum matrix is missing ${required}.`);
-    }
-  }
+  return raw;
 }
 
-async function fetchCatalog(user, key) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+function requiredEnvironmentString(environment, name, maximumLength) {
+  const value = optionalEnvironmentString(environment, name, maximumLength);
+  if (value === undefined) {
+    throw new ConfigurationError(`${name} is required when credentials are present.`);
+  }
+  return value;
+}
+
+function booleanEnvironment(environment, name, defaultValue) {
+  const raw = environment[name];
+  if (raw === undefined) return defaultValue;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new ConfigurationError(`${name} must be exactly true or false.`);
+}
+
+function validatedBaseUrl(raw, local) {
+  if (raw.includes("?") || raw.includes("#")) {
+    throw new ConfigurationError(
+      "BROWSERSTACK_BASE_URL must not contain a query or fragment."
+    );
+  }
+
+  let url;
   try {
-    const response = await fetch(CATALOG_URL, {
-      headers: { authorization: `Basic ${Buffer.from(`${user}:${key}`).toString("base64")}` },
+    url = new URL(raw);
+  } catch {
+    throw new ConfigurationError("BROWSERSTACK_BASE_URL must be an absolute URL.");
+  }
+
+  if (url.username || url.password) {
+    throw new ConfigurationError("BROWSERSTACK_BASE_URL must not contain credentials.");
+  }
+  if (!url.hostname || (url.protocol !== "https:" && url.protocol !== "http:")) {
+    throw new ConfigurationError("BROWSERSTACK_BASE_URL must use HTTP or HTTPS.");
+  }
+  if (!local && url.protocol !== "https:") {
+    throw new ConfigurationError("Remote BrowserStack smoke requires an HTTPS staging URL.");
+  }
+  return url;
+}
+
+async function fetchCatalog(credentials) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CATALOG_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(CATALOG_URL, {
+      headers: {
+        authorization: `Basic ${Buffer.from(
+          `${credentials.username}:${credentials.accessKey}`
+        ).toString("base64")}`
+      },
       redirect: "error",
       signal: controller.signal
     });
     if (!response.ok) {
-      throw new Error(`BrowserStack catalog returned HTTP ${response.status}.`);
+      throw new RunnerError(`BrowserStack catalog returned HTTP ${response.status}.`);
     }
-    const value = await response.json();
-    if (!Array.isArray(value)) {
-      throw new Error("BrowserStack catalog response is not an array.");
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_CATALOG_BYTES) {
+      throw new RunnerError("BrowserStack catalog exceeded the response-size limit.");
+    }
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > MAX_CATALOG_BYTES) {
+      throw new RunnerError("BrowserStack catalog exceeded the response-size limit.");
+    }
+
+    let value;
+    try {
+      value = JSON.parse(body);
+    } catch {
+      throw new RunnerError("BrowserStack catalog response is not valid JSON.");
+    }
+    if (!Array.isArray(value) || value.length > 50_000) {
+      throw new RunnerError("BrowserStack catalog response is not a bounded array.");
     }
     return value.map(parseCatalogEntry).filter((entry) => entry !== undefined);
+  } catch (error) {
+    if (error instanceof RunnerError) throw error;
+    if (controller.signal.aborted) {
+      throw new RunnerError("BrowserStack catalog request timed out.");
+    }
+    throw new RunnerError("BrowserStack catalog request failed.");
   } finally {
     clearTimeout(timeout);
   }
 }
 
 function parseCatalogEntry(value) {
-  if (value === null || typeof value !== "object") return undefined;
-  const browser = clean(value.browser);
-  const browserVersion = clean(value.browser_version);
-  const os = clean(value.os);
-  const osVersion = clean(value.os_version);
-  if ([browser, browserVersion, os, osVersion].some((item) => item === undefined)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
-  const device = clean(value.device);
-  return {
-    browser,
-    browserVersion,
-    os,
-    osVersion,
-    device,
-    mobile: value.real_mobile === true || device !== undefined
-  };
+  if (
+    value.real_mobile !== undefined &&
+    value.real_mobile !== null &&
+    typeof value.real_mobile !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  const browser = catalogString(value.browser);
+  const os = catalogString(value.os);
+  const osVersion = catalogString(value.os_version);
+  const device = nullableCatalogString(value.device);
+  const browserVersion = nullableCatalogString(value.browser_version);
+  if (browser === undefined || os === undefined || osVersion === undefined) {
+    return undefined;
+  }
+
+  const mobile = value.real_mobile === true || device !== undefined;
+  if ((!mobile && browserVersion === undefined) || (mobile && device === undefined)) {
+    return undefined;
+  }
+  return Object.freeze({ browser, browserVersion, os, osVersion, device, mobile });
+}
+
+function catalogString(value) {
+  return typeof value === "string" &&
+    value !== "" &&
+    value.trim() === value &&
+    value.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
+}
+
+function nullableCatalogString(value) {
+  if (value === null || value === undefined) return undefined;
+  return catalogString(value);
+}
+
+function resolveMatrices(catalog) {
+  const minimumMatrix = minimumRequirements.map((requirement) => {
+    const candidates = catalog.filter((entry) => matchesMinimum(entry, requirement));
+    candidates.sort((left, right) => compareMinimumCandidates(left, right, requirement));
+    const entry = candidates[0];
+    if (entry === undefined) {
+      throw new RunnerError(
+        `BrowserStack catalog does not expose required minimum ${requirement.key}; matrix was not reduced.`
+      );
+    }
+    return Object.freeze({ requirement, entry });
+  });
+
+  const playwrightMatrix = currentRequirements.map((requirement) => {
+    const candidates = catalog.filter(
+      (entry) =>
+        !entry.mobile &&
+        normalizeBrowser(entry.browser) === requirement.catalogBrowser &&
+        numericVersionParts(entry.browserVersion) !== undefined
+    );
+    candidates.sort((left, right) => compareCurrentCandidates(left, right, requirement));
+    const entry = candidates[0];
+    if (entry === undefined) {
+      throw new RunnerError(
+        `BrowserStack catalog exposes no current desktop ${requirement.catalogBrowser} candidate.`
+      );
+    }
+    return Object.freeze({ requirement, entry });
+  });
+
+  return Object.freeze({
+    minimumMatrix: Object.freeze(minimumMatrix),
+    playwrightMatrix: Object.freeze(playwrightMatrix)
+  });
 }
 
 function matchesMinimum(entry, requirement) {
-  return (
-    entry.mobile === requirement.mobile &&
-    normalizeBrowser(entry.browser) === requirement.browser &&
-    entry.browserVersion === requirement.version
+  if (entry.mobile !== requirement.mobile) return false;
+  if (
+    requirement.catalogBrowser !== undefined &&
+    normalizeBrowser(entry.browser) !== requirement.catalogBrowser
+  ) {
+    return false;
+  }
+  if (
+    requirement.catalogOs !== undefined &&
+    normalizeOs(entry.os) !== requirement.catalogOs
+  ) {
+    return false;
+  }
+  if (requirement.requiresDevice && entry.device === undefined) return false;
+  return versionHasPrefix(entry[requirement.versionField], requirement.versionPrefix);
+}
+
+function compareMinimumCandidates(left, right, requirement) {
+  const versionOrder = compareNumericVersions(
+    left[requirement.versionField],
+    right[requirement.versionField]
   );
+  return versionOrder !== 0 ? versionOrder : compareCatalogIdentity(left, right);
+}
+
+function compareCurrentCandidates(left, right, requirement) {
+  const versionOrder = compareNumericVersions(right.browserVersion, left.browserVersion);
+  if (versionOrder !== 0) return versionOrder;
+  const leftOsRank = normalizeOs(left.os) === requirement.preferredOs ? 0 : 1;
+  const rightOsRank = normalizeOs(right.os) === requirement.preferredOs ? 0 : 1;
+  if (leftOsRank !== rightOsRank) return leftOsRank - rightOsRank;
+  return compareCatalogIdentity(left, right);
+}
+
+function compareCatalogIdentity(left, right) {
+  const leftIdentity = catalogIdentity(left);
+  const rightIdentity = catalogIdentity(right);
+  if (leftIdentity < rightIdentity) return -1;
+  if (leftIdentity > rightIdentity) return 1;
+  return 0;
+}
+
+function catalogIdentity(entry) {
+  return JSON.stringify([
+    entry.browser,
+    entry.browserVersion ?? "",
+    entry.os,
+    entry.osVersion,
+    entry.device ?? "",
+    entry.mobile
+  ]);
 }
 
 function normalizeBrowser(value) {
@@ -195,112 +494,563 @@ function normalizeBrowser(value) {
   return browser;
 }
 
-function compareVersionsDescending(left, right) {
-  return compareVersion(right.browserVersion, left.browserVersion);
+function normalizeOs(value) {
+  return value.toLowerCase().replace(/[\s_-]+/gu, "");
 }
 
-function compareVersion(left, right) {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+function versionHasPrefix(actual, requiredPrefix) {
+  const actualParts = numericVersionParts(actual);
+  const requiredParts = numericVersionParts(requiredPrefix);
+  return (
+    actualParts !== undefined &&
+    requiredParts !== undefined &&
+    actualParts.length >= requiredParts.length &&
+    requiredParts.every((part, index) => actualParts[index] === part)
+  );
+}
+
+function compareNumericVersions(left, right) {
+  const leftParts = numericVersionParts(left);
+  const rightParts = numericVersionParts(right);
+  if (leftParts === undefined || rightParts === undefined) {
+    throw new ConfigurationError("An internal catalog comparison received a nonnumeric version.");
+  }
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
     if (difference !== 0) return difference;
   }
   return 0;
 }
 
-async function runPlaywrightSmoke(options) {
-  const browserName = normalizeBrowser(options.entry.browser);
-  const browserType = browserName === "firefox" ? firefox : chromium;
-  const caps = {
-    browser: browserName,
-    browser_version: options.entry.browserVersion,
-    os: options.entry.os,
-    os_version: options.entry.osVersion,
-    name: `Hallu Defense marketing Playwright ${browserName}`,
-    build: process.env.BROWSERSTACK_BUILD_NAME ?? "hallu-defense-marketing",
-    "browserstack.username": options.username,
-    "browserstack.accessKey": options.accessKey,
-    "browserstack.local": options.local,
-    ...(options.localIdentifier === undefined
+function numericVersionParts(value) {
+  if (typeof value !== "string" || !/^\d+(?:\.\d+)*$/u.test(value)) {
+    return undefined;
+  }
+  const parts = value.split(".").map(Number);
+  return parts.every((part) => Number.isSafeInteger(part)) ? parts : undefined;
+}
+
+function buildPlaywrightCapabilities(requirement, entry, runtime, credentials) {
+  const capabilities = {
+    browser: requirement.capabilityBrowser,
+    os: entry.os,
+    os_version: entry.osVersion,
+    name: `Hallu Defense marketing Playwright ${requirement.key}`,
+    build: runtime.buildName,
+    "browserstack.username": credentials.username,
+    "browserstack.accessKey": credentials.accessKey,
+    "browserstack.local": runtime.local,
+    "browserstack.console": "errors",
+    "browserstack.debug": true,
+    ...(runtime.localIdentifier === undefined
       ? {}
-      : { "browserstack.localIdentifier": options.localIdentifier })
+      : { "browserstack.localIdentifier": runtime.localIdentifier })
   };
-  const endpoint = `${PLAYWRIGHT_ENDPOINT}?caps=${encodeURIComponent(JSON.stringify(caps))}`;
-  const browser = await browserType.connect(endpoint, { timeout: 60_000 });
+  if (requirement.branded) {
+    if (entry.browserVersion === undefined) {
+      throw new ConfigurationError("A branded Playwright target has no browser version.");
+    }
+    capabilities.browser_version = entry.browserVersion;
+  }
+  return capabilities;
+}
+
+function buildSeleniumCapabilities(requirement, entry, runtime, credentials) {
+  const bstackOptions = {
+    userName: credentials.username,
+    accessKey: credentials.accessKey,
+    osVersion: entry.osVersion,
+    sessionName: `Hallu Defense minimum ${requirement.key}`,
+    buildName: runtime.buildName,
+    local: runtime.local,
+    idleTimeout: 90,
+    consoleLogs: "errors",
+    debug: true,
+    ...(runtime.localIdentifier === undefined
+      ? {}
+      : { localIdentifier: runtime.localIdentifier }),
+    ...(entry.mobile
+      ? { deviceName: entry.device, realMobile: true }
+      : { os: entry.os })
+  };
+  return {
+    browserName: requirement.browserName,
+    ...(entry.browserVersion === undefined
+      ? {}
+      : { browserVersion: entry.browserVersion }),
+    "bstack:options": bstackOptions
+  };
+}
+
+async function runPlaywrightSmoke({ requirement, entry, runtime, credentials }) {
+  const engine = playwrightEngines[requirement.engine];
+  if (engine === undefined) {
+    throw new ConfigurationError(`No Playwright engine is registered for ${requirement.key}.`);
+  }
+  const capabilities = buildPlaywrightCapabilities(
+    requirement,
+    entry,
+    runtime,
+    credentials
+  );
+  const endpoint = `${PLAYWRIGHT_ENDPOINT}?caps=${encodeURIComponent(
+    JSON.stringify(capabilities)
+  )}`;
+
+  let browser;
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-    await page.goto(options.baseURL.href, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    const heading = (await page.locator("h1").first().textContent())?.trim();
-    if (heading !== "La confianza no se asume. Se demuestra.") {
-      throw new Error(`Unexpected Spanish headline on ${browserName}.`);
-    }
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
+    browser = await engine.connect(endpoint, { timeout: REMOTE_CONNECT_TIMEOUT_MS });
+  } catch {
+    throw new RunnerError(`Playwright session ${requirement.key} could not connect.`);
+  }
+
+  let session;
+  let page;
+  let failure;
+  const diagnostics = createDiagnostics();
+  try {
+    const context = await safeRemoteStep(
+      () =>
+        browser.newContext({
+          viewport: { width: 1440, height: 1000 },
+          ignoreHTTPSErrors: false
+        }),
+      `Playwright session ${requirement.key} could not create a context.`
     );
-    if (overflow) throw new Error(`Horizontal overflow detected on ${browserName}.`);
-    const email = page.locator('input[type="email"]');
-    if ((await email.count()) > 0 && (await email.first().isEnabled())) {
-      await email.first().fill(SAFE_EMAIL);
+    context.setDefaultTimeout(ASSERTION_TIMEOUT_MS);
+    context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
+    page = await safeRemoteStep(
+      () => context.newPage(),
+      `Playwright session ${requirement.key} could not create a page.`
+    );
+    attachPlaywrightDiagnostics(page, diagnostics);
+    session = await getPlaywrightSessionDetails(page, requirement.key);
+
+    await safeRemoteStep(
+      () =>
+        page.goto(runtime.baseURL.href, {
+          waitUntil: "load",
+          timeout: NAVIGATION_TIMEOUT_MS
+        }),
+      `Playwright session ${requirement.key} could not load the staging page.`,
+      NAVIGATION_TIMEOUT_MS
+    );
+    const heading = await safeRemoteStep(
+      () => page.locator("h1").first().textContent({ timeout: ASSERTION_TIMEOUT_MS }),
+      `Playwright session ${requirement.key} could not read the headline.`
+    );
+    if (heading?.trim() !== EXPECTED_HEADLINE) {
+      throw new RunnerError(`Unexpected Spanish headline on ${requirement.key}.`);
     }
+
+    const overflow = await safeRemoteStep(
+      () =>
+        page.evaluate(
+          () =>
+            document.documentElement.scrollWidth >
+            document.documentElement.clientWidth + 1
+        ),
+      `Playwright session ${requirement.key} could not inspect page overflow.`
+    );
+    if (overflow) {
+      throw new RunnerError(`Horizontal overflow detected on ${requirement.key}.`);
+    }
+
+    const email = page.locator('input[type="email"]');
+    const emailCount = await safeRemoteStep(
+      () => email.count(),
+      `Playwright session ${requirement.key} could not inspect the email field.`
+    );
+    if (
+      emailCount > 0 &&
+      (await safeRemoteStep(
+        () => email.first().isEnabled(),
+        `Playwright session ${requirement.key} could not inspect the email field.`
+      ))
+    ) {
+      await safeRemoteStep(
+        () => email.first().fill(SAFE_EMAIL),
+        `Playwright session ${requirement.key} could not fill synthetic contact data.`
+      );
+    }
+
+    if (diagnostics.pageErrors.total > 0 || diagnostics.consoleErrors.total > 0) {
+      throw new RunnerError(
+        `Browser runtime errors were captured on ${requirement.key}; inspect the recorded diagnostic digests.`
+      );
+    }
+    await setPlaywrightSessionStatus(page, "passed", requirement.key);
+    logSessionEvidence("playwright", requirement.key, "passed", session, diagnostics);
+  } catch (error) {
+    failure = safeRunnerFailure(
+      error,
+      `Playwright session ${requirement.key} failed unexpectedly.`
+    );
+    if (page !== undefined) {
+      await setPlaywrightSessionStatus(page, "failed", requirement.key).catch(
+        () => undefined
+      );
+    }
+    if (session !== undefined) {
+      logSessionEvidence("playwright", requirement.key, "failed", session, diagnostics);
+    }
+    throw failure;
   } finally {
-    await browser.close();
+    try {
+      await safeRemoteStep(
+        () => browser.close(),
+        `Playwright session ${requirement.key} could not close cleanly.`
+      );
+    } catch {
+      if (failure === undefined) {
+        throw new RunnerError(`Playwright session ${requirement.key} could not close cleanly.`);
+      }
+    }
   }
 }
 
-async function runSeleniumSmoke(options) {
-  const bstackOptions = {
-    userName: options.username,
-    accessKey: options.accessKey,
-    os: options.entry.os,
-    osVersion: options.entry.osVersion,
-    sessionName: `Hallu Defense minimum ${options.requirement}`,
-    buildName: process.env.BROWSERSTACK_BUILD_NAME ?? "hallu-defense-marketing",
-    local: options.local ? "true" : "false",
-    ...(options.localIdentifier === undefined
-      ? {}
-      : { localIdentifier: options.localIdentifier }),
-    ...(options.entry.device === undefined
-      ? {}
-      : { deviceName: options.entry.device, realMobile: "true" })
-  };
-  const driver = await new Builder()
-    .usingServer(HUB_URL)
-    .withCapabilities({
-      browserName: options.entry.browser,
-      browserVersion: options.entry.browserVersion,
-      "bstack:options": bstackOptions
-    })
-    .build();
+async function runSeleniumSmoke({ requirement, entry, runtime, credentials }) {
+  const capabilities = buildSeleniumCapabilities(
+    requirement,
+    entry,
+    runtime,
+    credentials
+  );
+  let driver;
+  let httpAgent;
   try {
-    await driver.get(options.baseURL.href);
-    const heading = (await driver.findElement(By.css("h1")).getText()).trim();
-    if (heading !== "La confianza no se asume. Se demuestra.") {
-      throw new Error(`Unexpected headline for ${options.requirement}.`);
+    ({ driver, httpAgent } = await buildSeleniumDriver(capabilities, requirement.key));
+  } catch (error) {
+    throw safeRunnerFailure(
+      error,
+      `Selenium session ${requirement.key} could not connect.`
+    );
+  }
+
+  let session;
+  let failure;
+  let seleniumTransportUsable = true;
+  const abortSeleniumTransport = () => {
+    seleniumTransportUsable = false;
+    httpAgent.destroy();
+  };
+  const seleniumStep = (action, message, milliseconds = ASSERTION_TIMEOUT_MS) =>
+    safeRemoteStep(action, message, milliseconds, abortSeleniumTransport);
+  try {
+    await seleniumStep(
+      () =>
+        driver.manage().setTimeouts({
+          implicit: 0,
+          pageLoad: NAVIGATION_TIMEOUT_MS,
+          script: ASSERTION_TIMEOUT_MS
+      }),
+      `Selenium session ${requirement.key} could not configure timeouts.`
+    );
+    session = await getSeleniumSessionDetails(
+      driver,
+      requirement.key,
+      abortSeleniumTransport
+    );
+    await seleniumStep(
+      () => driver.get(runtime.baseURL.href),
+      `Selenium session ${requirement.key} could not load the staging page.`,
+      NAVIGATION_TIMEOUT_MS
+    );
+    const heading = await seleniumStep(
+      async () => (await driver.findElement(By.css("h1")).getText()).trim(),
+      `Selenium session ${requirement.key} could not read the headline.`
+    );
+    if (heading !== EXPECTED_HEADLINE) {
+      throw new RunnerError(`Unexpected Spanish headline for ${requirement.key}.`);
     }
-    const overflow = await driver.executeScript(
-      "return document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
+
+    const overflow = await seleniumStep(
+      () =>
+        driver.executeScript(
+          "return document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
+        ),
+      `Selenium session ${requirement.key} could not inspect page overflow.`
     );
     if (overflow === true) {
-      throw new Error(`Horizontal overflow detected for ${options.requirement}.`);
+      throw new RunnerError(`Horizontal overflow detected for ${requirement.key}.`);
     }
-    const emails = await driver.findElements(By.css('input[type="email"]:not([disabled])'));
-    if (emails.length > 0) await emails[0].sendKeys(SAFE_EMAIL);
+
+    const emails = await seleniumStep(
+      () => driver.findElements(By.css('input[type="email"]:not([disabled])')),
+      `Selenium session ${requirement.key} could not inspect the email field.`
+    );
+    if (emails.length > 0) {
+      await seleniumStep(
+        () => emails[0].sendKeys(SAFE_EMAIL),
+        `Selenium session ${requirement.key} could not fill synthetic contact data.`
+      );
+    }
+    await setSeleniumSessionStatus(
+      driver,
+      "passed",
+      requirement.key,
+      abortSeleniumTransport
+    );
+    logSessionEvidence("selenium", requirement.key, "passed", session, undefined);
+  } catch (error) {
+    failure = safeRunnerFailure(error, `Selenium session ${requirement.key} failed unexpectedly.`);
+    if (seleniumTransportUsable) {
+      await setSeleniumSessionStatus(
+        driver,
+        "failed",
+        requirement.key,
+        abortSeleniumTransport
+      ).catch(() => undefined);
+    }
+    if (session !== undefined) {
+      logSessionEvidence("selenium", requirement.key, "failed", session, undefined);
+    }
+    throw failure;
   } finally {
-    await driver.quit();
+    try {
+      if (seleniumTransportUsable) {
+        await seleniumStep(
+          () => driver.quit(),
+          `Selenium session ${requirement.key} could not close cleanly.`,
+          ASSERTION_TIMEOUT_MS
+        );
+      }
+    } catch {
+      if (failure === undefined) {
+        throw new RunnerError(`Selenium session ${requirement.key} could not close cleanly.`);
+      }
+    } finally {
+      httpAgent.destroy();
+    }
   }
 }
 
-function validatedBaseUrl(raw) {
-  const value = clean(raw);
-  if (value === undefined) {
-    throw new Error("BROWSERSTACK_BASE_URL is required when credentials are present.");
+async function buildSeleniumDriver(capabilities, requirementKey) {
+  const httpAgent = new HttpsAgent({
+    keepAlive: true,
+    maxSockets: 1,
+    timeout: REMOTE_CONNECT_TIMEOUT_MS
+  });
+  const buildPromise = new Builder()
+    .usingServer(HUB_URL)
+    .usingHttpAgent(httpAgent)
+    .withCapabilities(capabilities)
+    .build();
+  let timeout;
+  try {
+    const driver = await Promise.race([
+      buildPromise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => {
+            httpAgent.destroy();
+            reject(new RunnerError(`Selenium session ${requirementKey} timed out connecting.`));
+          },
+          REMOTE_CONNECT_TIMEOUT_MS
+        );
+      })
+    ]);
+    return { driver, httpAgent };
+  } catch (error) {
+    // Destroying the agent aborts the in-flight HTTP request. BrowserStack's
+    // bounded idleTimeout cleans a session that happened to be created at the
+    // same instant as the local deadline without reopening this transport.
+    httpAgent.destroy();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  const url = new URL(value);
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error("BROWSERSTACK_BASE_URL must not contain credentials, query, or fragment.");
+}
+
+function createDiagnostics() {
+  return {
+    pageErrors: { total: 0, digests: [] },
+    consoleErrors: { total: 0, digests: [] },
+    consoleWarnings: { total: 0, digests: [] }
+  };
+}
+
+function attachPlaywrightDiagnostics(page, diagnostics) {
+  page.on("pageerror", (error) => {
+    recordDiagnostic(diagnostics.pageErrors, error instanceof Error ? error.message : error);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      recordDiagnostic(diagnostics.consoleErrors, message.text());
+    } else if (message.type() === "warning") {
+      recordDiagnostic(diagnostics.consoleWarnings, message.text());
+    }
+  });
+}
+
+function recordDiagnostic(bucket, value) {
+  bucket.total += 1;
+  if (bucket.digests.length < MAX_DIAGNOSTIC_DIGESTS) {
+    bucket.digests.push(
+      createHash("sha256").update(String(value), "utf8").digest("hex").slice(0, 16)
+    );
   }
-  return url;
+}
+
+async function getPlaywrightSessionDetails(page, requirementKey) {
+  const executor = `browserstack_executor: ${JSON.stringify({
+    action: "getSessionDetails"
+  })}`;
+  const raw = await safeRemoteStep(
+    () => page.evaluate(() => undefined, executor),
+    `Playwright session ${requirementKey} did not expose session details.`,
+    SESSION_DETAILS_TIMEOUT_MS
+  );
+  return parseSessionDetails(raw, requirementKey);
+}
+
+async function getSeleniumSessionDetails(driver, requirementKey, abortTransport) {
+  const raw = await safeRemoteStep(
+    () =>
+      driver.executeScript(
+        'browserstack_executor: {"action":"getSessionDetails"}'
+      ),
+    `Selenium session ${requirementKey} did not expose session details.`,
+    SESSION_DETAILS_TIMEOUT_MS,
+    abortTransport
+  );
+  return parseSessionDetails(raw, requirementKey);
+}
+
+function parseSessionDetails(raw, requirementKey) {
+  let value = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new RunnerError(`BrowserStack session ${requirementKey} returned invalid details.`);
+    }
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new RunnerError(`BrowserStack session ${requirementKey} returned invalid details.`);
+  }
+
+  const hashedId = safeSessionIdentifier(value.hashed_id);
+  if (hashedId === undefined) {
+    throw new RunnerError(`BrowserStack session ${requirementKey} omitted hashed_id.`);
+  }
+  return Object.freeze({
+    hashed_id: hashedId,
+    browser: safeSessionField(value.browser),
+    browser_version: safeSessionField(value.browser_version),
+    os: safeSessionField(value.os),
+    os_version: safeSessionField(value.os_version),
+    device: safeSessionField(value.device),
+    status: safeSessionField(value.status)
+  });
+}
+
+function safeSessionIdentifier(value) {
+  return typeof value === "string" && /^[a-zA-Z0-9_-]{8,128}$/u.test(value)
+    ? value
+    : undefined;
+}
+
+function safeSessionField(value) {
+  return typeof value === "string" &&
+    value.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
+}
+
+async function setPlaywrightSessionStatus(page, status, requirementKey) {
+  const executor = `browserstack_executor: ${JSON.stringify({
+    action: "setSessionStatus",
+    arguments: {
+      status,
+      reason: `Marketing smoke ${requirementKey} ${status}`
+    }
+  })}`;
+  await safeRemoteStep(
+    () => page.evaluate(() => undefined, executor),
+    `Playwright session ${requirementKey} could not record its status.`,
+    SESSION_DETAILS_TIMEOUT_MS
+  );
+}
+
+async function setSeleniumSessionStatus(driver, status, requirementKey, abortTransport) {
+  const executor = `browserstack_executor: ${JSON.stringify({
+    action: "setSessionStatus",
+    arguments: {
+      status,
+      reason: `Marketing smoke ${requirementKey} ${status}`
+    }
+  })}`;
+  await safeRemoteStep(
+    () => driver.executeScript(executor),
+    `Selenium session ${requirementKey} could not record its status.`,
+    SESSION_DETAILS_TIMEOUT_MS,
+    abortTransport
+  );
+}
+
+function logSessionEvidence(runner, requirement, result, session, diagnostics) {
+  console.log(
+    JSON.stringify({
+      event: "browserstack-session",
+      runner,
+      requirement,
+      result,
+      session,
+      ...(diagnostics === undefined ? {} : { diagnostics })
+    })
+  );
+}
+
+async function safeRemoteStep(
+  action,
+  message,
+  milliseconds = ASSERTION_TIMEOUT_MS,
+  onTimeout = undefined
+) {
+  if (onTimeout !== undefined && typeof onTimeout !== "function") {
+    throw new ConfigurationError("A remote timeout callback is malformed.");
+  }
+  try {
+    return await withDeadline(
+      Promise.resolve().then(action),
+      milliseconds,
+      message,
+      onTimeout
+    );
+  } catch (error) {
+    if (error instanceof ConfigurationError || error instanceof RunnerError) throw error;
+    throw new RunnerError(message);
+  }
+}
+
+async function withDeadline(promise, milliseconds, message, onTimeout = undefined) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          try {
+            onTimeout?.();
+          } catch {
+            // Timeout cleanup is best-effort; the bounded failure still wins.
+          } finally {
+            reject(new RunnerError(message));
+          }
+        }, milliseconds);
+      })
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function safeRunnerFailure(error, fallbackMessage) {
+  return error instanceof ConfigurationError || error instanceof RunnerError
+    ? error
+    : new RunnerError(fallbackMessage);
 }
 
 function publicCatalogEntry(entry) {
@@ -314,8 +1064,214 @@ function publicCatalogEntry(entry) {
   };
 }
 
-function clean(value) {
-  return typeof value === "string" && value.trim() === value && value !== ""
-    ? value
-    : undefined;
+function validateStaticContract() {
+  assertConfiguration(
+    SAFE_EMAIL.endsWith("@example.invalid"),
+    "BrowserStack smoke email must use example.invalid."
+  );
+  assertConfiguration(
+    minimumRequirements.length === 5,
+    "BrowserStack minimum matrix is incomplete."
+  );
+  assertConfiguration(
+    currentRequirements.length === 4,
+    "BrowserStack current matrix is incomplete."
+  );
+
+  const minimumKeys = new Set(minimumRequirements.map(({ key }) => key));
+  for (const required of [
+    "chrome-111",
+    "edge-111",
+    "firefox-111",
+    "safari-16.4",
+    "ios-safari-16.4"
+  ]) {
+    assertConfiguration(
+      minimumKeys.has(required),
+      `BrowserStack minimum matrix is missing ${required}.`
+    );
+  }
+  assertConfiguration(
+    JSON.stringify(currentRequirements.map(({ capabilityBrowser }) => capabilityBrowser)) ===
+      JSON.stringify(["chrome", "edge", "playwright-firefox", "playwright-webkit"]),
+    "BrowserStack current Playwright target set is incorrect."
+  );
+  for (const engine of Object.values(playwrightEngines)) {
+    assertConfiguration(
+      typeof engine?.connect === "function",
+      "A declared @playwright/test engine is unavailable."
+    );
+  }
+  for (const timeout of [
+    CATALOG_TIMEOUT_MS,
+    REMOTE_CONNECT_TIMEOUT_MS,
+    NAVIGATION_TIMEOUT_MS,
+    ASSERTION_TIMEOUT_MS,
+    SESSION_DETAILS_TIMEOUT_MS
+  ]) {
+    assertConfiguration(
+      Number.isSafeInteger(timeout) && timeout >= 5_000 && timeout <= 120_000,
+      "BrowserStack runner timeout is outside its safe bounds."
+    );
+  }
+
+  const fixture = syntheticCatalogFixture();
+  const forward = resolveMatrices(
+    fixture.map(parseCatalogEntry).filter((entry) => entry !== undefined)
+  );
+  const reverse = resolveMatrices(
+    [...fixture]
+      .reverse()
+      .map(parseCatalogEntry)
+      .filter((entry) => entry !== undefined)
+  );
+  assertConfiguration(
+    matrixSignature(forward) === matrixSignature(reverse),
+    "BrowserStack catalog selection depends on response order."
+  );
+
+  const iosTarget = forward.minimumMatrix.find(
+    ({ requirement }) => requirement.key === "ios-safari-16.4"
+  );
+  assertConfiguration(
+    iosTarget?.entry.browserVersion === undefined && iosTarget?.entry.device !== undefined,
+    "The iOS minimum does not accept the official null browser_version catalog shape."
+  );
+
+  const selfCheckRuntime = {
+    buildName: DEFAULT_BUILD_NAME,
+    local: false,
+    localIdentifier: undefined
+  };
+  const selfCheckCredentials = { username: "self-check", accessKey: "self-check-key" };
+  for (const { requirement, entry } of forward.playwrightMatrix) {
+    const capabilities = buildPlaywrightCapabilities(
+      requirement,
+      entry,
+      selfCheckRuntime,
+      selfCheckCredentials
+    );
+    assertConfiguration(
+      Object.hasOwn(capabilities, "browser_version") === requirement.branded,
+      `${requirement.key} violates the branded-only browser_version contract.`
+    );
+  }
+  const iosCapabilities = buildSeleniumCapabilities(
+    iosTarget.requirement,
+    iosTarget.entry,
+    selfCheckRuntime,
+    selfCheckCredentials
+  );
+  assertConfiguration(
+    iosCapabilities.browserName === "safari" &&
+      !Object.hasOwn(iosCapabilities, "browserVersion") &&
+      iosCapabilities["bstack:options"].deviceName === iosTarget.entry.device,
+    "The iOS Selenium target must resolve by os_version/device with browserName safari."
+  );
+
+  assertConfiguration(readCredentials({}) === undefined, "Absent credentials must skip.");
+  assertConfiguration(
+    readCredentials({ BROWSERSTACK_USERNAME: "", BROWSERSTACK_ACCESS_KEY: "" }) ===
+      undefined,
+    "Empty GitHub secret values must skip."
+  );
+  expectConfigurationError(
+    () => readCredentials({ BROWSERSTACK_USERNAME: "only-one" }),
+    "Partial credentials"
+  );
+  expectConfigurationError(
+    () => booleanEnvironment({ FLAG: "TRUE" }, "FLAG", false),
+    "Noncanonical booleans"
+  );
+  expectConfigurationError(
+    () => validatedBaseUrl("http://staging.example.test/", false),
+    "Nonlocal HTTP URL"
+  );
+  expectConfigurationError(
+    () => validatedBaseUrl("https://user:password@example.test/", false),
+    "URL credentials"
+  );
+  assertConfiguration(
+    validatedBaseUrl("http://localhost:3000/", true).protocol === "http:",
+    "Local HTTP URL must be accepted only for BrowserStack Local."
+  );
+
+  const safeSession = parseSessionDetails(
+    {
+      hashed_id: "0123456789abcdef0123456789abcdef01234567",
+      browser: "playwright-firefox",
+      browser_version: "current",
+      os: "Windows",
+      os_version: "11",
+      status: "running",
+      public_url: "https://example.test/?auth_token=must-not-leak"
+    },
+    "self-check"
+  );
+  assertConfiguration(
+    safeSession.hashed_id === "0123456789abcdef0123456789abcdef01234567" &&
+      !Object.hasOwn(safeSession, "public_url"),
+    "Session evidence is not restricted to the safe allowlist."
+  );
+}
+
+function syntheticCatalogFixture() {
+  return [
+    catalogFixture("chrome", "111.0", "Windows", "10"),
+    catalogFixture("edge", "111.0.1661.41", "Windows", "10"),
+    catalogFixture("firefox", "111.0", "Windows", "10"),
+    catalogFixture("safari", "16.4", "OS X", "Ventura"),
+    {
+      browser: "iphone",
+      browser_version: null,
+      os: "ios",
+      os_version: "16.4",
+      device: "iPhone 14",
+      real_mobile: true
+    },
+    catalogFixture("chrome", "125.0", "OS X", "Sonoma"),
+    catalogFixture("chrome", "126.0", "Windows", "11"),
+    catalogFixture("edge", "126.0", "Windows", "11"),
+    catalogFixture("firefox", "127.0", "OS X", "Sonoma"),
+    catalogFixture("firefox", "127.0", "Windows", "11"),
+    catalogFixture("safari", "17.4", "OS X", "Sonoma")
+  ];
+}
+
+function catalogFixture(browser, browserVersion, os, osVersion) {
+  return {
+    browser,
+    browser_version: browserVersion,
+    os,
+    os_version: osVersion,
+    device: null,
+    real_mobile: null
+  };
+}
+
+function matrixSignature(matrix) {
+  return JSON.stringify({
+    minimum: matrix.minimumMatrix.map(({ requirement, entry }) => [
+      requirement.key,
+      catalogIdentity(entry)
+    ]),
+    playwright: matrix.playwrightMatrix.map(({ requirement, entry }) => [
+      requirement.key,
+      catalogIdentity(entry)
+    ])
+  });
+}
+
+function assertConfiguration(condition, message) {
+  if (!condition) throw new ConfigurationError(message);
+}
+
+function expectConfigurationError(action, label) {
+  try {
+    action();
+  } catch (error) {
+    if (error instanceof ConfigurationError) return;
+    throw error;
+  }
+  throw new ConfigurationError(`${label} did not fail closed.`);
 }

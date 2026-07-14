@@ -6,7 +6,7 @@ endif
 
 PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 
-.PHONY: lint typecheck test build console-check console-build-check console-oidc-live-smoke marketing-config marketing-e2e-list marketing-e2e browserstack-marketing-config browserstack-marketing contracts contract-versions-check openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image pgvector-image keycloak-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config eval-ingestion-config eval-report-publish-smoke verifier-calibration-generate verifier-calibration-check dashboard-lint local-runtime-config encryption-config release-security-config release-encryption-workflow-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke provider-vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config retention-execution backup-restore-drill minio-backup-drill-config minio-backup-restore-drill prod-secret-files-preflight prod-profile-config prod-profile-up prod-profile-rotate-secrets prod-profile-e2e keycloak-jwks-export helm-chart-check kind-helm-live-smoke rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke rag-hybrid-live-smoke postgres-migrations-check postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config ingestion-worker-live-smoke python-lock-check python-repro-check python-wheel-repro python-audit gitleaks-config gitleaks-scan container-scan-config metrics-token-materializer-config observability-config otel-export-live-smoke observability-live-smoke security-check
+.PHONY: lint typecheck test build console-check console-build-check console-oidc-live-smoke marketing-config marketing-e2e-list marketing-e2e marketing-e2e-production marketing-e2e-form browserstack-marketing-config browserstack-marketing contracts contract-versions-check openapi openapi-check foundation-docs-check foundation-infra-check traceability-check worklog-check policy-test sandbox-test sandbox-image pgvector-image keycloak-image sandbox-isolation-config sandbox-live-smoke evals-smoke evals-scenarios eval-thresholds-config eval-ingestion-config eval-report-publish-smoke verifier-calibration-generate verifier-calibration-check dashboard-lint local-runtime-config encryption-config release-security-config release-encryption-workflow-config auth-config oidc-provider-smoke oidc-keycloak-live-smoke secrets-config vault-bootstrap vault-live-smoke provider-vault-live-smoke audit-ledger-config approval-queue-config corpus-grants-config backup-retention-config retention-execution backup-restore-drill minio-backup-drill-config minio-backup-restore-drill prod-secret-files-preflight prod-profile-config prod-profile-up prod-profile-rotate-secrets prod-profile-e2e keycloak-jwks-export helm-chart-check kind-helm-live-smoke rag-persistence-config rag-opensearch-template-dry-run rag-opensearch-live-smoke rag-pgvector-live-smoke rag-hybrid-live-smoke postgres-migrations-check postgres-migrations-apply postgres-persistence-live-smoke ingestion-pipeline-config ingestion-worker-live-smoke python-lock-check python-repro-check python-wheel-repro python-audit gitleaks-config gitleaks-scan container-scan-config metrics-token-materializer-config observability-config otel-export-live-smoke observability-live-smoke security-check
 
 lint:
 	$(PY) -m ruff check apps/api/src apps/api/tests scripts evals
@@ -48,6 +48,12 @@ marketing-e2e-list:
 
 marketing-e2e:
 	npm --workspace @hallu-defense/console run test:e2e:marketing
+
+marketing-e2e-production:
+	npm --workspace @hallu-defense/console run test:e2e:marketing:production
+
+marketing-e2e-form:
+	npm --workspace @hallu-defense/console run test:e2e:marketing:form
 
 browserstack-marketing-config:
 	npm --workspace @hallu-defense/console run test:browserstack:config
