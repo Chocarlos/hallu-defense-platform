@@ -56,4 +56,3 @@ export class DemoRequestError extends Error {
     this.name = "DemoRequestError";
   }
 }
-

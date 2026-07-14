@@ -11,4 +11,3 @@ const handleDemoRequest = createDemoRequestHandler();
 export async function POST(request: Request): Promise<Response> {
   return handleDemoRequest(request);
 }
-

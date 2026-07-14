@@ -221,4 +221,3 @@ function jsonResponse(
 function unavailable(): never {
   throw new DemoRequestError(503, "Demo requests are unavailable.", "unavailable");
 }
-

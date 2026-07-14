@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent
+} from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, Send } from "lucide-react";
 
 import {
@@ -22,6 +28,8 @@ import styles from "./marketing.module.css";
 
 type SubmissionState = "idle" | "submitting" | "success" | "error";
 
+const subscribeToHydration = (): (() => void) => () => undefined;
+
 export function DemoRequestForm({
   copy,
   enabled,
@@ -38,6 +46,11 @@ export function DemoRequestForm({
   const [useCase, setUseCase] = useState<DemoUseCase>("rag_verification");
   const [consent, setConsent] = useState(false);
   const [website, setWebsite] = useState("");
+  const hydrated = useSyncExternalStore(
+    subscribeToHydration,
+    () => true,
+    () => false
+  );
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [statusMessage, setStatusMessage] = useState("");
   const emailInput = useRef<HTMLInputElement>(null);
@@ -77,6 +90,13 @@ export function DemoRequestForm({
 
   function continueToDetails(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    // Capture the submitted DOM value as well as relying on `onChange`. A user
+    // can type while React is finishing hydration; in that narrow window the
+    // browser value is current even if the controlled-state event was missed.
+    const submittedEmail = new FormData(event.currentTarget).get("email");
+    if (typeof submittedEmail === "string") {
+      setEmail(submittedEmail);
+    }
     focusAfterStepChange.current = "details";
     setStep(2);
   }
@@ -162,7 +182,10 @@ export function DemoRequestForm({
   }
 
   return (
-    <div className={styles.formCard}>
+    <div
+      className={styles.formCard}
+      data-demo-form-hydrated={hydrated ? "true" : "false"}
+    >
       <div className={styles.stepIndicator} aria-hidden="true">
         <span className={styles.stepActive} />
         <span className={step === 2 ? styles.stepActive : ""} />

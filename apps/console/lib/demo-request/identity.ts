@@ -47,4 +47,3 @@ export function createLeaseToken(): string {
 function domainHmac(secret: Uint8Array, domain: string, value: string): Buffer {
   return createHmac("sha256", secret).update(domain, "utf8").update(value, "utf8").digest();
 }
-

@@ -188,4 +188,3 @@ function fakeClient(result: unknown): RedisCommandClient {
     sendCommand: vi.fn(async () => result)
   };
 }
-
