@@ -13,6 +13,12 @@
     "test:e2e-static": "vitest run --config vitest.e2e-static.config.ts",
     "test:e2e:list": "playwright test --list",
     "test:e2e": "playwright test",
+    "test:e2e:marketing:list": "node ./e2e-marketing/run-marketing-suite.mjs --list",
+    "test:e2e:marketing": "node ./e2e-marketing/run-marketing-suite.mjs",
+    "test:e2e:marketing:production": "node ./e2e-marketing/run-marketing-suite.mjs --phase=production",
+    "test:e2e:marketing:form": "node ./e2e-marketing/run-marketing-suite.mjs --phase=form",
+    "test:browserstack:marketing": "node ./scripts/run-browserstack-marketing.mjs",
+    "test:browserstack:config": "node ./scripts/run-browserstack-marketing.mjs --check-config",
     "e2e:web": "next build && next start --port 3100",
     "typecheck": "next typegen && tsc -p tsconfig.json --noEmit"
   },
@@ -22,11 +28,14 @@
     "lucide-react": "^0.468.0",
     "next": "16.2.10",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "redis": "^6.1.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.61.1",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0"
+    "@types/react-dom": "^19.0.0",
+    "selenium-webdriver": "^4.46.0"
   }
 }

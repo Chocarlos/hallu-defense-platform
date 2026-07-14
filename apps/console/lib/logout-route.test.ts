@@ -8,6 +8,10 @@ import {
   resetAuthStoreForTests
 } from "./auth-store";
 import { resetOidcProviderCacheForTests } from "./oidc";
+import {
+  loadConsoleRuntimeConfig,
+  type ConsoleOidcRuntimeConfig
+} from "./runtime-config";
 
 const consoleOrigin = "https://console.example.test";
 const issuer = "https://identity.example.test/realms/hallu";
@@ -42,7 +46,7 @@ describe("Console provider logout", () => {
         )
       )
     );
-    const session = createConsoleSession({
+    const session = createConsoleSession(currentOidcConfig(), {
       accessToken: "T".repeat(64),
       expiresAtSeconds: Math.floor(Date.now() / 1000) + 600,
       tenantId: "tenant-a",
@@ -75,6 +79,10 @@ describe("Console provider logout", () => {
     );
   });
 });
+
+function currentOidcConfig(): ConsoleOidcRuntimeConfig {
+  return loadConsoleRuntimeConfig() as ConsoleOidcRuntimeConfig;
+}
 
 function stubEnvironment(): void {
   const values = {

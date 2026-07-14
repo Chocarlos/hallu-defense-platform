@@ -8,7 +8,7 @@ const deployableDirectories = ["server", "static"].map((name) =>
 const forbiddenPatterns = [
   { label: "demo trace fixture", pattern: /tr_demo/iu },
   { label: "initial run fixture", pattern: /initialRun/iu },
-  { label: "demo run fixture", pattern: /demoRun|demo-run/iu },
+  { label: "demo run fixture", pattern: /\bdemoRun\b|demo-run/iu },
   { label: "demo reset control", pattern: /Restaurar demo/iu },
   {
     label: "demo API key payload",

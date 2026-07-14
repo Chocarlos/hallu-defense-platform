@@ -8,7 +8,7 @@ test("renders tenant-scoped run, grant, ingestion, and eval data from the live A
   request
 }) => {
   await seedLiveDashboardData(request);
-  await page.goto("/");
+  await page.goto("/console");
 
   await page.keyboard.press("Tab");
   const skipLink = page.getByRole("link", { name: "Saltar al contenido principal" });
@@ -93,7 +93,7 @@ test("shows deterministic loading, empty, and error states", async ({ page }) =>
       : route.continue()
   );
 
-  await page.goto("/");
+  await page.goto("/console");
   const history = page.locator('section[aria-label="Historial de runs"]');
   await expect(history).toContainText("Cargando historial de runs");
   await expect(page.locator('section[aria-label="Corpus e ingesta"]')).toContainText(

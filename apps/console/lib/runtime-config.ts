@@ -21,12 +21,15 @@ export interface ConsoleIdentity {
   readonly roles: readonly string[];
 }
 
-interface ConsoleRuntimeBase {
+export interface PublicRuntimeConfig {
   readonly environment: string;
   readonly productionLike: boolean;
   readonly publicOrigin: string;
-  readonly apiOrigin: string;
   readonly allowInsecureLocalHttp: boolean;
+}
+
+interface ConsoleRuntimeBase extends PublicRuntimeConfig {
+  readonly apiOrigin: string;
 }
 
 export interface ConsoleOidcRuntimeConfig extends ConsoleRuntimeBase {
@@ -67,9 +70,9 @@ export type BrowserRuntimeConfig =
       readonly authMode: typeof CONSOLE_AUTH_MODE_UNSIGNED_LOCAL;
     };
 
-export function loadConsoleRuntimeConfig(
+export function loadPublicRuntimeConfig(
   env: Readonly<Record<string, string | undefined>> = process.env
-): ConsoleRuntimeConfig {
+): PublicRuntimeConfig {
   const environment = required(env, "HALLU_DEFENSE_ENV").toLowerCase();
   const productionLike = PRODUCTION_LIKE_ENVIRONMENTS.has(environment);
   if (!productionLike && !LOCAL_ENVIRONMENTS.has(environment)) {
@@ -85,6 +88,24 @@ export function loadConsoleRuntimeConfig(
       "Production console cannot enable insecure local HTTP."
     );
   }
+  const publicOrigin = parseOrigin(
+    required(env, "HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN"),
+    "console public origin",
+    allowInsecureLocalHttp
+  );
+  return {
+    environment,
+    productionLike,
+    publicOrigin,
+    allowInsecureLocalHttp
+  };
+}
+
+export function loadConsoleRuntimeConfig(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): ConsoleRuntimeConfig {
+  const publicConfig = loadPublicRuntimeConfig(env);
+  const { allowInsecureLocalHttp, productionLike } = publicConfig;
   const demoFixtureRequested = strictBoolean(
     env,
     "HALLU_DEFENSE_CONSOLE_DEMO_FIXTURE_ENABLED",
@@ -95,11 +116,6 @@ export function loadConsoleRuntimeConfig(
       "Console demo verification fixtures are not supported."
     );
   }
-  const publicOrigin = parseOrigin(
-    required(env, "HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN"),
-    "console public origin",
-    allowInsecureLocalHttp
-  );
   const apiOrigin = parseOrigin(
     required(env, "HALLU_DEFENSE_CONSOLE_API_ORIGIN"),
     "console API origin",
@@ -108,11 +124,8 @@ export function loadConsoleRuntimeConfig(
   const authMode = required(env, "HALLU_DEFENSE_CONSOLE_AUTH_MODE").toLowerCase();
 
   const base: ConsoleRuntimeBase = {
-    environment,
-    productionLike,
-    publicOrigin,
+    ...publicConfig,
     apiOrigin,
-    allowInsecureLocalHttp
   };
   if (authMode === CONSOLE_AUTH_MODE_UNSIGNED_LOCAL) {
     if (

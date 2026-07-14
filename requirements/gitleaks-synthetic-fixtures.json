@@ -351,6 +351,36 @@
       "purpose": "historical chart render fixture"
     },
     {
+      "path": "apps/console/lib/demo-request/config.test.ts",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "aa36916de7e53d7acc9ff15b55a709a2085b03445cf46329cb588643e1128e81",
+      "purpose": "historical synthetic demo-intake Redis TLS fixture"
+    },
+    {
+      "path": "apps/console/lib/demo-request/config.test.ts",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "e37e8b2ebd75469975ddf878bb8b679e2bc2b70d1225208c6beef047d7fad5bc",
+      "purpose": "historical synthetic demo-intake Redis TLS fixture"
+    },
+    {
+      "path": "apps/console/lib/demo-request/config.test.ts",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "eaa11cdffd5f36f99ea9b575967808ba6b47a5b1aa40795165b7f823f1ce882e",
+      "purpose": "synthetic demo-intake Redis TLS fixture"
+    },
+    {
+      "path": "apps/console/lib/demo-request/service.test.ts",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "66c2493fb9227e6466a19483fa7c9906e428ec017471601458781f0fae0f4261",
+      "purpose": "synthetic demo-intake error-redaction fixture"
+    },
+    {
+      "path": "apps/console/lib/marketing/config.test.ts",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "eaa11cdffd5f36f99ea9b575967808ba6b47a5b1aa40795165b7f823f1ce882e",
+      "purpose": "synthetic marketing runtime Redis TLS fixture"
+    },
+    {
       "path": "scripts/ci/check_local_runtime_config.py",
       "rule_id": "database-uri-with-credentials",
       "match_sha256": "e4ecb604d89419a67e70130d72e6cdaf4ce5c97e9757eb70a93b660cfcbc44bb",

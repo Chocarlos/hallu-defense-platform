@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import {
   constantTimeEqual,
@@ -11,7 +11,8 @@ import {
   CONSOLE_AUTH_MODE_UNSIGNED_LOCAL,
   type ConsoleIdentity,
   type ConsoleOidcRuntimeConfig,
-  type ConsoleRuntimeConfig
+  type ConsoleRuntimeConfig,
+  type ConsoleUnsignedLocalRuntimeConfig
 } from "./runtime-config";
 
 export const AUTH_TRANSACTION_CAPACITY = 2048;
@@ -39,6 +40,7 @@ export interface ConsoleSession extends ConsoleIdentity {
   readonly authMode:
     | typeof CONSOLE_AUTH_MODE_OIDC
     | typeof CONSOLE_AUTH_MODE_UNSIGNED_LOCAL;
+  readonly runtimeFingerprint: string;
   readonly accessToken: string | null;
   readonly expiresAtSeconds: number;
 }
@@ -76,7 +78,7 @@ export function createAuthorizationTransaction(
   const material = createPkceMaterial();
   const transaction: AuthorizationTransaction = {
     ...material,
-    priorSessionId: activeOidcSessionId(options.priorSessionId, nowMs),
+    priorSessionId: activeOidcSessionId(config, options.priorSessionId, nowMs),
     expiresAtMs: nowMs + config.transactionTtlSeconds * 1000
   };
   const store = authStore();
@@ -122,6 +124,7 @@ export function deleteAuthorizationTransaction(state: string): void {
 }
 
 export function createConsoleSession(
+  config: ConsoleOidcRuntimeConfig,
   tokenSet: AuthenticatedTokenSet,
   nowSeconds: number = Math.floor(Date.now() / 1000)
 ): ConsoleSession {
@@ -131,6 +134,7 @@ export function createConsoleSession(
   return persistSession(
     {
       authMode: CONSOLE_AUTH_MODE_OIDC,
+      runtimeFingerprint: sessionRuntimeFingerprint(config),
       accessToken: tokenSet.accessToken,
       expiresAtSeconds: tokenSet.expiresAtSeconds,
       tenantId: tokenSet.tenantId,
@@ -142,6 +146,7 @@ export function createConsoleSession(
 }
 
 export function rotateConsoleSession(
+  config: ConsoleOidcRuntimeConfig,
   transaction: AuthorizationTransaction,
   tokenSet: AuthenticatedTokenSet,
   nowSeconds: number = Math.floor(Date.now() / 1000)
@@ -170,6 +175,7 @@ export function rotateConsoleSession(
   }
   const replacement = buildSession({
     authMode: CONSOLE_AUTH_MODE_OIDC,
+    runtimeFingerprint: sessionRuntimeFingerprint(config),
     accessToken: tokenSet.accessToken,
     expiresAtSeconds: tokenSet.expiresAtSeconds,
     tenantId: tokenSet.tenantId,
@@ -184,15 +190,16 @@ export function rotateConsoleSession(
 }
 
 export function createUnsignedLocalConsoleSession(
-  identity: ConsoleIdentity,
+  config: ConsoleUnsignedLocalRuntimeConfig,
   nowSeconds: number = Math.floor(Date.now() / 1000)
 ): ConsoleSession {
   return persistSession(
     {
       authMode: CONSOLE_AUTH_MODE_UNSIGNED_LOCAL,
+      runtimeFingerprint: sessionRuntimeFingerprint(config),
       accessToken: null,
       expiresAtSeconds: nowSeconds + LOCAL_SESSION_MAX_SECONDS,
-      ...identity
+      ...config.localIdentity
     },
     nowSeconds
   );
@@ -212,6 +219,22 @@ export function getConsoleSession(
   }
   if (session.expiresAtSeconds <= nowSeconds) {
     store.sessions.delete(sessionId);
+    return null;
+  }
+  return session;
+}
+
+export function getConsoleSessionForConfig(
+  sessionId: string | undefined,
+  config: ConsoleRuntimeConfig,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): ConsoleSession | null {
+  const session = getConsoleSession(sessionId, nowSeconds);
+  if (session === null) {
+    return null;
+  }
+  if (!sessionMatchesRuntimeConfig(session, config)) {
+    deleteConsoleSession(sessionId);
     return null;
   }
   return session;
@@ -270,11 +293,77 @@ function buildSession(
 }
 
 function activeOidcSessionId(
+  config: ConsoleOidcRuntimeConfig,
   sessionId: string | undefined,
   nowMs: number
 ): string | null {
-  const session = getConsoleSession(sessionId, Math.floor(nowMs / 1000));
+  const session = getConsoleSessionForConfig(
+    sessionId,
+    config,
+    Math.floor(nowMs / 1000)
+  );
   return session?.authMode === CONSOLE_AUTH_MODE_OIDC ? session.sessionId : null;
+}
+
+function sessionRuntimeFingerprint(config: ConsoleRuntimeConfig): string {
+  const common = {
+    version: "console-session-runtime.v1",
+    environment: config.environment,
+    productionLike: config.productionLike,
+    publicOrigin: config.publicOrigin,
+    apiOrigin: config.apiOrigin,
+    allowInsecureLocalHttp: config.allowInsecureLocalHttp,
+    authMode: config.authMode
+  };
+  const boundary =
+    config.authMode === CONSOLE_AUTH_MODE_OIDC
+      ? {
+          ...common,
+          issuer: config.issuer,
+          clientId: config.clientId,
+          apiAudience: config.apiAudience,
+          tenantClaim: config.tenantClaim,
+          rolesClaim: config.rolesClaim,
+          requiredRoles: config.requiredRoles,
+          clockSkewSeconds: config.clockSkewSeconds,
+          sessionMaxSeconds: config.sessionMaxSeconds
+        }
+      : {
+          ...common,
+          localIdentity: config.localIdentity
+        };
+  return createHash("sha256")
+    .update(JSON.stringify(boundary), "utf8")
+    .digest("base64url");
+}
+
+function sessionMatchesRuntimeConfig(
+  session: ConsoleSession,
+  config: ConsoleRuntimeConfig
+): boolean {
+  if (
+    session.authMode !== config.authMode ||
+    typeof session.runtimeFingerprint !== "string" ||
+    !OPAQUE_VALUE_RE.test(session.runtimeFingerprint) ||
+    !constantTimeEqual(
+      session.runtimeFingerprint,
+      sessionRuntimeFingerprint(config)
+    )
+  ) {
+    return false;
+  }
+  if (config.authMode === CONSOLE_AUTH_MODE_OIDC) {
+    return (
+      session.accessToken !== null &&
+      config.requiredRoles.every((role) => session.roles.includes(role))
+    );
+  }
+  return (
+    session.accessToken === null &&
+    session.tenantId === config.localIdentity.tenantId &&
+    session.subjectId === config.localIdentity.subjectId &&
+    session.roles.join("\0") === config.localIdentity.roles.join("\0")
+  );
 }
 
 function authStore(): AuthStore {

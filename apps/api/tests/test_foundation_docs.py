@@ -20,12 +20,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 check_foundation_docs = importlib.import_module("scripts.ci.check_foundation_docs")
+README_PATH = check_foundation_docs.README_PATH
 AGENTS_PATH = check_foundation_docs.AGENTS_PATH
 PLAN_PATH = check_foundation_docs.PLAN_PATH
 ADR_DIR = check_foundation_docs.ADR_DIR
 FoundationDocsError = check_foundation_docs.FoundationDocsError
 load_adr_files = check_foundation_docs.load_adr_files
 validate_foundation_docs = check_foundation_docs.validate_foundation_docs
+validate_root_readme = check_foundation_docs.validate_root_readme
 validate_supporting_files = check_foundation_docs.validate_supporting_files
 
 
@@ -104,6 +106,24 @@ VALID_ADRS = {
     "0005-sandbox-model.md": _minimal_adr("Sandbox Model"),
     "0006-policy-engine.md": _minimal_adr("Policy Engine"),
 }
+
+
+def test_root_readme_validator_accepts_current_guide() -> None:
+    validate_root_readme(readme_text=README_PATH.read_text(encoding="utf-8"))
+
+
+def test_root_readme_validator_rejects_missing_quick_start_marker() -> None:
+    readme = README_PATH.read_text(encoding="utf-8").replace("npm ci", "npm install")
+
+    with pytest.raises(FoundationDocsError, match="npm ci"):
+        validate_root_readme(readme_text=readme)
+
+
+def test_root_readme_validator_rejects_missing_relative_link() -> None:
+    readme = README_PATH.read_text(encoding="utf-8") + "\n[Missing](docs/missing.md)\n"
+
+    with pytest.raises(FoundationDocsError, match="docs/missing.md"):
+        validate_root_readme(readme_text=readme)
 
 
 def test_foundation_docs_validator_accepts_current_repository_docs() -> None:

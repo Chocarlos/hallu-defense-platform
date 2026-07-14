@@ -7637,3 +7637,312 @@ Remaining risks:
 - Acceptance is commit- and inventory-specific. Multi-architecture release
   publication, managed services, and the rejected ingestion recovery lane need
   separate current evidence before their own promotion.
+
+## 2026-07-13 - Root README product and onboarding guide
+
+Slice selected:
+
+- Replace the shallow root README with a truthful end-to-end guide for users,
+  integrators, developers, operators, and reviewers, then protect its critical
+  onboarding content against documentation drift.
+
+Implementation:
+
+- Rewrote `README.md` around the actual platform: protected surfaces,
+  verification flow, component architecture, prerequisites, reproducible
+  Python/npm setup, host and Compose startup, ports, an executable API request,
+  REST/SDK/MCP/adapter surfaces, RAG/providers, security, quality gates,
+  deployment, repository layout, governance, and contribution paths.
+- Linked the guide to the canonical OpenAPI, QA acceptance ledger, operational
+  runbooks, security documentation, plan, traceability matrix, and worklog.
+  Preserved the rejected ingestion crash/restart smoke as an explicit residual
+  risk instead of presenting the whole platform as universally production-ready.
+- Made `.env.example` portable by replacing the checkout-specific sandbox path
+  with `.` and documenting its working-directory resolution boundary.
+- Extended `check_foundation_docs.py` with required README sections/markers and
+  relative-link existence validation. Added positive and negative tests for a
+  complete guide, missing installation command, and broken internal link.
+
+Validation:
+
+- `.venv\\Scripts\\python.exe scripts/ci/check_foundation_docs.py` passed and
+  validated the root README plus eight ADR files.
+- `.venv\\Scripts\\python.exe -m pytest
+  apps/api/tests/test_foundation_docs.py -q`: 9 passed.
+- Ruff passed for the changed checker/test, and `git diff --check` reported no
+  whitespace error (only expected Windows LF-to-CRLF working-copy notices).
+- The exact README `/verification/run` JSON was posted through the real FastAPI
+  application with `TestClient`: HTTP 200, one claim, one verdict, a `tr_`
+  trace prefix, and `final_decision=allow`.
+- Global sequential gates passed: `make lint`; `make typecheck` with no mypy
+  issues in 59 Python source files and all TypeScript workspaces green; and
+  `make test` with 2,733 Python tests passed / 27 platform-incompatible tests
+  deselected, plus SDK 17, adapters 11, MCP 41, and Console 101 tests passed.
+- `make build` passed all workspaces and the optimized Next.js production build;
+  the Console production checker scanned 181 artifacts successfully.
+- Traceability, worklog, and local-runtime gates passed with 194 requirement
+  rows, 127 worklog entries, and 14 Compose services / 4 volumes respectively;
+  their focused combined suite passed 76 tests.
+
+Remaining risks:
+
+- External workflow badges and Mermaid rendering depend on GitHub's renderer;
+  the local gate verifies their surrounding guide and every relative target but
+  does not make an external-network availability claim.
+- npm emitted its pre-existing forward-compatibility warning for the
+  `strict-allow-scripts` project setting; lint, types, tests, and builds still
+  completed successfully under the pinned npm version.
+- Deployment readiness remains environment-specific. The existing rejected
+  ingestion crash/restart lane is still open and was not changed by this
+  documentation slice.
+
+## 2026-07-13 - Front F systemic launch claims and traceability audit
+
+Slice selected:
+
+- Independently audit WIP checkpoint
+  `fb111c1e15c87e40006844d62e37616a84ab796f` on branch
+  `codex/hallu-front-f-audit-fb111c1` against both launch briefs, without
+  changing product code or extending the accepted QA commit's evidence.
+- Inventory launch claims, routes, contracts, privacy/security controls,
+  configuration, tests and evidence; close the missing traceability for
+  TS-011, SEC-020 and CI-033 and record reproducible false positives.
+
+Implementation:
+
+- Added the WIP public-launch milestone to `PLAN_MASTER.md` and introduced
+  TS-011, SEC-020 and CI-033 in the traceability matrix as `implemented`, not
+  `tested` or `accepted`.
+- Scoped historical QA to exact commit `3bb45a548e4288934937f9397ce89710c53e7504`.
+  Demoted SEC-011 from `accepted` to `tested` because the checkpoint changes
+  the Console dependency graph, lockfile, image inputs and launch code without
+  a current Trivy run. Corrected CI-008 and stale Console/Kind evidence so it
+  cannot be read as execution of the WIP checkpoint.
+- Updated the root README with a checkpoint-specific status table and explicit
+  blockers. No product, test, workflow or infrastructure file was edited.
+
+Validation:
+
+- Verified branch, clean starting state and exact HEAD with `git status`,
+  `git branch --show-current` and `git rev-parse HEAD`. The shared CPython
+  3.12 environment was used only after setting `PYTHONPATH` to this worktree;
+  `hallu_defense.__file__` resolved to this worktree's
+  `apps/api/src/hallu_defense/__init__.py` before every Python gate batch.
+- `npm ci` completed. Console unit tests passed 178/178 across 29 files;
+  `test:e2e-static` passed 35/35; lint and typecheck passed; the production
+  build passed and its checker scanned 385 artifacts. The host Node/npm
+  24.14.0/11.13.0 differ from the pinned 24.18.0/11.16.0 CI lane, so these
+  local results are not represented as pinned-runtime CI.
+- Marketing Playwright collected 90 cases, but the full execution failed with
+  25 passed, 2 skipped and 63 failed. Firefox and WebKit could not launch
+  because their executables were absent; Chromium reproducibly failed the tour
+  keyboard test at 320, 768 and 1440. A one-test Chromium desktop rerun failed
+  the same `aria-selected` assertion. BrowserStack configuration passed while
+  explicitly reporting no remote result; username/access-key credentials and
+  the optional local-tunnel identifier were absent.
+- Read-only browser inspection confirmed ES/EN and privacy routes, language
+  metadata, localized headings, the disabled intake state and the rendered
+  1200x630 social card. At a 320x800 viewport, document client width was 305
+  while scroll width was 320 and a horizontal scrollbar was visible. The
+  existing headless `scrollWidth <= clientWidth + 1` assertion passed, so the
+  headed/headless divergence remains unresolved. No manual screen-reader or
+  contrast record or LCP/INP/CLS measurement was found.
+- A focused marketing-copy inventory found no prices, ratings, testimonials,
+  customer logos, open-source claim, GitHub-as-primary CTA, or claim of current
+  certification/production activation; the FAQ explicitly disclaims the last
+  category. Absolute phrases such as verifying “every” claim/action or “never”
+  declaring success are treated as product narrative, not accepted capability
+  evidence.
+- Marketing, production-profile, Helm and container-scan configuration gates
+  passed; Helm lint/template passed. Full and production-only npm audit each
+  reported 0 vulnerabilities. Docker client was present but its daemon was
+  unavailable, so no Compose runtime, Kind, Redis, networked CRM/webhook stub
+  or image scan was executed. Required production/BrowserStack secrets were
+  absent.
+- Current Redis tests inspect calls/Lua through fakes rather than execute Redis;
+  webhook tests mock `fetch`. The audit reproduced public/runtime enable-state
+  divergence, found honeypot bypass of Redis, payload-unbound idempotency and
+  downstream delivery assumptions, and confirmed the demo request/response
+  contract is local rather than versioned in JSON Schema/OpenAPI/contracts.
+  The exact config reproduction returned `{"public":true,"runtime":false}`.
+  With an injected 150 ms webhook stub, one run returned the same 202/body for
+  honeypot and real requests but measured 18 ms versus 154 ms. A simulated
+  post-delivery finalize failure returned 503, then a retry returned 202 after
+  a second webhook delivery (`webhookDeliveries:2`), demonstrating that local
+  duplicate prevention depends on downstream honoring `Idempotency-Key`.
+- `check_traceability_matrix.py` now validates 197 rows and
+  `check_foundation_docs.py` validates the root README plus 8 ADRs. Before the
+  audit, the matrix checker passed 194 rows despite all three brief-only IDs
+  being absent, confirming a semantic false negative. `check_worklog.py`
+  validates 128 entries; the combined foundation/traceability/worklog test
+  selection passed 23/23, and the documentation-only `git diff --check`
+  completed without an error.
+- `git diff --check 77b969a..fb111c1e` fails on extra EOF blank lines in eight
+  pre-existing demo-request files. They were not corrected because product
+  code is read-only for Front F; this documentation diff is checked separately.
+
+Remaining risks:
+
+- TS-011 remains blocked by the red keyboard-tour gate, horizontal overflow,
+  incomplete enabled-form/zoom/accessibility coverage, hydration-dependent
+  reveal content, invalid references from inactive tabs to unmounted panels,
+  localhost metadata fallback, and absent Web Vitals budgets.
+- SEC-020 lacks real Redis concurrency/TTL/cluster evidence, real HTTP webhook
+  behavior and no-PII log/trace evidence. Public/runtime config can disagree;
+  honeypot requests bypass Redis; idempotency is not payload-bound and ambiguous
+  delivery depends on downstream honoring `Idempotency-Key`; demo secret mounts
+  are not covered by the runtime secret-file preflight.
+- The minimal contract repair need not change the wire payload: add
+  `apps/console/lib/demo-request/public-contract.ts` with
+  `DemoRequestPayloadV1`, `DemoRequestAcceptedResponseV1` and
+  `DemoRequestErrorResponseV1`; have `buildDemoRequestPayload`,
+  `readAndNormalizeDemoRequest`, `acceptedResponse` and `errorResponse` consume
+  those symbols, while retaining `NormalizedDemoRequest` as the internal
+  camel-case model. Add a builder-to-parser parity test and version the shapes
+  in `docs/deployment/marketing-launch.md`. The launch briefs require one exact
+  public contract but do not expressly require `packages/contracts`/JSON
+  Schema for this Next.js route; adding schemas/exports there is the stricter
+  repository-wide contract-discipline option, not the minimum wire-preserving
+  correction.
+- CI-033 has no BrowserStack session evidence. Helm readiness and rollout waits
+  cover `/console` HTTP health, but the Kind smoke's explicit post-rollout fetch
+  inspects `/`; it does not prove authenticated-session behavior or expected
+  `/console` content. Other readiness prechecks also touch the public root.
+- The current dependency/image drift requires exact pinned-runtime CI and fresh
+  Trivy scans before SEC-011 can return to `accepted`. No deployment, legal,
+  CRM, domain, consent-copy or production-readiness claim is accepted here.
+
+## 2026-07-14 - Six-front public-launch integration and candidate closure
+
+Slice selected:
+
+- Execute the repository's persistent six-front workflow for the Hallu Defense
+  bilingual launch layer, starting every front from checkpoint
+  `fb111c1e15c87e40006844d62e37616a84ab796f` on integration branch
+  `codex/hallu-defense-landing`.
+- Keep root as the sole integration authority; require bounded leader branches,
+  tests, documentation, traceability, self-audit, commits and reproducible
+  handoffs. Do not push, merge another worktree, or touch persistent user data.
+
+Implementation:
+
+- Created six persistent Codex conversations/worktrees for non-overlapping
+  fronts: A public UX/SEO/accessibility, B demo intake/runtime security, C
+  marketing-to-Console session boundary, D Compose/Helm/deployment, E local and
+  BrowserStack compatibility gates, and F independent claims/traceability
+  audit. The registry with thread IDs, branches, worktrees, process/output
+  paths and the shared checkpoint is stored outside the repository under
+  `$CODEX_HOME/tmp/hallu-defense-six-front-fb111c1-registry.json`.
+- Root independently inspected and selectively integrated the leaders through
+  commits `14aaef4`, `abf6830`, `43026a9`, `7b01931`, `bb40913`, and `5e475e9`.
+  Reproducible audit findings were corrected in `dc28b9e`, `e913efe`, and
+  `2ee8662`. A final independent audit then found a pre-consent native no-JS
+  form POST that could carry email in its body. Root made the SSR form inert in
+  `6320030` and strengthened the static guard plus five negative regressions in
+  final code candidate `d6c15bda15dda7a5e901f913d1007fd04d3089c5`; the same
+  auditor's read-only recheck returned `MERGEABLE`. No leader merged, pushed,
+  or edited another worktree.
+- Final launch code provides public `/`, `/en`, `/privacy`, `/en/privacy`, one
+  explicit `/opengraph-image` PNG endpoint, and the isolated operational
+  `/console` boundary. Runtime pages carry per-response CSP nonces, localized
+  canonical/hreflang/x-default/JSON-LD metadata, progressive enhancement,
+  reduced-motion handling, a keyboard-operable tour, and responsive 320/768/
+  1440 layouts.
+- The demo boundary now shares exact V1 request/202/error TypeScript contracts
+  across builder, parser and response helpers. Public/runtime activation uses
+  one fail-closed validation boundary; the request requires the wire honeypot,
+  validates origin/provenance/media/body/fields, and never returns PII.
+- Before hydration the SSR form exposes no action, method or email field name,
+  disables both input and submission, and connects its visible status through
+  `aria-describedby`. The ES/EN no-JavaScript regressions cover Enter and click
+  while inspecting URL, request headers and `postData()` for encoded PII.
+- Redis consumes a 60/min global budget before body parsing and a 3/hour email
+  budget after normalization. Redis TIME, payload-bound 24-hour idempotency,
+  one Cluster hash tag, leases/CAS and a pre-webhook `dispatching` state close
+  clock, cross-slot, retry and ambiguous-finalize duplicate paths. Explicit
+  webhook failure releases for retry; successful delivery remains 202 even if
+  the final acknowledgement is lost.
+- HMAC delivery signs exact bytes, follows no redirect, minimizes the CRM
+  payload, and requires HTTPS plus an exact allowed origin. Redis production
+  configuration requires `rediss://` and a CA file that parses as X.509 trust
+  material. Metrics require a bearer token and retain only bounded,
+  low-cardinality, non-PII outcomes.
+- Compose and Helm keep intake disabled by default and require five external,
+  read-only secret files, explicit egress peers, privacy contact, exact origins
+  and fail-closed runtime validation before activation. BrowserStack live form
+  flags now reach both Playwright and Selenium paths; production E2E serves the
+  actual copied `.next/standalone` artifact.
+
+Validation:
+
+- `make lint`, `make typecheck`, `make test`, `make build`, `make contracts`,
+  `make policy-test`, `make sandbox-test`, and `make evals-smoke` passed. The
+  final global test gate reported 2,760 Python tests passed / 27 deselected,
+  plus SDK
+  17, agent-adapters 11, MCP 41 and Console 255 tests. Mypy checked 59 Python
+  source files; all TypeScript workspaces passed. Contracts validated 79 schemas
+  with 79 valid and 79 invalid examples, 72 generated interfaces and 58 focused
+  Python tests. Policy reported 164 Python tests and 31/31 OPA tests; sandbox
+  reported 309 Python tests. The eval smoke passed two scenarios; its generated
+  latency-only drift was restored rather than committed as durable evidence.
+- OpenAPI export/check used the worktree-local `.venv` with
+  `PYTHONPATH=<root>/apps/api/src`; the committed artifact was current. The
+  optimized Next.js build passed without the former metadata warning and its
+  production checker scanned 339 artifacts.
+- `make security-check` passed with a checksum-verified native Gitleaks 8.30.1
+  because Docker Desktop's daemon was unavailable. Gitleaks scanned the current
+  snapshot and full history with 77 exact reviewed synthetic fingerprints;
+  the secondary secret scan, auth, encryption, secrets, audit, approvals,
+  persistence, production/Helm/marketing, migrations, Python dependency,
+  sandbox/container/observability gates all passed. Both npm audits reported 0
+  vulnerabilities.
+- `make marketing-e2e-production` executed 216 tests on the exact code
+  candidate: 148 passed, 68 deliberate scope skips, 0 failed across Chromium,
+  Firefox and WebKit at 320/768/1440. It covered CSP, axe WCAG 2.2 AA baseline,
+  locale/privacy routes, keyboard tour, reduced motion, overflow, no-JavaScript
+  content and synthetic LCP <=2500 ms, interaction <=200 ms and CLS <=0.1.
+- `make marketing-e2e-form` executed 99 tests: 59 passed, 40 deliberate scope
+  skips, 0 failed. It covered both languages, full keyboard/focus order,
+  consent, 202 success, 422/503 retry with one submission ID, malformed 202,
+  no-JavaScript PII containment across URL/headers/body and the
+  DOM-newer-than-React-state regression. The marketing compatibility guard and
+  all 23 focused Python tests passed.
+  `browserstack-marketing-config` passed but emitted no remote compatibility
+  result because credentials/session IDs were unavailable.
+- A scratch-only live script used WSL Redis 7.0.15 and a loopback HTTPS webhook
+  with a self-signed test CA. It verified accepted 202, pending/Redis-down 503,
+  conflict 422, fourth-email/global-61 boundaries, approximately 24-hour TTL,
+  exact-byte HMAC, concurrent/duplicate suppression, five expected unique
+  deliveries, protected metrics and no PII. Real versus honeypot responses
+  measured 308 ms versus 331 ms under the common 300 ms floor; cleanup removed
+  scratch state on exit.
+- Independent in-app browser inspection of the production standalone build
+  confirmed Spanish/English semantics, canonic/hreflang/x-default metadata,
+  privacy `noindex, follow`, the pausable tour, Console separation, zero
+  marketing console errors and zero overflow at the supported in-app sizes.
+  Local Playwright screenshots were inspected at 320, 768 and 1440; a full-page
+  capture after the bounded reveal fallback showed every section. The served
+  social card returned HTTP 200 `image/png` at exactly 1200x630.
+
+Remaining risks:
+
+- TS-011, SEC-020 and CI-033 advance from `implemented` to `tested`, not
+  `accepted`. The previously recorded checkpoint failures are retained above as
+  historical audit evidence; this entry records their verified closure in the
+  integrated candidate.
+- Native browser-UI 200% zoom, manual screen-reader/contrast review and real
+  BrowserStack minimum-version sessions remain pending. The automated 2x
+  device-scale check is labeled as an equivalence only, and synthetic lab
+  budgets are not field Core Web Vitals.
+- Production activation still requires an approved legal controller/privacy
+  contact and retention process, real domain/DNS/ingress, target Redis TLS and
+  cluster evidence, five versioned secret files, egress controls, CRM/webhook
+  credentials and a downstream consumer that honors `Idempotency-Key`.
+- `dispatching` favors duplicate prevention over availability: a process crash
+  after the state change but before confirmed webhook delivery can suppress a
+  retry for up to 24 hours. Honeypot traffic intentionally never calls the
+  webhook and cannot mirror a real webhook outage exactly.
+- Docker Desktop's unavailable daemon prevented current Kind and Trivy image
+  execution. Static Helm, production-profile and exact image-matrix gates pass,
+  but no deployment, image CVE status, remote workflow, legal approval or
+  production-readiness claim is made from those static results.

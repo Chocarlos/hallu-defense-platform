@@ -284,6 +284,7 @@ print(json.dumps(projected_runtime_secret_probe, sort_keys=True))
 CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT = r"""
 const expected = Object.freeze({
   HALLU_DEFENSE_ENV: "production",
+  HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false",
   HALLU_DEFENSE_CONSOLE_AUTH_MODE: "oidc",
   HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: "https://console.kind.invalid",
   HALLU_DEFENSE_CONSOLE_API_ORIGIN: "https://api.kind.invalid",
@@ -317,7 +318,7 @@ if (forbiddenNames.length !== 0) {
 }
 
 (async () => {
-  const response = await fetch("http://127.0.0.1:3000/", {
+  const response = await fetch("http://127.0.0.1:3000/console", {
     redirect: "manual",
     signal: AbortSignal.timeout(5000),
   });

@@ -11,8 +11,10 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 BASE_COMPOSE_PATH = ROOT / "docker-compose.yml"
 PROD_COMPOSE_PATH = ROOT / "docker-compose.prod.yml"
+ENV_EXAMPLE_PATH = ROOT / ".env.example"
 PROMETHEUS_PROD_PATH = ROOT / "infra" / "prometheus" / "prometheus.prod.yml"
 PROD_DOC_PATH = ROOT / "docs" / "deployment" / "production-profile.md"
+MARKETING_DOC_PATH = ROOT / "docs" / "deployment" / "marketing-launch.md"
 MAKEFILE_PATH = ROOT / "Makefile"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
@@ -108,6 +110,49 @@ REQUIRED_CONSOLE_INTERPOLATED_ENV = {
     "HALLU_DEFENSE_CONSOLE_OIDC_CLIENT_ID",
     "HALLU_DEFENSE_CONSOLE_OIDC_API_AUDIENCE",
 }
+REQUIRED_CONSOLE_DEMO_ENV = {
+    "HALLU_DEFENSE_DEMO_REQUESTS_ENABLED": (
+        "${HALLU_DEFENSE_DEMO_REQUESTS_ENABLED:-false}"
+    ),
+    "HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL": (
+        "${HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL:-}"
+    ),
+    "HALLU_DEFENSE_DEMO_WEBHOOK_URL_FILE": (
+        "/run/secrets/hallu_demo_webhook_url"
+    ),
+    "HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE": (
+        "/run/secrets/hallu_demo_webhook_hmac_secret"
+    ),
+    "HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN": (
+        "${HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN:-}"
+    ),
+    "HALLU_DEFENSE_DEMO_REDIS_URL_FILE": "/run/secrets/hallu_demo_redis_url",
+    "HALLU_DEFENSE_DEMO_REDIS_CA_PATH": "/run/secrets/hallu_demo_redis_ca",
+    "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE": (
+        "/run/secrets/hallu_console_metrics_bearer"
+    ),
+}
+REQUIRED_ENV_EXAMPLE_DEMO_DEFAULTS = {
+    "HALLU_DEFENSE_DEMO_REQUESTS_ENABLED": "false",
+    "HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL": "",
+    "HALLU_DEFENSE_DEMO_WEBHOOK_URL_FILE": "",
+    "HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE": "",
+    "HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN": "",
+    "HALLU_DEFENSE_DEMO_REDIS_URL_FILE": "",
+    "HALLU_DEFENSE_DEMO_REDIS_CA_PATH": "",
+    "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE": "",
+    "HALLU_DEFENSE_DEMO_WEBHOOK_URL_HOST_PATH": "",
+    "HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_HOST_PATH": "",
+    "HALLU_DEFENSE_DEMO_REDIS_URL_HOST_PATH": "",
+    "HALLU_DEFENSE_DEMO_REDIS_CA_HOST_PATH": "",
+    "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_HOST_PATH": "",
+}
+EXPECTED_CONSOLE_HEALTHCHECK_SCRIPT = (
+    'fetch("http://127.0.0.1:3000/console", { redirect: "manual", '
+    "signal: AbortSignal.timeout(5000) }).then(async (response) => { "
+    "await response.body?.cancel(); if (response.status !== 200) "
+    "process.exit(1); }).catch(() => process.exit(1));"
+)
 REQUIRED_WORKER_FIXED_ENV = {
     "HALLU_DEFENSE_ENV": "production",
     "HALLU_DEFENSE_RUNTIME_ROLE": "worker",
@@ -301,9 +346,30 @@ def validate_prod_profile_config(
     ci_workflow_text: str,
     security_workflow_text: str,
     live_workflow_text: str,
+    env_example_text: str | None = None,
+    marketing_doc_text: str | None = None,
 ) -> None:
     errors: list[str] = []
+    if env_example_text is None:
+        try:
+            env_example_text = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f".env.example could not be read: {exc}")
+            env_example_text = ""
+    if marketing_doc_text is None:
+        try:
+            marketing_doc_text = MARKETING_DOC_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"marketing deployment runbook could not be read: {exc}")
+            marketing_doc_text = ""
     _validate_base_and_overlay_parse(base_compose, prod_compose, errors)
+    _validate_demo_intake_profile(
+        base_compose=base_compose,
+        prod_compose=prod_compose,
+        env_example_text=env_example_text,
+        marketing_doc_text=marketing_doc_text,
+        errors=errors,
+    )
     _validate_file_backed_secrets(prod_compose, errors)
     _validate_api_overlay(prod_compose, errors)
     _validate_prometheus_config(prometheus_prod, errors)
@@ -330,10 +396,15 @@ def _validate_file_backed_secrets(
         "hallu_bootstrap_vault_token": "${HALLU_DEFENSE_BOOTSTRAP_VAULT_TOKEN_FILE:?set the bootstrap Vault token file path}",
         "hallu_runtime_postgres_dsn": "${HALLU_DEFENSE_POSTGRES_DSN_FILE:?set the runtime PostgreSQL DSN file path}",
         "hallu_migrations_postgres_dsn": "${HALLU_DEFENSE_POSTGRES_MIGRATION_DSN_FILE:?set the migration PostgreSQL DSN file path}",
+        "hallu_demo_webhook_url": "${HALLU_DEFENSE_DEMO_WEBHOOK_URL_HOST_PATH:-/dev/null}",
+        "hallu_demo_webhook_hmac_secret": "${HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_HOST_PATH:-/dev/null}",
+        "hallu_demo_redis_url": "${HALLU_DEFENSE_DEMO_REDIS_URL_HOST_PATH:-/dev/null}",
+        "hallu_demo_redis_ca": "${HALLU_DEFENSE_DEMO_REDIS_CA_HOST_PATH:-/dev/null}",
+        "hallu_console_metrics_bearer": "${HALLU_DEFENSE_CONSOLE_METRICS_BEARER_HOST_PATH:-/dev/null}",
     }
     if set(secrets) != set(expected_files):
         errors.append(
-            "prod profile must declare exactly four file-backed runtime secrets"
+            "prod profile must declare exactly nine scoped file-backed runtime secrets"
         )
         return
     for name, expected_file in expected_files.items():
@@ -396,19 +467,167 @@ def _validate_service_secret_mounts(
         return
     if tuple(str(mount.get("source", "")) for mount in mounts) != expected_sources:
         errors.append(f"prod {service_label} has incorrect secret sources")
-    expected_targets = (
-        ("hallu_defense_vault_token", "hallu_defense_postgres_dsn")
-        if len(expected_sources) == 2
-        else ("hallu_defense_postgres_dsn",)
-        if expected_sources == ("hallu_migrations_postgres_dsn",)
-        else ("hallu_defense_vault_token",)
-    )
+    if len(mounts) != len(expected_sources):
+        return
+    target_by_source = {
+        "hallu_runtime_vault_token": "hallu_defense_vault_token",
+        "hallu_bootstrap_vault_token": "hallu_defense_vault_token",
+        "hallu_runtime_postgres_dsn": "hallu_defense_postgres_dsn",
+        "hallu_migrations_postgres_dsn": "hallu_defense_postgres_dsn",
+        "hallu_demo_webhook_url": "hallu_demo_webhook_url",
+        "hallu_demo_webhook_hmac_secret": "hallu_demo_webhook_hmac_secret",
+        "hallu_demo_redis_url": "hallu_demo_redis_url",
+        "hallu_demo_redis_ca": "hallu_demo_redis_ca",
+        "hallu_console_metrics_bearer": "hallu_console_metrics_bearer",
+    }
+    expected_targets = tuple(target_by_source[source] for source in expected_sources)
     for mount, expected_target in zip(mounts, expected_targets, strict=True):
         if mount.get("target") != expected_target or set(mount) != {"source", "target"}:
             errors.append(
                 f"prod {service_label} secret {expected_target} must be a plain file bind; "
-                "host ownership/mode is enforced by preflight"
+                "host ownership/mode must pass the marketing activation runbook preflight gate"
             )
+
+
+def _validate_demo_intake_profile(
+    *,
+    base_compose: Mapping[str, object],
+    prod_compose: Mapping[str, object],
+    env_example_text: str,
+    marketing_doc_text: str,
+    errors: list[str],
+) -> None:
+    base_services = _mapping(
+        base_compose.get("services"), "docker-compose.yml services", errors
+    )
+    base_console = _mapping(
+        base_services.get("console"), "base console service", errors
+    )
+    base_environment = _mapping(
+        base_console.get("environment"), "base console environment", errors
+    )
+    if base_environment.get("HALLU_DEFENSE_DEMO_REQUESTS_ENABLED") != "false":
+        errors.append("base Compose demo intake must be disabled by literal false")
+    if base_environment.get("HALLU_DEFENSE_PRIVACY_CONTACT_EMAIL") != "":
+        errors.append("base Compose privacy contact must default empty")
+
+    prod_services = _mapping(
+        prod_compose.get("services"), "docker-compose.prod.yml services", errors
+    )
+    prod_console = _mapping(
+        prod_services.get("console"), "prod console service", errors
+    )
+    prod_environment = _mapping(
+        prod_console.get("environment"), "prod console environment", errors
+    )
+    for key, expected in REQUIRED_CONSOLE_DEMO_ENV.items():
+        if prod_environment.get(key) != expected:
+            errors.append(
+                f"prod console demo environment {key} must be exactly {expected}"
+            )
+    actual_demo_keys = {
+        str(key)
+        for key in prod_environment
+        if str(key).startswith("HALLU_DEFENSE_DEMO_")
+        or str(key).startswith("HALLU_DEFENSE_PRIVACY_")
+        or str(key).startswith("HALLU_DEFENSE_CONSOLE_METRICS_BEARER")
+    }
+    if actual_demo_keys != set(REQUIRED_CONSOLE_DEMO_ENV):
+        errors.append(
+            "prod console demo environment must expose only the disabled flag, "
+            "public metadata, and five file pointers"
+        )
+    if prod_console.get("group_add") != ["10001"]:
+        errors.append(
+            "prod console must add only supplemental group 10001 for root:10001/0440 demo files"
+        )
+    if "healthcheck" in prod_console:
+        errors.append(
+            "prod console must inherit the audited base /console healthcheck without overriding it"
+        )
+
+    healthcheck = _mapping(
+        base_console.get("healthcheck"), "base console healthcheck", errors
+    )
+    raw_test = healthcheck.get("test")
+    if not isinstance(raw_test, Sequence) or isinstance(raw_test, (str, bytes)):
+        errors.append("base console healthcheck.test must be a CMD node probe")
+        healthcheck_test: tuple[object, ...] = ()
+    else:
+        healthcheck_test = tuple(raw_test)
+    if len(healthcheck_test) != 4 or healthcheck_test[:3] != ("CMD", "node", "-e"):
+        errors.append("base console healthcheck must run exactly one Node CMD probe")
+        healthcheck_script = ""
+    else:
+        healthcheck_script = str(healthcheck_test[3])
+    if healthcheck_script != EXPECTED_CONSOLE_HEALTHCHECK_SCRIPT:
+        errors.append(
+            "base console healthcheck script must equal the audited fail-closed /console probe"
+        )
+    for marker in (
+        'fetch("http://127.0.0.1:3000/console"',
+        'redirect: "manual"',
+        "AbortSignal.timeout(5000)",
+        "response.body?.cancel()",
+        "response.status !== 200",
+        ".catch(() => process.exit(1))",
+    ):
+        if marker not in healthcheck_script:
+            errors.append(f"base console /console healthcheck missing `{marker}`")
+    if 'fetch("http://127.0.0.1:3000/"' in healthcheck_script:
+        errors.append("base console healthcheck must not probe the public root route")
+    expected_healthcheck_timing = {
+        "interval": "30s",
+        "timeout": "6s",
+        "retries": 3,
+        "start_period": "30s",
+    }
+    for key, expected in expected_healthcheck_timing.items():
+        if healthcheck.get(key) != expected:
+            errors.append(
+                f"base console healthcheck {key} must be exactly {expected}"
+            )
+
+    parsed_env: dict[str, str] = {}
+    duplicate_env: set[str] = set()
+    for raw_line in env_example_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key in parsed_env:
+            duplicate_env.add(key)
+        parsed_env[key] = value
+    if duplicate_env:
+        errors.append(
+            ".env.example must not duplicate demo keys: "
+            + ", ".join(sorted(duplicate_env))
+        )
+    for key, expected in REQUIRED_ENV_EXAMPLE_DEMO_DEFAULTS.items():
+        if parsed_env.get(key) != expected:
+            errors.append(f".env.example {key} must default to {expected!r}")
+
+    for marker in (
+        "## Production activation runbook",
+        "root:10001",
+        "0440",
+        "0750",
+        "32–256 printable ASCII",
+        "high-entropy",
+        "openssl rand -base64 48",
+        "permitted `0400`/`0440`/`0600`/`0640`",
+        "regular non-symlink files",
+        "`/console` must return exactly HTTP 200",
+        "exact `/32` or `/128`",
+        "Compose does not implement an egress firewall",
+        "## Abort criteria and rollback",
+        "external Secret is not versioned by Helm",
+        "forward-only",
+        "force-recreate console",
+        "strategy `Recreate`",
+    ):
+        if marker not in marketing_doc_text:
+            errors.append(f"marketing deployment runbook missing `{marker}`")
 
 
 def run_compose_config_if_available(
@@ -632,6 +851,18 @@ def _validate_base_and_overlay_parse(
             + ", ".join(sorted(str(key) for key in forbidden_console_env))
         )
     _validate_hardened_service(console, service_label="console", errors=errors)
+    _validate_service_secret_mounts(
+        console,
+        service_label="console",
+        expected_sources=(
+            "hallu_demo_webhook_url",
+            "hallu_demo_webhook_hmac_secret",
+            "hallu_demo_redis_url",
+            "hallu_demo_redis_ca",
+            "hallu_console_metrics_bearer",
+        ),
+        errors=errors,
+    )
     console_tmpfs = _string_sequence(console.get("tmpfs"), "prod console tmpfs", errors)
     if not any(
         mount.startswith("/app/apps/console/.next/cache:")
@@ -1318,6 +1549,8 @@ def main() -> None:
         ci_workflow_text=CI_WORKFLOW_PATH.read_text(encoding="utf-8"),
         security_workflow_text=SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"),
         live_workflow_text=LIVE_WORKFLOW_PATH.read_text(encoding="utf-8"),
+        env_example_text=ENV_EXAMPLE_PATH.read_text(encoding="utf-8"),
+        marketing_doc_text=MARKETING_DOC_PATH.read_text(encoding="utf-8"),
     )
     compose_result = run_compose_config_if_available()
     suffix = (

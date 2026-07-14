@@ -1388,6 +1388,18 @@ def test_console_oidc_runtime_probe_fails_closed_on_contract_drift() -> None:
         )
 
 
+def test_console_oidc_runtime_probe_targets_authenticated_console_route() -> None:
+    assert 'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"' in (
+        smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT
+    )
+    assert 'fetch("http://127.0.0.1:3000/console"' in (
+        smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT
+    )
+    assert 'fetch("http://127.0.0.1:3000/"' not in (
+        smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT
+    )
+
+
 def test_projected_migration_dsn_probe_requires_successful_job_evidence() -> None:
     executor = RecordingExecutor(migration_secret_read_valid=False)
 

@@ -18,10 +18,6 @@
   box-sizing: border-box;
 }
 
-html {
-  min-width: 20rem;
-}
-
 body {
   margin: 0;
   background: var(--bg);
