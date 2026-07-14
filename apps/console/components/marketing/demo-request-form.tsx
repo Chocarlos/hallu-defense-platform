@@ -192,27 +192,38 @@ export function DemoRequestForm({
       </div>
       {step === 1 ? (
         <form
-          action={DEMO_REQUEST_FORM_FALLBACK.action}
-          method={DEMO_REQUEST_FORM_FALLBACK.method}
+          action={hydrated ? DEMO_REQUEST_FORM_FALLBACK.action : undefined}
+          method={hydrated ? DEMO_REQUEST_FORM_FALLBACK.method : undefined}
           onSubmit={continueToDetails}
           className={styles.demoForm}
+          aria-describedby={!hydrated ? "demo-hydration-status" : undefined}
         >
           <p className={styles.formStep}>{copy.stepOne}</p>
+          {!hydrated ? (
+            <p id="demo-hydration-status" className={styles.formStatus} role="status">
+              {copy.unavailable}
+            </p>
+          ) : null}
           <label className={styles.field} htmlFor="demo-email">
             <span>{copy.email}</span>
             <input
               ref={emailInput}
               id="demo-email"
-              name="email"
+              name={hydrated ? "email" : undefined}
               type="email"
               autoComplete="email"
               maxLength={DEMO_EMAIL_MAX_LENGTH}
               required
+              disabled={!hydrated}
               value={email}
               onChange={(event) => setEmail(event.target.value)}
             />
           </label>
-          <button className={styles.primaryButton} type="submit">
+          <button
+            className={styles.primaryButton}
+            type="submit"
+            disabled={!hydrated}
+          >
             {copy.continue}
             <ArrowRight aria-hidden="true" size={17} />
           </button>
