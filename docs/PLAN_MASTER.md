@@ -157,12 +157,14 @@ Goal: promote the enterprise capabilities from static-config / local-JSONL evide
 
 Confirmed scope decisions (Carlos): sandbox = Docker container per run; live OIDC = local Keycloak in Compose; production = Compose prod-profile first, K8s/Helm (kind) last; calibration = versioned thresholds that block CI + reproducible confidence curves. Execution: each batch delegated as a bounded assignment; diff inspected and revalidated from master before integration. Detailed assignments: docs/development/fable-enterprise-batch-2.md.
 
-### M7 Public Launch Layer (WIP)
+### M7 Public Launch Layer (integrated candidate)
 
 Goal: add a bilingual public entry point and a privacy-preserving demo-request
-boundary without extending earlier QA acceptance to unverified launch code. The
-implementation checkpoint is `fb111c1e15c87e40006844d62e37616a84ab796f`;
-promotion requires current evidence from the exact candidate commit.
+boundary without extending earlier QA acceptance to unverified launch code. Six
+independent fronts started at checkpoint
+`fb111c1e15c87e40006844d62e37616a84ab796f`; selective root integration and
+corrections produced code candidate
+`d6c15bda15dda7a5e901f913d1007fd04d3089c5` with current local evidence.
 
 - TS-011: bilingual landing and privacy routes at `/`, `/en`, `/privacy`, and
   `/en/privacy`; preserved authenticated Console at `/console`; localized
@@ -176,10 +178,15 @@ promotion requires current evidence from the exact candidate commit.
   compatibility execution, production build checks, and CI wiring that cannot
   turn missing credentials or unexecuted browsers into compatibility evidence.
 
-Audit decision for this checkpoint: TS-011, SEC-020, and CI-033 are
-`implemented`, not `accepted`. The current marketing Playwright run is red,
-BrowserStack and real Redis/webhook execution are absent, 320 px horizontal
-overflow and the keyboard-tour regression remain reproducible, no LCP/INP/CLS
-budget is enforced, and the Kind Console smoke still probes `/` instead of
-exercising an authenticated `/console` flow. The traceability matrix and
-worklog record the exact evidence and remaining blockers.
+Integration decision: TS-011, SEC-020, and CI-033 are `tested`, not `accepted`.
+The exact candidate passes the three-engine 320/768/1440 production matrix
+(148 passed, 68 deliberate skips), the enabled-form matrix (59 passed, 40
+deliberate skips), Console tests/lint/types/build, the global code/security
+gates, and a scratch-only real Redis 7.0.15 plus HTTPS webhook intake smoke.
+Browser inspection confirmed bilingual semantics, metadata, responsive layout,
+tour control, privacy boundaries, Console separation, zero browser errors and a
+1200x630 social image. Acceptance remains blocked on native browser-UI zoom,
+manual screen-reader/contrast review, real BrowserStack sessions at the stated
+minimums, deployment-specific Redis/CRM/ingress/secrets evidence, and legal
+approval of controller/contact/retention. Kind and current Trivy image execution
+also remain unavailable locally because Docker Desktop's daemon was not active.
