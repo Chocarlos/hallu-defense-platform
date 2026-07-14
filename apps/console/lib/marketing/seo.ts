@@ -29,6 +29,7 @@ export function buildLandingMetadata(
       type: "website",
       siteName: "Hallu Defense",
       locale: locale === "es" ? "es_ES" : "en_US",
+      alternateLocale: locale === "es" ? ["en_US"] : ["es_ES"],
       url: canonical,
       title: copy.metadata.title,
       description: copy.metadata.description,
@@ -50,17 +51,34 @@ export function buildPrivacyMetadata(
 ): Metadata {
   const copy = getMarketingContent(locale);
   const path = locale === "es" ? "/privacy" : "/en/privacy";
+  const canonical = absolute(siteOrigin, path);
   return {
     metadataBase: new URL(siteOrigin),
     title: `${copy.privacy.title} | Hallu Defense`,
     description: copy.privacy.intro,
     alternates: {
-      canonical: absolute(siteOrigin, path),
+      canonical,
       languages: {
         es: absolute(siteOrigin, "/privacy"),
         en: absolute(siteOrigin, "/en/privacy"),
         "x-default": absolute(siteOrigin, "/privacy")
       }
+    },
+    openGraph: {
+      type: "website",
+      siteName: "Hallu Defense",
+      locale: locale === "es" ? "es_ES" : "en_US",
+      alternateLocale: locale === "es" ? ["en_US"] : ["es_ES"],
+      url: canonical,
+      title: `${copy.privacy.title} | Hallu Defense`,
+      description: copy.privacy.intro,
+      images: [{ url: SOCIAL_IMAGE_PATH, width: 1200, height: 630, alt: "Hallu Defense" }]
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: `${copy.privacy.title} | Hallu Defense`,
+      description: copy.privacy.intro,
+      images: [SOCIAL_IMAGE_PATH]
     },
     robots: { index: false, follow: true }
   };
@@ -75,7 +93,8 @@ export function buildMarketingSitemap(siteOrigin: string): MetadataRoute.Sitemap
       alternates: {
         languages: {
           es: absolute(siteOrigin, "/"),
-          en: absolute(siteOrigin, "/en")
+          en: absolute(siteOrigin, "/en"),
+          "x-default": absolute(siteOrigin, "/")
         }
       }
     },
@@ -86,7 +105,8 @@ export function buildMarketingSitemap(siteOrigin: string): MetadataRoute.Sitemap
       alternates: {
         languages: {
           es: absolute(siteOrigin, "/"),
-          en: absolute(siteOrigin, "/en")
+          en: absolute(siteOrigin, "/en"),
+          "x-default": absolute(siteOrigin, "/")
         }
       }
     }
@@ -117,10 +137,14 @@ export function buildMarketingJsonLd(
         "@type": "Organization",
         "@id": organizationId,
         name: "Hallu Defense",
-        url: absolute(siteOrigin, copy.path)
+        url: absolute(siteOrigin, "/")
       },
       {
         "@type": "WebApplication",
+        "@id": absolute(
+          siteOrigin,
+          copy.path === "/" ? "/#web-application-es" : "/en#web-application-en"
+        ),
         name: "Hallu Defense",
         applicationCategory: "DeveloperApplication",
         operatingSystem: "Web",

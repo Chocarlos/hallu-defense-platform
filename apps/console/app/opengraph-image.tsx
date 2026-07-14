@@ -1,6 +1,7 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Hallu Defense — evidence, policy, and traceability for AI decisions";
+export const alt =
+  "Hallu Defense — evidencia/evidence, política/policy y trazabilidad/traceability";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -39,11 +40,11 @@ export default function OpenGraphImage() {
         Hallu Defense
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "24px", maxWidth: 980 }}>
-        <div style={{ fontSize: 70, lineHeight: 1.05, letterSpacing: "-3px", fontWeight: 700 }}>
-          Trust isn’t assumed. It’s proven.
+        <div style={{ fontSize: 76, lineHeight: 1.05, letterSpacing: "-3px", fontWeight: 700 }}>
+          Hallu Defense
         </div>
-        <div style={{ color: "#AAB7C8", fontSize: 30 }}>
-          Evidence · Policy · Traceability
+        <div style={{ color: "#AAB7C8", fontSize: 27 }}>
+          Evidencia / Evidence · Política / Policy · Trazabilidad / Traceability
         </div>
       </div>
       <div style={{ width: "100%", height: 5, display: "flex", background: "linear-gradient(90deg, #6B8CFF, #45E3C2)" }} />

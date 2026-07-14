@@ -15,7 +15,14 @@ export function PrivacyPage({
         <nav className={styles.nav} aria-label={copy.navigation.label}>
           <a className={styles.brandLink} href={copy.path} aria-label="Hallu Defense"><Brand /></a>
           <div className={styles.navActions}>
-            <a className={styles.languageLink} href={locale === "es" ? "/en/privacy" : "/privacy"} hrefLang={locale === "es" ? "en" : "es"}>{copy.navigation.languageShort}</a>
+            <a
+              className={styles.languageLink}
+              href={locale === "es" ? "/en/privacy" : "/privacy"}
+              hrefLang={locale === "es" ? "en" : "es"}
+              aria-label={copy.navigation.languageLabel}
+            >
+              {copy.navigation.languageShort}
+            </a>
             <a className={styles.consoleLink} href="/console">{copy.navigation.console}</a>
           </div>
         </nav>

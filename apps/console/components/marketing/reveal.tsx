@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 
 import styles from "./marketing.module.css";
 
@@ -9,34 +9,53 @@ export function Reveal({
   className = ""
 }: Readonly<{ children: ReactNode; className?: string | undefined }>) {
   const nodeRef = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = nodeRef.current;
-    if (node === null) return;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (reducedMotion.matches || !("IntersectionObserver" in window)) {
-      const frame = window.requestAnimationFrame(() => setVisible(true));
-      return () => window.cancelAnimationFrame(frame);
+    const pendingClass = styles.revealPending;
+    const visibleClass = styles.revealVisible;
+    if (
+      node === null ||
+      pendingClass === undefined ||
+      visibleClass === undefined ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+      !("IntersectionObserver" in window)
+    ) {
+      return;
     }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setVisible(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "0px 0px -8%", threshold: 0.12 }
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
+
+    let fallback = 0;
+    try {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) {
+            node.classList.remove(pendingClass);
+            node.classList.add(visibleClass);
+            observer.disconnect();
+            window.clearTimeout(fallback);
+          }
+        },
+        { rootMargin: "0px 0px -8%", threshold: 0.12 }
+      );
+      observer.observe(node);
+      node.classList.add(pendingClass);
+      fallback = window.setTimeout(() => {
+        node.classList.remove(pendingClass);
+        node.classList.add(visibleClass);
+        observer.disconnect();
+      }, 5_000);
+      return () => {
+        observer.disconnect();
+        window.clearTimeout(fallback);
+        node.classList.remove(pendingClass);
+      };
+    } catch {
+      return;
+    }
   }, []);
 
   return (
-    <div
-      ref={nodeRef}
-      className={`${styles.reveal} ${visible ? styles.revealVisible : ""} ${className}`}
-    >
+    <div ref={nodeRef} className={`${styles.reveal} ${className}`}>
       {children}
     </div>
   );

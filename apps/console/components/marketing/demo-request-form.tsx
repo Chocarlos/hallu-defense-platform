@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, Send } from "lucide-react";
 
 import {
@@ -13,6 +13,9 @@ import {
 } from "../../lib/demo-request/contracts";
 import {
   buildDemoRequestPayload,
+  DEMO_EMAIL_MAX_LENGTH,
+  DEMO_REQUEST_FORM_FALLBACK,
+  parseAcceptedDemoResponse,
   serializeDemoRequest
 } from "../../lib/marketing/demo-request";
 import styles from "./marketing.module.css";
@@ -37,8 +40,31 @@ export function DemoRequestForm({
   const [website, setWebsite] = useState("");
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [statusMessage, setStatusMessage] = useState("");
+  const emailInput = useRef<HTMLInputElement>(null);
   const stepTwoHeading = useRef<HTMLHeadingElement>(null);
+  const successStatus = useRef<HTMLDivElement>(null);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  const focusAfterStepChange = useRef<"email" | "details" | null>(null);
   const submissionId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (submissionState === "success") {
+      successStatus.current?.focus();
+    } else if (submissionState === "error") {
+      retryButton.current?.focus();
+    }
+  }, [submissionState]);
+
+  useEffect(() => {
+    const target = focusAfterStepChange.current;
+    if (step === 1 && target === "email") {
+      emailInput.current?.focus();
+      focusAfterStepChange.current = null;
+    } else if (step === 2 && target === "details") {
+      stepTwoHeading.current?.focus();
+      focusAfterStepChange.current = null;
+    }
+  }, [step]);
 
   if (!enabled) {
     return (
@@ -51,8 +77,8 @@ export function DemoRequestForm({
 
   function continueToDetails(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    focusAfterStepChange.current = "details";
     setStep(2);
-    window.requestAnimationFrame(() => stepTwoHeading.current?.focus());
   }
 
   async function submitRequest(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -97,8 +123,9 @@ export function DemoRequestForm({
         signal: controller.signal
       });
       if (response.status === 202) {
+        const requestId = await parseAcceptedDemoResponse(response);
         setSubmissionState("success");
-        setStatusMessage(`${copy.success} ID: ${submissionId.current}`);
+        setStatusMessage(`${copy.success} ${copy.reference}: ${requestId}`);
         return;
       }
       setSubmissionState("error");
@@ -121,7 +148,13 @@ export function DemoRequestForm({
 
   if (submissionState === "success") {
     return (
-      <div className={styles.formSuccess} role="status" aria-live="polite">
+      <div
+        ref={successStatus}
+        className={styles.formSuccess}
+        role="status"
+        aria-live="polite"
+        tabIndex={-1}
+      >
         <CheckCircle2 aria-hidden="true" size={28} />
         <p>{statusMessage}</p>
       </div>
@@ -135,16 +168,22 @@ export function DemoRequestForm({
         <span className={step === 2 ? styles.stepActive : ""} />
       </div>
       {step === 1 ? (
-        <form onSubmit={continueToDetails} className={styles.demoForm}>
+        <form
+          action={DEMO_REQUEST_FORM_FALLBACK.action}
+          method={DEMO_REQUEST_FORM_FALLBACK.method}
+          onSubmit={continueToDetails}
+          className={styles.demoForm}
+        >
           <p className={styles.formStep}>{copy.stepOne}</p>
           <label className={styles.field} htmlFor="demo-email">
             <span>{copy.email}</span>
             <input
+              ref={emailInput}
               id="demo-email"
               name="email"
               type="email"
               autoComplete="email"
-              maxLength={320}
+              maxLength={DEMO_EMAIL_MAX_LENGTH}
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -156,7 +195,12 @@ export function DemoRequestForm({
           </button>
         </form>
       ) : (
-        <form onSubmit={(event) => void submitRequest(event)} className={styles.demoForm}>
+        <form
+          action={DEMO_REQUEST_FORM_FALLBACK.action}
+          method={DEMO_REQUEST_FORM_FALLBACK.method}
+          onSubmit={(event) => void submitRequest(event)}
+          className={styles.demoForm}
+        >
           <h3 ref={stepTwoHeading} tabIndex={-1} className={styles.formStep}>
             {copy.stepTwo}
           </h3>
@@ -233,11 +277,19 @@ export function DemoRequestForm({
             </span>
           </label>
           <div className={styles.formActions}>
-            <button className={styles.textButton} type="button" onClick={() => setStep(1)}>
+            <button
+              className={styles.textButton}
+              type="button"
+              onClick={() => {
+                focusAfterStepChange.current = "email";
+                setStep(1);
+              }}
+            >
               <ArrowLeft aria-hidden="true" size={16} />
               {copy.back}
             </button>
             <button
+              ref={retryButton}
               className={styles.primaryButton}
               type="submit"
               disabled={submissionState === "submitting"}
