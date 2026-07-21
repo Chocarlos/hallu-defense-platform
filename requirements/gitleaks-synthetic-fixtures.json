@@ -353,6 +353,18 @@
     {
       "path": "apps/console/lib/demo-request/config.test.ts",
       "rule_id": "database-uri-with-credentials",
+      "match_sha256": "4be890c0656e14239fbe99924b83d07e2eaf85aa6535a3e74814910b1d010d66",
+      "purpose": "synthetic demo-intake Redis Cluster database-selection rejection fixture"
+    },
+    {
+      "path": "apps/console/lib/demo-request/config.test.ts",
+      "rule_id": "database-uri-with-credentials",
+      "match_sha256": "d8ff0533518d2204bac7b1ec6770fab7a3d92e36a2bbd58b6c79638c3d9be219",
+      "purpose": "synthetic demo-intake Redis Cluster TLS fixture"
+    },
+    {
+      "path": "apps/console/lib/demo-request/config.test.ts",
+      "rule_id": "database-uri-with-credentials",
       "match_sha256": "aa36916de7e53d7acc9ff15b55a709a2085b03445cf46329cb588643e1128e81",
       "purpose": "historical synthetic demo-intake Redis TLS fixture"
     },

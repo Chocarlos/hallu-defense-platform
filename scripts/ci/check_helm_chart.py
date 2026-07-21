@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import ipaddress
@@ -108,9 +109,7 @@ PRODUCTION_WORKLOAD_DIGESTS = {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ),
 }
-DEMO_PRIVACY_EMAIL_254 = (
-    "a" * 64 + "@" + "b" * 63 + "." + "c" * 63 + "." + "d" * 61
-)
+DEMO_PRIVACY_EMAIL_254 = "a" * 64 + "@" + "b" * 63 + "." + "c" * 63 + "." + "d" * 61
 DEMO_PRIVACY_EMAIL_255 = DEMO_PRIVACY_EMAIL_254 + "d"
 
 
@@ -527,9 +526,7 @@ def run_helm_template_if_available(
         ),
         (
             "production sandbox reuses application namespace",
-            _production_helm_value_args(
-                sandbox_namespace=HELM_RELEASE_NAMESPACE
-            ),
+            _production_helm_value_args(sandbox_namespace=HELM_RELEASE_NAMESPACE),
             "sandbox.namespace must differ from the Helm release namespace",
         ),
         (
@@ -823,6 +820,10 @@ def _production_helm_value_args(
         "networkPolicy.ingress.console.callers[0].namespace": "ingress-system",
         "networkPolicy.ingress.console.callers[0].podLabelKey": "app.kubernetes.io/name",
         "networkPolicy.ingress.console.callers[0].podLabelValue": "ingress-nginx",
+        "networkPolicy.ingress.console.metricsScrapers[0].name": "prometheus-console",
+        "networkPolicy.ingress.console.metricsScrapers[0].namespace": "observability",
+        "networkPolicy.ingress.console.metricsScrapers[0].podLabelKey": "app.kubernetes.io/name",
+        "networkPolicy.ingress.console.metricsScrapers[0].podLabelValue": "prometheus",
         "networkPolicy.api.external[0].name": "api-https-egress-gateway",
         "networkPolicy.api.external[0].cidr": "198.51.100.10/32",
         "networkPolicy.api.external[1].name": "api-postgres",
@@ -1063,9 +1064,10 @@ def _validate_values_schema(
         errors.append("values.schema.json must require every top-level values key")
 
     for path, schema_node in _iter_schema_nodes(payload):
-        if schema_node.get("type") == "object" and schema_node.get(
-            "additionalProperties"
-        ) is not False:
+        if (
+            schema_node.get("type") == "object"
+            and schema_node.get("additionalProperties") is not False
+        ):
             errors.append(
                 "values.schema.json object schemas must reject unknown properties: "
                 + path
@@ -1231,13 +1233,12 @@ def _validate_values(
     global_values = _mapping(values.get("global"), "values.global", errors)
     if global_values.get("tmpSizeLimit") != "64Mi":
         errors.append("values.global.tmpSizeLimit must default to the bounded 64Mi")
-    demo_requests = _mapping(
-        values.get("demoRequests"), "values.demoRequests", errors
-    )
+    demo_requests = _mapping(values.get("demoRequests"), "values.demoRequests", errors)
     if dict(demo_requests) != {
         "enabled": False,
         "privacyContactEmail": "",
         "webhookAllowedOrigin": "",
+        "redisMode": "cluster",
         "redisCaPath": "/run/hallu-defense/demo/redis-ca.pem",
     }:
         errors.append(
@@ -1260,11 +1261,12 @@ def _validate_values(
         errors.append(
             "values.secrets.demo must expose an empty name and exactly five distinct key selectors"
         )
-    elif len(set(str(value) for key, value in demo_secrets.items() if key != "name")) != 5:
+    elif (
+        len(set(str(value) for key, value in demo_secrets.items() if key != "name"))
+        != 5
+    ):
         errors.append("values.secrets.demo data key selectors must be distinct")
-    base_network = _mapping(
-        values.get("networkPolicy"), "values.networkPolicy", errors
-    )
+    base_network = _mapping(values.get("networkPolicy"), "values.networkPolicy", errors)
     base_console_network = _mapping(
         base_network.get("console"), "values.networkPolicy.console", errors
     )
@@ -1279,7 +1281,9 @@ def _validate_values(
         errors,
     )
     if merged_kind_demo.get("enabled") is not False:
-        errors.append("values-kind.yaml must keep demoRequests.enabled=false by default")
+        errors.append(
+            "values-kind.yaml must keep demoRequests.enabled=false by default"
+        )
     kind_dependencies = _mapping(
         values.get("kindDependencies"), "values.kindDependencies", errors
     )
@@ -1372,7 +1376,9 @@ def _validate_values(
         "prometheus.io/path": "/metrics",
         "prometheus.io/port": "9090",
     }:
-        errors.append("values.worker.podAnnotations must pin the Prometheus 9090 scrape")
+        errors.append(
+            "values.worker.podAnnotations must pin the Prometheus 9090 scrape"
+        )
     for component in ("api", "console", "worker", "migrations"):
         component_values = _mapping(
             values.get(component), f"values.{component}", errors
@@ -1490,9 +1496,9 @@ def _validate_values(
         errors.append(
             "values.networkPolicy.ingress.api must default to empty allowlists"
         )
-    if console_ingress_defaults != {"callers": []}:
+    if console_ingress_defaults != {"callers": [], "metricsScrapers": []}:
         errors.append(
-            "values.networkPolicy.ingress.console must default to an empty allowlist"
+            "values.networkPolicy.ingress.console must default to empty allowlists"
         )
     if worker_ingress_defaults != {"metricsScrapers": []}:
         errors.append(
@@ -1558,6 +1564,14 @@ def _validate_values(
                 "podLabelValue": "console",
             }
         ],
+        "console_metrics": [
+            {
+                "name": "kind-console-metrics-scraper",
+                "namespace": "$release",
+                "podLabelKey": "hallu-defense.openai.com/network-client",
+                "podLabelValue": "metrics",
+            }
+        ],
         "worker_metrics": [
             {
                 "name": "kind-worker-metrics-scraper",
@@ -1571,6 +1585,7 @@ def _validate_values(
         "api_callers": kind_api_ingress.get("callers"),
         "metrics": kind_api_ingress.get("metricsScrapers"),
         "console_callers": kind_console_ingress.get("callers"),
+        "console_metrics": kind_console_ingress.get("metricsScrapers"),
         "worker_metrics": kind_worker_ingress.get("metricsScrapers"),
     }
     if actual_kind_ingress != expected_kind_ingress:
@@ -1589,6 +1604,10 @@ def _validate_values(
         (
             "kind_values.networkPolicy.ingress.console.callers",
             kind_console_ingress.get("callers"),
+        ),
+        (
+            "kind_values.networkPolicy.ingress.console.metricsScrapers",
+            kind_console_ingress.get("metricsScrapers"),
         ),
         (
             "kind_values.networkPolicy.ingress.worker.metricsScrapers",
@@ -1746,6 +1765,10 @@ def _validate_values(
         )
     if kind_sandbox.get("tenantId") != "kind-smoke-tenant":
         errors.append("values-kind.yaml must bind the sandbox PVC to kind-smoke-tenant")
+    if kind_sandbox.get("setupGraceSeconds") != 30:
+        errors.append(
+            "values-kind.yaml must hold the sandbox fixture Ready for 30 seconds"
+        )
     kind_sandbox_image = _mapping(
         kind_sandbox.get("image"),
         "kind_values.sandbox.image",
@@ -2249,6 +2272,7 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "networkPolicy.ingress.api.metricsScrapers requires at least one explicit namespace and pod-label peer",
         "networkPolicy.ingress.worker.metricsScrapers requires at least one explicit namespace and pod-label peer",
         "networkPolicy.ingress.console.callers requires at least one explicit namespace and pod-label peer",
+        "networkPolicy.ingress.console.metricsScrapers requires at least one explicit namespace and pod-label peer",
         "networkPolicy.console.external requires explicit production OIDC CIDRs and ports",
         "-default-deny-ingress",
         "kubernetes.io/metadata.name: kube-system",
@@ -2366,6 +2390,8 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         "HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN",
         "HALLU_DEFENSE_DEMO_REDIS_URL_FILE",
         "/run/hallu-defense/demo/redis-url",
+        "HALLU_DEFENSE_DEMO_REDIS_MODE",
+        ".Values.demoRequests.redisMode",
         "HALLU_DEFENSE_DEMO_REDIS_CA_PATH",
         ".Values.demoRequests.redisCaPath",
         "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE",
@@ -2387,7 +2413,9 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
     if "path: /\n" in console_template:
         errors.append("Console probes must never target the public root route")
     if console_template.count("timeoutSeconds: 5") != 2:
-        errors.append("Console liveness/readiness probes must each time out in 5 seconds")
+        errors.append(
+            "Console liveness/readiness probes must each time out in 5 seconds"
+        )
     expected_demo_key_markers = (
         "- key: {{ .Values.secrets.demo.webhookUrlKey | quote }}",
         "- key: {{ .Values.secrets.demo.webhookHmacSecretKey | quote }}",
@@ -2689,6 +2717,7 @@ def _validate_templates(templates: Mapping[str, str], errors: list[str]) -> None
         ".Values.networkPolicy.ingress.api.metricsScrapers",
         ".Values.networkPolicy.ingress.worker.metricsScrapers",
         ".Values.networkPolicy.ingress.console.callers",
+        ".Values.networkPolicy.ingress.console.metricsScrapers",
         "kubernetes.io/metadata.name: {{ $namespace | quote }}",
         "-migrations-egress",
         "-vault-bootstrap-egress",
@@ -3067,7 +3096,13 @@ def _validate_sandbox_templates(
         "HALLU_FIXTURE_READY_MARKER",
         "HALLU_FIXTURE_READY_HOLD_SECONDS",
         "readinessProbe:",
+        "timeoutSeconds: 5",
         'marker.read_text(encoding="utf-8") == "ready\\n"',
+        '"sandbox-artifact\\\\n"',
+        '"user.name=Hallu Defense Fixture"',
+        '"user.email=fixture@invalid.example"',
+        '"commit",',
+        '"sandbox fixture"',
         "sizeLimit: 1Mi",
         "ttlSecondsAfterFinished: 600",
     ):
@@ -3160,6 +3195,20 @@ def _validate_sandbox_templates(
             errors.append(
                 f"{template_name} must not mount the API ServiceAccount token"
             )
+    for template_name in (
+        "api-deployment.yaml",
+        "worker-deployment.yaml",
+        "console-deployment.yaml",
+        "migration-job.yaml",
+        "pgvector-statefulset.yaml",
+        "opensearch-statefulset.yaml",
+        "redis-deployment.yaml",
+        "vault-deployment.yaml",
+        "vault-bootstrap-job.yaml",
+        "sandbox-fixture-job.yaml",
+    ):
+        if "enableServiceLinks: false" not in templates[template_name]:
+            errors.append(f"{template_name} must disable Kubernetes service links")
 
 
 def _validate_redis_templates(
@@ -3258,6 +3307,12 @@ def _validate_api_image_contents(api_dockerfile_text: str, errors: list[str]) ->
     ):
         if marker not in api_dockerfile_text:
             errors.append(f"API image must package migration runtime asset `{marker}`")
+    service_account_mountpoint = "mkdir -p /run/hallu-defense/kubernetes"
+    if service_account_mountpoint not in api_dockerfile_text:
+        errors.append(
+            "API image must pre-create its read-only Kubernetes serviceaccount "
+            "mountpoint"
+        )
 
 
 def _validate_runtime_role_boundaries(
@@ -3278,7 +3333,7 @@ def _validate_runtime_role_boundaries(
         "sandbox_kubernetes_kind_local_image: bool = False",
         '"HALLU_DEFENSE_SANDBOX_KUBERNETES_KIND_LOCAL_IMAGE"',
         'backend != "kubernetes" and settings.sandbox_kubernetes_kind_local_image',
-        'settings.sandbox_kubernetes_image != "hallu-defense-sandbox:ci"',
+        "KIND_LOCAL_SANDBOX_IMAGE_RE.fullmatch(settings.sandbox_kubernetes_image)",
         "and not settings.sandbox_kubernetes_kind_local_image",
     ):
         if marker not in config_text:
@@ -3362,9 +3417,7 @@ def _validate_supporting_files(
     if 'fetch("http://127.0.0.1:3000/"' in live_smoke_text:
         errors.append("kind/Helm smoke Console probe must not target the public root")
     if 'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"' not in live_smoke_text:
-        errors.append(
-            "kind/Helm smoke Console probe must expect disabled demo intake"
-        )
+        errors.append("kind/Helm smoke Console probe must expect disabled demo intake")
     for marker in (
         "## Production activation runbook",
         "five `0440` Secret projections",
@@ -3482,6 +3535,7 @@ def _validate_supporting_files(
         "docker image ls --format",
         'clusters_after="$(kind get clusters 2>&1)"',
         'images_after="$(docker image ls',
+        '"hallu-defense-vault:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"',
         'exit "${failures}"',
     ):
         if marker not in live_workflow_text:
@@ -3592,6 +3646,14 @@ def _validate_supporting_files(
         "rag_tenant_deletion_tombstones",
         '"apply",',
         '"--filename",',
+        "_discover_kind_kubernetes_api_peers(",
+        '"--selector=kubernetes.io/service-name=kubernetes"',
+        '"--selector=node-role.kubernetes.io/control-plane"',
+        '"networkPolicy.kubernetesApi="',
+        '"--set-json"',
+        '"kubernetes_api_network_peers"',
+        "API egress allowlist is not exact",
+        "must not allow Kubernetes API IP blocks",
         'connection.sendall(b"*1\\\\r\\\\n$4\\\\r\\\\nPING\\\\r\\\\n")',
     ):
         if marker not in live_smoke_text:
@@ -3918,9 +3980,7 @@ def _validate_rendered_demo_intake_manifest(
             doc
             for doc in docs
             if doc.get("kind") == "Deployment"
-            and _mapping(doc.get("metadata"), f"{profile}.metadata", errors).get(
-                "name"
-            )
+            and _mapping(doc.get("metadata"), f"{profile}.metadata", errors).get("name")
             == "hallu-defense-console"
         ),
         None,
@@ -3979,6 +4039,7 @@ def _validate_rendered_demo_intake_manifest(
                 "HALLU_DEFENSE_DEMO_REDIS_URL_FILE": (
                     "/run/hallu-defense/demo/redis-url"
                 ),
+                "HALLU_DEFENSE_DEMO_REDIS_MODE": "cluster",
                 "HALLU_DEFENSE_DEMO_REDIS_CA_PATH": (
                     "/run/hallu-defense/demo/redis-ca.pem"
                 ),
@@ -3988,7 +4049,7 @@ def _validate_rendered_demo_intake_manifest(
             }
             if demo_environment != expected_demo_environment:
                 errors.append(
-                    f"{profile} Console demo environment must contain only the enabled flag, public metadata, and five file pointers"
+                    f"{profile} Console demo environment must contain only the enabled flag, public metadata, cluster mode, and five file pointers"
                 )
             for probe_name in ("livenessProbe", "readinessProbe"):
                 probe = _mapping(
@@ -4015,7 +4076,11 @@ def _validate_rendered_demo_intake_manifest(
                 errors,
             )
             demo_mount = next(
-                (mount for mount in volume_mounts if mount.get("name") == "demo-secrets"),
+                (
+                    mount
+                    for mount in volume_mounts
+                    if mount.get("name") == "demo-secrets"
+                ),
                 None,
             )
             if demo_mount != {
@@ -4098,9 +4163,10 @@ def _validate_rendered_demo_intake_manifest(
         }
         if "production" in profile:
             expected_ip_destinations.add(("198.51.100.20/32", 443))
-        if len(ip_destinations) != len(expected_ip_destinations) or set(
-            ip_destinations
-        ) != expected_ip_destinations:
+        if (
+            len(ip_destinations) != len(expected_ip_destinations)
+            or set(ip_destinations) != expected_ip_destinations
+        ):
             errors.append(
                 f"{profile} Console egress must contain only OIDC (production), webhook, and Redis host destinations"
             )
@@ -4600,7 +4666,17 @@ def _validate_rendered_application_network_policies(
                     ),
                     "console" if kind_profile else "ingress-nginx",
                     3000,
-                )
+                ),
+                external_ingress_rule(
+                    HELM_RELEASE_NAMESPACE if kind_profile else "observability",
+                    (
+                        "hallu-defense.openai.com/network-client"
+                        if kind_profile
+                        else "app.kubernetes.io/name"
+                    ),
+                    "metrics" if kind_profile else "prometheus",
+                    3000,
+                ),
             ],
             (
                 [dns_rule]
@@ -5608,9 +5684,9 @@ def _validate_rendered_worker_service(
         for doc in docs
         if doc.get("kind") == "Service"
         and _mapping(
-            _mapping(doc.get("metadata"), f"{profile}.workerService.metadata", errors).get(
-                "labels"
-            ),
+            _mapping(
+                doc.get("metadata"), f"{profile}.workerService.metadata", errors
+            ).get("labels"),
             f"{profile}.workerService.labels",
             errors,
         ).get("app.kubernetes.io/component")
@@ -5633,7 +5709,9 @@ def _validate_rendered_worker_service(
         "app.kubernetes.io/instance": "hallu-defense",
         "app.kubernetes.io/component": "worker",
     }:
-        errors.append(f"{profile} worker metrics Service selector must target only worker Pods")
+        errors.append(
+            f"{profile} worker metrics Service selector must target only worker Pods"
+        )
     if spec.get("ports") != [
         {
             "name": "metrics",
@@ -6038,6 +6116,8 @@ def _validate_rendered_sandbox(
         errors.append("rendered API must use its dedicated ServiceAccount")
     if api_spec.get("automountServiceAccountToken") is not False:
         errors.append("rendered API must disable automatic ServiceAccount token mounts")
+    if api_spec.get("enableServiceLinks") is not False:
+        errors.append("rendered API must disable Kubernetes service links")
     api_containers = _mapping_sequence(
         api_spec.get("containers"), "rendered.api.containers", errors
     )
@@ -6090,7 +6170,7 @@ def _validate_rendered_sandbox(
         if kube_mounts != [
             {
                 "name": "kube-api-access",
-                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "mountPath": "/run/hallu-defense/kubernetes",
                 "readOnly": True,
             }
         ]:
@@ -6235,6 +6315,10 @@ def _validate_rendered_sandbox(
         ):
             errors.append("rendered fixture Job must run in the sandbox namespace")
         fixture_spec = _rendered_pod_spec(fixture, "sandbox-fixture", errors)
+        if fixture_spec.get("enableServiceLinks") is not False:
+            errors.append(
+                "rendered sandbox fixture must disable Kubernetes service links"
+            )
         fixture_volumes = _mapping_sequence(
             fixture_spec.get("volumes"), "rendered.fixture.volumes", errors
         )
@@ -6246,6 +6330,34 @@ def _validate_rendered_sandbox(
             "persistentVolumeClaim"
         ) != {"claimName": "hallu-defense-sandbox-workspace"}:
             errors.append("rendered fixture Job must use the sandbox runner claim")
+        fixture_containers = _mapping_sequence(
+            fixture_spec.get("containers"), "rendered.fixture.containers", errors
+        )
+        fixture_command = (
+            fixture_containers[0].get("command") if fixture_containers else None
+        )
+        fixture_script = (
+            fixture_command[2]
+            if isinstance(fixture_command, list)
+            and len(fixture_command) == 3
+            and isinstance(fixture_command[2], str)
+            else None
+        )
+        try:
+            fixture_tree = ast.parse(fixture_script or "")
+            probe_write = next(
+                node
+                for node in ast.walk(fixture_tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "write_text"
+            )
+            probe_source = ast.literal_eval(probe_write.args[0])
+            if not isinstance(probe_source, str):
+                raise ValueError("probe source is not text")
+            compile(probe_source, "probe.py", "exec")
+        except (IndexError, SyntaxError, StopIteration, TypeError, ValueError):
+            errors.append("rendered sandbox fixture must emit a compilable probe.py")
     for container in init_containers:
         mounts = _mapping_sequence(
             container.get("volumeMounts", []),
@@ -6274,6 +6386,8 @@ def _validate_rendered_sandbox(
             errors.append(
                 f"rendered {component} must disable ServiceAccount token automount"
             )
+        if pod_spec.get("enableServiceLinks") is not False:
+            errors.append(f"rendered {component} must disable Kubernetes service links")
         if "serviceAccountName" in pod_spec:
             errors.append(f"rendered {component} must not use the API ServiceAccount")
 
@@ -6316,6 +6430,8 @@ def _validate_rendered_redis(
     pod_spec = _rendered_pod_spec(redis, "redis", errors)
     if pod_spec.get("automountServiceAccountToken") is not False:
         errors.append("rendered Redis must disable ServiceAccount token automount")
+    if pod_spec.get("enableServiceLinks") is not False:
+        errors.append("rendered Redis must disable Kubernetes service links")
     containers = _mapping_sequence(
         pod_spec.get("containers"),
         "rendered.redis.containers",

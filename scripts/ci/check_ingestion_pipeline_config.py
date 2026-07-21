@@ -201,6 +201,8 @@ def _validate_runtime(
         "_smoke_footprint_count(",
         '"scratch_database_removed": True',
         '"error_type": type(exc).__name__',
+        "if isinstance(exc, LiveIngestionWorkerSmokeError):",
+        'failure["error"] = str(exc)',
     ):
         if marker not in live_smoke_text:
             errors.append(f"live_ingestion_worker_smoke.py missing live proof {marker!r}")
@@ -222,9 +224,10 @@ def _validate_runtime(
         errors.append(
             "live_ingestion_worker_smoke.py must not manufacture a future stale cutoff"
         )
-    if "str(exc)" in live_smoke_text:
+    if live_smoke_text.count("str(exc)") != 1:
         errors.append(
-            "live_ingestion_worker_smoke.py must not serialize raw exception details"
+            "live_ingestion_worker_smoke.py may serialize only the sanitized, typed "
+            "LiveIngestionWorkerSmokeError detail"
         )
 
 

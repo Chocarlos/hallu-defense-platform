@@ -88,6 +88,7 @@ RUN test "$(python --version)" = "Python 3.12.13" \
     && python -c "import hallu_defense; print(hallu_defense.__version__)" \
     && rm -rf /tmp/wheelhouse /tmp/runtime-linux-py312.lock
 RUN adduser -D -u 10001 -s /sbin/nologin appuser \
+    && mkdir -p /run/hallu-defense/kubernetes \
     && find /app -type d -exec chmod 0555 {} + \
     && find /app -type f -exec chmod 0444 {} + \
     && chmod 0555 /usr/local/bin/opa

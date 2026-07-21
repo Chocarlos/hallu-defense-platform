@@ -1265,9 +1265,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = run_from_env()
     except Exception as exc:
+        failure: dict[str, object] = {
+            "status": "failed",
+            "error_type": type(exc).__name__,
+        }
+        if isinstance(exc, LiveIngestionWorkerSmokeError):
+            failure["error"] = str(exc)
         print(
             json.dumps(
-                {"status": "failed", "error_type": type(exc).__name__},
+                failure,
                 sort_keys=True,
                 separators=(",", ":"),
             )

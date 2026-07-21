@@ -11,6 +11,7 @@ describe("demo metrics route", () => {
     metrics.recordDemoResult("accepted");
     metrics.recordDemoResult("invalid");
     metrics.recordWebhook("success", 0.25);
+    metrics.recordDispatchingGuard();
     const handler = createDemoMetricsHandler({
       config: { enabled: true, bearerFile: "/run/secrets/metrics-bearer" },
       metrics,
@@ -31,6 +32,7 @@ describe("demo metrics route", () => {
     return bodyPromise.then((body) => {
       expect(body).toContain('hallu_demo_requests_total{outcome="accepted"} 1');
       expect(body).toContain('hallu_demo_webhook_requests_total{outcome="success"} 1');
+      expect(body).toContain("hallu_demo_dispatching_guard_total 1");
       expect(body).not.toContain(token);
       expect(body).not.toContain("email");
       expect(body).not.toContain("submission_id");

@@ -26,6 +26,9 @@ PRODUCTION_LIKE_ENVIRONMENTS = {"production", "staging"}
 KNOWN_ENVIRONMENTS = frozenset({"local", "development", "test", "ci", "staging", "production"})
 KUBERNETES_DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 KUBERNETES_DNS_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$")
+KIND_LOCAL_SANDBOX_IMAGE_RE = re.compile(
+    r"^hallu-defense-sandbox:(?:ci|kind-(?!latest$)[a-z0-9](?:[-a-z0-9]{0,30}[a-z0-9])?)$"
+)
 SECRET_MANAGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]{0,255}$")
 ENVIRONMENT_VARIABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_OPENSEARCH_INDEX_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1120,10 +1123,11 @@ def validate_sandbox_settings(settings: Settings) -> None:
                 "HALLU_DEFENSE_SANDBOX_KUBERNETES_IMAGE must be pinned by sha256 digest in production and staging."
             )
         if settings.sandbox_kubernetes_kind_local_image and (
-            settings.sandbox_kubernetes_image != "hallu-defense-sandbox:ci"
+            KIND_LOCAL_SANDBOX_IMAGE_RE.fullmatch(settings.sandbox_kubernetes_image) is None
         ):
             errors.append(
-                "HALLU_DEFENSE_SANDBOX_KUBERNETES_KIND_LOCAL_IMAGE permits only the isolated hallu-defense-sandbox:ci image."
+                "HALLU_DEFENSE_SANDBOX_KUBERNETES_KIND_LOCAL_IMAGE permits only an "
+                "isolated hallu-defense-sandbox:ci or hallu-defense-sandbox:kind-<run-id> image."
             )
         if not _valid_kubernetes_name(
             settings.sandbox_kubernetes_namespace,

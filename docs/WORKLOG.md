@@ -7946,3 +7946,119 @@ Remaining risks:
   execution. Static Helm, production-profile and exact image-matrix gates pass,
   but no deployment, image CVE status, remote workflow, legal approval or
   production-readiness claim is made from those static results.
+
+## 2026-07-21 - Acceptance hardening, live evidence and publish candidate
+
+Slice selected:
+
+- Harden and verify the complete platform from branch
+  `codex/hallu-defense-acceptance`, starting at immutable checkpoint
+  `98a6bd135e075ed5db48af28fe2b6d6fc01e3fda`, without merging `master` or
+  touching persistent user data.
+- Use independent read-only subagent audits for the final diff, traceability and
+  Kind network behavior. Root retained edit, integration and publication
+  authority and reproduced each actionable finding before accepting it.
+
+Implementation:
+
+- RAG reconciliation now acquires the historical JSON-filter advisory lock and
+  the authoritative corpus lock in deterministic order, maintaining mutual
+  exclusion across rolling upgrades while eliminating cross-filter concurrency
+  for the same corpus.
+- The ingestion live runner now exercises an actual worker-process kill after
+  claim, PostgreSQL-time lease expiry, token rotation, stale-token fencing,
+  restart, terminal audit state, tenant isolation and exact scratch cleanup.
+- Docker sandbox output decodes hostile bytes with bounded UTF-8 replacement.
+  Its runner waits fail-closed for three consecutive network-denial probes before
+  copying or executing repository content, closing the observed CNI attachment
+  race without weakening the public per-command output boundary.
+- Production demo intake now requires Redis Cluster mode. Its client performs
+  authenticated topology discovery, first-key routing, bounded redirections and
+  no replica reads. A dedicated dispatching-guard metric, authenticated Console
+  scrape, exact NetworkPolicy peer and production alert rule were added.
+- The marketing Axe phase exposed eight real contrast failures caused by reveal
+  opacity. The CSS root cause was corrected and the entire ES/EN form-state
+  matrix reran green.
+- Helm/Kind now uses fail-closed ServiceAccounts and projected credentials,
+  revision-scoped migrations and Vault bootstrap, exact application policies,
+  immutable probe Pods, safe diagnostic errors, bounded Kubernetes control
+  output and a `/console` production OIDC contract. Because kindnet evaluates
+  egress after Service DNAT, the smoke discovers and verifies both the
+  Kubernetes Service VIP and the unique ready control-plane endpoint, then
+  allows only those two exact peers for API; worker remains denied.
+- Gitleaks was pinned at 8.30.1 with 79 exact reviewed synthetic fingerprints.
+  New HIGH advisories were closed with Next 16.2.11, fast-uri 3.1.4 and Sharp
+  0.35.3. Next currently declares Sharp `^0.34.5`, so the security override is
+  explicitly treated as reviewed rather than semver-compatible: a focal test
+  loads Sharp 0.35.3 and performs an actual resize/PNG encode, the optimized
+  Console image builds, and the exact dependency tree completed the Kind
+  runtime. Negative Python mutations pin Next, Sharp, fast-uri and Sharp's
+  no-install-script property. This temporary upstream range divergence remains
+  visible for reevaluation on the next Next release.
+
+Live scratch evidence:
+
+- PostgreSQL worker crash/recovery passed with fencing, tenant isolation and no
+  residual database resources.
+- Docker sandbox passed network denial, outside-workspace write denial,
+  artifact capture, timeout/process kill and exact CPU/memory/PID limits; its
+  unique resources were removed.
+- The encrypted PostgreSQL -> MinIO replica -> scratch restore drill passed in
+  project `halluacceptminio98a6bd1` (`1 passed in 4.45s`) with checksum/row
+  parity and exact container/volume/network cleanup.
+- Two isolated six-node Redis 7 Clusters proved real `MOVED`, reserve/delivery/
+  finalize/duplicate behavior, owning-primary loss and failover, plus
+  authenticated discovery outside the seed owner. All twelve scratch containers,
+  networks and generated bundles were removed.
+- Kind attempts were retained as diagnostic evidence rather than hidden:
+  `acc98a6bd1d` found the post-DNAT API peer; `accfinal98a6bd1` through
+  `accfinalf98a6bd1` hardened probe budgets, immutable metrics probes, RBAC and
+  nested-script compilation; `accfinalg98a6bd1` through `accfinali98a6bd1`
+  fixed fixture tracking, safe diagnostics, bounded control output and the typed
+  error contract; `accfinalj98a6bd1`/`accfinall98a6bd1` reproduced sandbox
+  egress before the runner guard. `accfinalm98a6bd1` then passed. The
+  authoritative post-dependency-update run `accfinaln98a6bd1` also passed:
+  Helm revisions 1 superseded/2 deployed, seven workloads ready with zero
+  restarts, fourteen migration checksums, `/console` HTTP 200 and exact OIDC
+  configuration, API Kubernetes VIP+endpoint allowed, worker Kubernetes and all
+  Internet probes denied, fifteen malicious sandbox Jobs denied, path escape
+  rejected, timeout 124, native kindnet egress denial, and zero residual sandbox
+  Jobs/Pods. It deleted its cluster and all six run-scoped image tags and
+  verified unrelated-cluster state unchanged.
+- Trivy 0.72.0 rebuilt and scanned ten first-party images plus immutable
+  Prometheus and Redis. OpenSearch OS packages and SeaweedFS
+  `golang.org/x/image` were corrected at pinned inputs. All twelve final images
+  reported zero HIGH/CRITICAL; after the last dependency change, Console was
+  rebuilt as `accept-final2-98a6bd1` and rescanned at zero findings.
+
+Validation:
+
+- Final `make lint`, `make typecheck`, `make test`, `make build`,
+  `make contracts`, `make openapi`, `make policy-test`, `make sandbox-test`,
+  `make evals-smoke`, `make security-check`, production-profile/Helm validators,
+  documentation/traceability/worklog validators and `git diff --check` passed.
+  The global test gate reports 2,811 Python tests passed / 27 deselected, SDK
+  17, agent-adapters 11, MCP 41 and Console 262 after the Sharp compatibility
+  regression was added. Console build scanned 339 artifacts; contracts checked
+  79 schemas, 79 valid examples, 79 invalid examples, 72 generated interfaces
+  and 58 focused tests; policy passed 164 Python and 31 OPA tests; sandbox passed
+  322; eval smoke passed two scenarios and its latency-only generated drift was
+  restored.
+- Production marketing executed 216 cases: 148 passed, 68 deliberate scope
+  skips, zero failed. Expanded form/Axe executed 117: 77 passed, 40 deliberate
+  skips, zero failed.
+- `make security-check` passed with Gitleaks 8.30.1, clean Python locks, full npm
+  audit clean at the enforced HIGH threshold and production-only npm audit at
+  zero. Two moderate Hono/MCP development-path advisories remain because the
+  offered fix is a breaking SDK downgrade; they are recorded, not suppressed.
+
+Remaining risks:
+
+- Draft PR #3 remains the publication boundary; no merge into `master` is
+  authorized. GitHub Actions is blocked before runner allocation by the
+  repository billing/spending limit, so no remote-green claim is made.
+- All requirement rows remain at most `tested`. This campaign is local scratch
+  evidence, not production readiness. BrowserStack minimum-version sessions,
+  native UI zoom and manual assistive-technology review, live OIDC, target
+  Redis TLS/CRM/ingress/secrets/retention/legal approval, managed-database load,
+  target Kubernetes CNI/storage/identity and remote CI evidence remain pending.

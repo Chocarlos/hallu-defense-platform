@@ -152,8 +152,8 @@ services:
       - ${HALLU_DEFENSE_OPENSEARCH_CA_CERT_HOST_PATH:?set the host OpenSearch CA file path}:/run/hallu-defense/opensearch/ca.crt:ro
       - ${HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_CA_HOST_PATH:?set the host Redis TLS CA file path}:/run/hallu-defense/redis/ca.crt:ro
       - ${HALLU_DEFENSE_ALLOWED_WORKSPACE_HOST:?mount the same tenant-bound workspace as the sandbox PVC}:/workspace:ro
-      - ${HALLU_DEFENSE_SANDBOX_KUBERNETES_TOKEN_HOST_PATH:?set the dedicated ServiceAccount token file}:/var/run/secrets/kubernetes.io/serviceaccount/token:ro
-      - ${HALLU_DEFENSE_SANDBOX_KUBERNETES_CA_HOST_PATH:?set the Kubernetes CA file}:/var/run/secrets/kubernetes.io/serviceaccount/ca.crt:ro
+      - ${HALLU_DEFENSE_SANDBOX_KUBERNETES_TOKEN_HOST_PATH:?set the dedicated ServiceAccount token file}:/run/hallu-defense/kubernetes/token:ro
+      - ${HALLU_DEFENSE_SANDBOX_KUBERNETES_CA_HOST_PATH:?set the Kubernetes CA file}:/run/hallu-defense/kubernetes/ca.crt:ro
     depends_on: !override
       opensearch-bootstrap:
         condition: service_completed_successfully
@@ -245,6 +245,7 @@ services:
       HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE: /run/secrets/hallu_demo_webhook_hmac_secret
       HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN: ${HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN:-}
       HALLU_DEFENSE_DEMO_REDIS_URL_FILE: /run/secrets/hallu_demo_redis_url
+      HALLU_DEFENSE_DEMO_REDIS_MODE: cluster
       HALLU_DEFENSE_DEMO_REDIS_CA_PATH: /run/secrets/hallu_demo_redis_ca
       HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE: /run/secrets/hallu_console_metrics_bearer
       HALLU_DEFENSE_CONSOLE_AUTH_MODE: oidc

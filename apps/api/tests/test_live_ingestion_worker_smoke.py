@@ -456,6 +456,25 @@ def test_cli_failure_output_contains_only_error_type(
     assert json.loads(output) == {"status": "failed", "error_type": "RuntimeError"}
 
 
+def test_cli_typed_failure_includes_only_safe_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    diagnostic = "Worker exited before reaching the pgvector write barrier."
+
+    def fail() -> dict[str, object]:
+        raise smoke.LiveIngestionWorkerSmokeError(diagnostic)
+
+    monkeypatch.setattr(smoke, "run_from_env", fail)
+
+    assert smoke.main([]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "error_type": "LiveIngestionWorkerSmokeError",
+        "error": diagnostic,
+    }
+
+
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "environment": "local",

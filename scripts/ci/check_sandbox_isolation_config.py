@@ -276,6 +276,17 @@ def _validate_backend_code(
         if marker not in sandbox_exec_text:
             errors.append(f"Docker sandbox bounded execution is missing {marker}")
     for marker in (
+        "def wait_for_network_denial(",
+        'NETWORK_GUARD_TARGET = ("1.1.1.1", 443)',
+        "NETWORK_GUARD_REQUIRED_DENIALS = 3",
+        'stage = "network-guard"',
+        'os.environ.get("HALLU_DEFENSE_NETWORK_POLICY") == "deny"',
+    ):
+        if marker not in sandbox_runner_text:
+            errors.append(
+                f"sandbox runner must fail closed until deny-egress is active; missing {marker}"
+            )
+    for marker in (
         "SANDBOX_GIT_INSPECTOR_PATH",
         "target={DOCKER_SOURCE_DIR},readonly",
         "type=tmpfs,target={DOCKER_WORKDIR}",

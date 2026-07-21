@@ -224,6 +224,28 @@ def test_values_schema_accepts_sandbox_cleanup_grace_boundaries(
     assert not errors
 
 
+def test_values_schema_accepts_only_ci_or_scoped_kind_vault_image() -> None:
+    values = _merged_kind_values()
+    values["kindDependencies"]["vault"]["image"] = (
+        "hallu-defense-vault:kind-acc98a6bd1a"
+    )
+
+    errors = list(Draft7Validator(_values_schema()).iter_errors(values))
+
+    assert not errors
+
+
+def test_values_schema_rejects_kind_latest_vault_image() -> None:
+    values = _merged_kind_values()
+    values["kindDependencies"]["vault"]["image"] = (
+        "hallu-defense-vault:kind-latest"
+    )
+
+    errors = list(Draft7Validator(_values_schema()).iter_errors(values))
+
+    assert errors
+
+
 @pytest.mark.parametrize(
     ("keyword", "value"),
     [("minimum", 16), ("maximum", 29), ("const", 20)],
@@ -642,6 +664,27 @@ def test_helm_chart_requires_fixture_pod_readiness_evidence() -> None:
         validate_helm_chart(**inputs)
 
 
+def test_helm_chart_requires_bounded_fixture_probe_timeout() -> None:
+    inputs = _current_inputs()
+    templates = dict(inputs["templates"])
+    templates["sandbox-fixture-job.yaml"] = templates[
+        "sandbox-fixture-job.yaml"
+    ].replace("timeoutSeconds: 5", "timeoutSeconds: 1")
+    inputs["templates"] = templates
+
+    with pytest.raises(HelmChartConfigError, match="sandbox fixture Job"):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_requires_kind_fixture_ready_hold() -> None:
+    inputs = _current_inputs()
+    kind_values = inputs["kind_values"]
+    kind_values["sandbox"]["setupGraceSeconds"] = 15
+
+    with pytest.raises(HelmChartConfigError, match="Ready for 30 seconds"):
+        validate_helm_chart(**inputs)
+
+
 def test_helm_chart_requires_worker_metrics_cluster_ip_service() -> None:
     inputs = _current_inputs()
     templates = dict(inputs["templates"])
@@ -678,6 +721,16 @@ def test_helm_chart_requires_worker_metrics_scraper_allowlist() -> None:
     inputs["kind_values"] = kind_values
 
     with pytest.raises(HelmChartConfigError, match="worker_metrics|worker.metricsScrapers"):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_requires_console_metrics_scraper_allowlist() -> None:
+    inputs = _current_inputs()
+    kind_values = copy.deepcopy(inputs["kind_values"])
+    kind_values["networkPolicy"]["ingress"]["console"]["metricsScrapers"] = []
+    inputs["kind_values"] = kind_values
+
+    with pytest.raises(HelmChartConfigError, match="console_metrics|console.metricsScrapers"):
         validate_helm_chart(**inputs)
 
 
@@ -813,6 +866,28 @@ def test_helm_chart_rejects_api_image_without_migration_assets() -> None:
     )
 
     with pytest.raises(HelmChartConfigError, match="migration runtime asset"):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_rejects_api_image_without_service_account_mountpoint() -> None:
+    inputs = _current_inputs()
+    inputs["api_dockerfile_text"] = str(inputs["api_dockerfile_text"]).replace(
+        "    && mkdir -p /run/hallu-defense/kubernetes \\\n",
+        "",
+    )
+
+    with pytest.raises(HelmChartConfigError, match="serviceaccount"):
+        validate_helm_chart(**inputs)
+
+
+def test_helm_chart_requires_kind_vault_image_cleanup() -> None:
+    inputs = _current_inputs()
+    inputs["live_workflow_text"] = str(inputs["live_workflow_text"]).replace(
+        '            "hallu-defense-vault:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"\n',
+        "",
+    )
+
+    with pytest.raises(HelmChartConfigError, match="hallu-defense-vault"):
         validate_helm_chart(**inputs)
 
 
@@ -1506,6 +1581,19 @@ def test_helm_chart_rejects_worker_service_account_token_mount() -> None:
         validate_helm_chart(**inputs)
 
 
+def test_helm_chart_rejects_console_service_link_environment_injection() -> None:
+    inputs = _current_inputs()
+    templates = dict(inputs["templates"])
+    templates["console-deployment.yaml"] = templates["console-deployment.yaml"].replace(
+        "      enableServiceLinks: false\n",
+        "",
+    )
+    inputs["templates"] = templates
+
+    with pytest.raises(HelmChartConfigError, match="console.*service links"):
+        validate_helm_chart(**inputs)
+
+
 def test_helm_chart_rejects_namespace_agnostic_cluster_scoped_admission_name() -> None:
     inputs = _current_inputs()
     templates = dict(inputs["templates"])
@@ -1600,7 +1688,7 @@ def test_helm_chart_rejects_api_token_mount_in_init_container() -> None:
         bootstrap_mount,
         bootstrap_mount
         + "\n            - name: kube-api-access\n"
-        + "              mountPath: /var/run/secrets/kubernetes.io/serviceaccount",
+        + "              mountPath: /run/hallu-defense/kubernetes",
         1,
     )
     inputs["templates"] = templates

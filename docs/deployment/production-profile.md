@@ -163,8 +163,8 @@ production default:
   tenant ID, plus `KUBERNETES_SERVICE_HOST` and
   `KUBERNETES_SERVICE_PORT_HTTPS`;
 - the dedicated ServiceAccount token and Kubernetes CA host files mounted
-  read-only at `/var/run/secrets/kubernetes.io/serviceaccount/token` and
-  `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`.
+  read-only at `/run/hallu-defense/kubernetes/token` and
+  `/run/hallu-defense/kubernetes/ca.crt`.
 
 Production and staging runtime validation rejects plaintext Vault and provider
 URLs. OIDC remote configuration also rejects a plaintext `jwks_uri` returned by
@@ -377,10 +377,20 @@ setting at a generic host checkout or a cross-tenant share.
 An externally operated Prometheus can use
 `infra/prometheus/prometheus.prod.yml`, which reads
 the API metrics bearer token via `authorization.credentials_file` at
-`/run/secrets/hallu_defense_metrics_bearer_token`. Prometheus is deliberately
-not started by the production Compose merge; its deployment must mount the
-credential file and target the API through the approved network boundary.
-Inline Prometheus credentials remain rejected by the static gate.
+`/run/secrets/hallu_defense_metrics_bearer_token` and the distinct Console
+metrics bearer at `/run/secrets/hallu_console_metrics_bearer`. The latter file
+must contain the same bytes supplied to Console through
+`HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE`; it must never reuse the API token.
+Prometheus is deliberately not started by the production Compose merge. Its
+managed deployment must provision both private credential files, target API
+and Console through their approved network boundaries, and rotate each file
+with its corresponding service secret. Inline Prometheus credentials remain
+rejected by the static gates. The committed Console job uses HTTP only for the
+in-cluster `console:3000` Service, whose ingress is restricted to the exact
+scraper peer by NetworkPolicy. Environments that require encrypted east-west
+traffic must terminate real TLS/mTLS in a sidecar or service mesh and update
+the scrape target, scheme, CA, and SNI together; changing only `scheme` is not
+a valid TLS deployment.
 
 ## Live E2E Scaffold
 

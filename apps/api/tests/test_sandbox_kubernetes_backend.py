@@ -435,6 +435,59 @@ def test_kubernetes_batch_executes_all_commands_in_one_ephemeral_job(
     ]
 
 
+def test_kubernetes_batch_uses_a_separate_bounded_control_output_cap(
+    tmp_path: Path,
+) -> None:
+    child_output_caps = 32_768
+    control_output_caps = child_output_caps * 4
+    batch_payload = {
+        "schema_version": "sandbox_execution_batch.v3",
+        "pre_snapshot_fingerprint": "0" * 64,
+        "post_snapshot_fingerprint": "0" * 64,
+        "executions": [
+            {
+                "returncode": 0,
+                "stdout": "ok\n",
+                "stderr": "",
+                "timed_out": False,
+            }
+        ],
+        "artifacts": [],
+    }
+    transport = RecordingTransport(
+        [
+            _json_bytes(_network_policy()),
+            _json_bytes(_job()),
+            _json_bytes(_job(status={"succeeded": 1})),
+            _json_bytes({"items": [_pod(runner_exit_code=0)]}),
+            json.dumps(batch_payload, separators=(",", ":")).encode(),
+            b"",
+            *_cleanup_responses(),
+        ]
+    )
+    backend, repo = _backend(tmp_path, transport=transport)
+
+    result = backend.execute_batch(
+        [["python", "probe.py"]],
+        cwd=repo,
+        source_cwd=repo,
+        env={"HALLU_DEFENSE_NETWORK_POLICY": "deny"},
+        timeout=5,
+        output_caps=child_output_caps,
+    )
+
+    assert result.executions[0].stdout == "ok\n"
+    log_calls = [call for call in transport.calls if call.path.endswith("/log")]
+    assert len(log_calls) == 2
+    assert all(
+        call.query == {
+            "container": container,
+            "limitBytes": control_output_caps * 4,
+        }
+        for call, container in zip(log_calls, ("stdout", "stderr"), strict=True)
+    )
+
+
 def test_kubernetes_backend_rejects_created_job_without_valid_uid(
     tmp_path: Path,
 ) -> None:
@@ -1431,10 +1484,20 @@ def test_production_kubernetes_settings_require_digest_pinned_image(
         validate_sandbox_settings(settings)
 
 
-def test_kind_profile_accepts_only_the_isolated_local_sandbox_image(tmp_path: Path) -> None:
+def test_kind_profile_accepts_the_isolated_ci_sandbox_image(tmp_path: Path) -> None:
     settings = replace(
         _settings(tmp_path, environment="production"),
         sandbox_kubernetes_image="hallu-defense-sandbox:ci",
+        sandbox_kubernetes_kind_local_image=True,
+    )
+
+    validate_sandbox_settings(settings)
+
+
+def test_kind_profile_accepts_a_scoped_scratch_sandbox_image(tmp_path: Path) -> None:
+    settings = replace(
+        _settings(tmp_path, environment="production"),
+        sandbox_kubernetes_image="hallu-defense-sandbox:kind-acc98a6bd1a",
         sandbox_kubernetes_kind_local_image=True,
     )
 
@@ -1448,7 +1511,31 @@ def test_kind_profile_rejects_any_other_mutable_sandbox_image(tmp_path: Path) ->
         sandbox_kubernetes_kind_local_image=True,
     )
 
-    with pytest.raises(SandboxConfigurationError, match="permits only the isolated"):
+    with pytest.raises(SandboxConfigurationError, match="permits only an isolated"):
+        validate_sandbox_settings(settings)
+
+
+@pytest.mark.parametrize(
+    "image",
+    (
+        "hallu-defense-sandbox:kind-latest",
+        "hallu-defense-sandbox:kind-Uppercase",
+        "hallu-defense-sandbox:kind-run-",
+        f"hallu-defense-sandbox:kind-{'a' * 33}",
+        "registry.example/hallu-defense-sandbox:kind-acc98a6bd1a",
+    ),
+)
+def test_kind_profile_rejects_unscoped_or_invalid_scratch_images(
+    tmp_path: Path,
+    image: str,
+) -> None:
+    settings = replace(
+        _settings(tmp_path, environment="production"),
+        sandbox_kubernetes_image=image,
+        sandbox_kubernetes_kind_local_image=True,
+    )
+
+    with pytest.raises(SandboxConfigurationError, match="permits only an isolated"):
         validate_sandbox_settings(settings)
 
 

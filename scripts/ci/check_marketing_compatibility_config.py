@@ -36,7 +36,13 @@ def validate(root: Path = REPO_ROOT) -> None:
             "infra/k8s/helm/hallu-defense/values.schema.json",
             "infra/k8s/helm/hallu-defense/templates/console-deployment.yaml",
             "infra/k8s/helm/hallu-defense/templates/application-egress-network-policies.yaml",
+            "infra/prometheus/demo-request-alerts.yml",
+            "infra/prometheus/prometheus.yml",
+            "infra/prometheus/prometheus.prod.yml",
             "apps/console/package.json",
+            "apps/console/components/marketing/marketing.module.css",
+            "apps/console/lib/demo-request/redis.ts",
+            "apps/console/lib/demo-request/metrics.ts",
             "apps/console/playwright.marketing.config.ts",
             "apps/console/e2e-marketing/marketing.spec.ts",
             "apps/console/e2e-marketing/accessibility.spec.ts",
@@ -79,10 +85,12 @@ def validate(root: Path = REPO_ROOT) -> None:
     for marker in (
         "demoRequests:",
         "enabled: false",
+        "redisMode: cluster",
         "demoWebhook: []",
         "demoRedis: []",
         "secrets.demo.name",
         "HALLU_DEFENSE_DEMO_REDIS_CA_PATH",
+        "HALLU_DEFENSE_DEMO_REDIS_MODE",
         "mountPath: /run/hallu-defense/demo",
         "path: /console",
     ):
@@ -93,6 +101,7 @@ def validate(root: Path = REPO_ROOT) -> None:
             path = "infra/k8s/helm/hallu-defense/templates/console-deployment.yaml"
         elif marker in {
             "HALLU_DEFENSE_DEMO_REDIS_CA_PATH",
+            "HALLU_DEFENSE_DEMO_REDIS_MODE",
             "mountPath: /run/hallu-defense/demo",
             "path: /console",
         }:
@@ -150,6 +159,7 @@ def validate(root: Path = REPO_ROOT) -> None:
         "npm run build && node ./e2e-marketing/serve-standalone.mjs --port",
         'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"',
         'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "true"',
+        'HALLU_DEFENSE_DEMO_REDIS_MODE: "standalone"',
     ):
         _require(playwright, marker, "apps/console/playwright.marketing.config.ts", errors)
 
@@ -198,11 +208,72 @@ def validate(root: Path = REPO_ROOT) -> None:
     accessibility_label = "apps/console/e2e-marketing/accessibility.spec.ts"
     for marker in (
         "AxeBuilder",
+        "@form axe WCAG 2.2 AA enabled form states",
+        'data-demo-form-hydrated="true"',
+        "await expectAxeWcag22Aa(page);",
         '"wcag22aa"',
         'rules: { "target-size": { enabled: true } }',
         'id === "target-size"',
     ):
         _require(texts[accessibility_label], marker, accessibility_label, errors)
+    marketing_css_label = "apps/console/components/marketing/marketing.module.css"
+    for marker in (
+        ".revealPending {\n  opacity: 1;",
+        "@keyframes reveal-in {\n  from {\n    opacity: 1;",
+    ):
+        _require(texts[marketing_css_label], marker, marketing_css_label, errors)
+
+    redis_label = "apps/console/lib/demo-request/redis.ts"
+    for marker in (
+        "createCluster",
+        'config.redisMode === "cluster"',
+        "RedisClusterCommandClient",
+        "maxCommandRedirections: 4",
+        "return {'dispatching', state[2]}",
+    ):
+        _require(texts[redis_label], marker, redis_label, errors)
+    metrics_label = "apps/console/lib/demo-request/metrics.ts"
+    _require(
+        texts[metrics_label],
+        "hallu_demo_dispatching_guard_total",
+        metrics_label,
+        errors,
+    )
+    alert_label = "infra/prometheus/demo-request-alerts.yml"
+    for marker in (
+        "HalluDefenseDemoDispatchingGuardObserved",
+        "increase(hallu_demo_dispatching_guard_total[15m]) > 0",
+    ):
+        _require(texts[alert_label], marker, alert_label, errors)
+    _require(
+        texts["infra/prometheus/prometheus.prod.yml"],
+        "/etc/prometheus/demo-request-alerts.yml",
+        "infra/prometheus/prometheus.prod.yml",
+        errors,
+    )
+    for marker in (
+        "job_name: hallu-defense-console",
+        "credentials_file: /run/secrets/hallu_console_metrics_bearer",
+        "- console:3000",
+    ):
+        _require(
+            texts["infra/prometheus/prometheus.prod.yml"],
+            marker,
+            "infra/prometheus/prometheus.prod.yml",
+            errors,
+        )
+    for marker in (
+        "networkPolicy.ingress.console.metricsScrapers",
+        ".Values.networkPolicy.ingress.console.metricsScrapers",
+    ):
+        _require(
+            texts[
+                "infra/k8s/helm/hallu-defense/templates/application-egress-network-policies.yaml"
+            ],
+            marker,
+            "infra/k8s/helm/hallu-defense/templates/application-egress-network-policies.yaml",
+            errors,
+        )
 
     csp_label = "apps/console/e2e-marketing/csp.spec.ts"
     for marker in (
@@ -366,6 +437,9 @@ def validate(root: Path = REPO_ROOT) -> None:
         "legal approval",
         "BrowserStack",
         "no compatibility claim",
+        "hallu_demo_dispatching_guard_total",
+        "HalluDefenseDemoDispatchingGuardObserved",
+        "HALLU_DEFENSE_DEMO_REDIS_MODE=cluster",
     ):
         _require(
             texts["docs/deployment/marketing-launch.md"],

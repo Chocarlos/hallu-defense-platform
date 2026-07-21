@@ -96,6 +96,12 @@ submission-scoped idempotency record for 24 hours. Redis server time prevents
 application-clock skew, and every Lua key shares the
 `hallu-defense:{demo-request-v1}` Cluster hash tag.
 
+Production additionally fixes `HALLU_DEFENSE_DEMO_REDIS_MODE=cluster`; the
+runtime refuses standalone mode there and accepts only database 0 because Redis
+Cluster does not support selecting another logical database. The Node client
+uses cluster discovery and bounded `MOVED`/`ASK` redirection. Local browser and
+scratch integration may select `standalone` explicitly.
+
 Immediately before webhook delivery, the record enters `dispatching` for 24
 hours. A lost final Redis acknowledgement therefore cannot cause local
 redelivery after a successful webhook; explicit webhook failures release the
@@ -106,9 +112,16 @@ TTL. Production must alert on this state and the CRM must honor
 public minimum response floor but never call the external webhook, so no claim
 is made that they reproduce a real webhook outage exactly.
 
+Each retry suppressed by this ambiguous state increments
+`hallu_demo_dispatching_guard_total`. Import
+`infra/prometheus/demo-request-alerts.yml` into the production Prometheus rule
+loader and route `HalluDefenseDemoDispatchingGuardObserved` to the demo-intake
+operator. The alert deliberately instructs operators to inspect CRM and Redis
+before replaying, so recovery cannot manufacture a duplicate lead.
+
 ## Current local evidence
 
-At code candidate `d6c15bda15dda7a5e901f913d1007fd04d3089c5`, a scratch-only
+At historical code candidate `d6c15bda15dda7a5e901f913d1007fd04d3089c5`, a scratch-only
 integration used WSL Redis 7.0.15 plus a loopback HTTPS webhook with a
 self-signed CA trusted only by the test. It verified 202 acceptance, 503 pending
 and Redis-down behavior, 422 payload conflict, email and global 429 boundaries,
@@ -116,6 +129,17 @@ approximately 24-hour idempotency TTL, exact-byte HMAC, concurrent/duplicate
 suppression, protected metrics, and no PII in metrics. Five expected unique
 webhook deliveries occurred. The measured public response floor was 308 ms for
 a real request and 331 ms for the honeypot; scratch state was removed on exit.
+
+The 2026-07-20/21 campaign based on
+`98a6bd135e075ed5db48af28fe2b6d6fc01e3fda` additionally exercised the actual
+`createCluster` adapter against six isolated Redis 7 nodes (three masters and
+three replicas). A root node that did not own the demo hash slot produced a
+real `MOVED`; the adapter then completed reserve, delivery CAS, finalization and
+duplicate readback. After the owning master was stopped, the Cluster recovered
+and the same operations passed through a surviving root. The exact six
+containers, network and generated bundle were removed. This smoke used plain
+Redis on an isolated Docker network, so production `rediss://` CA and hostname
+verification remains a deployment gate.
 
 This is deterministic local integration evidence, not proof of a production
 Redis Cluster, CRM, ingress, egress policy, retention job, or legal approval.
@@ -192,6 +216,18 @@ chmod 0440 "$secret_dir/metrics-bearer"
 LC_ALL=C grep -Eq '^[!-~]{32,256}$' "$secret_dir/metrics-bearer"
 ```
 
+The managed Prometheus deployment must mount the exact same Console bearer
+bytes at `/run/secrets/hallu_console_metrics_bearer` for its dedicated
+`hallu-defense-console` scrape job. This is separate from the API metrics
+bearer and must not be substituted with it. In Kubernetes, allow the scraper
+explicitly through `networkPolicy.ingress.console.metricsScrapers`; in Compose,
+the production overlay intentionally does not start Prometheus, so provisioning
+and rotation remain an operator-owned control.
+The committed local Prometheus profile deliberately does not load this alert:
+local demo intake and Console metrics are disabled, so loading a rule with no
+possible source series would create false confidence. The production file
+loads the rule and defines the authenticated Console scrape together.
+
 Map the five `*_HOST_PATH` variables to those files. Configure a host firewall
 or an audited egress proxy for only the exact `/32` or `/128` webhook and Redis
 destinations and their exact URL ports, plus the separately approved OIDC and
@@ -232,7 +268,8 @@ data. The runtime remains the authoritative content check and fails closed if th
 URL, HMAC, `rediss://` URL, CA, or bearer is invalid.
 
 Set `demoRequests.enabled=true`, the approved privacy contact and exact webhook
-origin, and at least one named host peer in each of
+origin, keep `demoRequests.redisMode=cluster`, and configure at least one named
+host peer in each of
 `networkPolicy.console.demoWebhook` and `networkPolicy.console.demoRedis`. Every
 peer must use the exact `/32` or `/128` destination and the port encoded by its
 corresponding URL. Render and inspect both disabled and enabled profiles, then use
@@ -303,9 +340,13 @@ hydrated-form phase covers both languages, two-step keyboard/focus/consent/202,
 422/503 retries with one submission ID, malformed 202 responses, no-JavaScript
 PII boundaries, and the DOM-newer-than-React-state regression.
 
-At `d6c15bd`, production ran 216 cases: 148 passed, 68 deliberate project-scope
-skips, 0 failed. The form phase ran 99: 59 passed, 40 deliberate skips, 0
-failed. The skips keep single-engine or desktop-only labs from being
+In the 2026-07-20/21 campaign, production ran 216 cases: 148 passed, 68
+deliberate project-scope skips, 0 failed. The expanded form/Axe phase ran 117:
+77 passed, 40 deliberate skips, 0 failed. It covers the initial enabled form,
+step two and native-invalid state in both languages across the full
+browser/viewport matrix. Its first run found eight contrast failures while a
+reveal animation reduced effective FAQ text contrast; opacity was fixed and the
+complete phase reran green. The skips keep single-engine or desktop-only labs from being
 misrepresented as cross-matrix execution; they are not failures. The automated
 "200%" check is explicitly Chromium `deviceScaleFactor: 2` equivalence at a
 720 CSS-pixel viewport, not browser UI zoom. Native 200% zoom and manual focus,

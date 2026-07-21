@@ -30,8 +30,10 @@ postgres:
   kindInsecureTlsEnabled: true
 
 networkPolicy:
-  # Kind/kindnet-specific Service VIP. Production must validate its own CNI and
-  # Kubernetes API destination behavior explicitly.
+  # Pre-DNAT Kubernetes Service VIP. The live Kind smoke discovers and
+  # fail-closed validates the sole control-plane endpoint, then overrides this
+  # list with both exact pre- and post-DNAT destinations because CNI evaluation
+  # order varies. Production must validate its own CNI behavior explicitly.
   kubernetesApi:
     - cidr: 10.96.0.1/32
       port: 443
@@ -59,6 +61,11 @@ networkPolicy:
           namespace: $release
           podLabelKey: hallu-defense.openai.com/network-client
           podLabelValue: console
+      metricsScrapers:
+        - name: kind-console-metrics-scraper
+          namespace: $release
+          podLabelKey: hallu-defense.openai.com/network-client
+          podLabelValue: metrics
   api:
     external: []
   console:
@@ -105,6 +112,7 @@ sandbox:
   backend: kubernetes
   namespace: hallu-defense-sandbox
   tenantId: kind-smoke-tenant
+  setupGraceSeconds: 30
   image:
     reference: hallu-defense-sandbox:ci
     pullPolicy: IfNotPresent

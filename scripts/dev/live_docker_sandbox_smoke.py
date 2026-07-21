@@ -601,6 +601,8 @@ def _run(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[
     return subprocess.run(
         list(argv),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=timeout,
         check=False,

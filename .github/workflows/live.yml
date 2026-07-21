@@ -28,6 +28,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: ${{ github.workspace }}/apps/api/src
+
 jobs:
   minio-backup-restore-live:
     runs-on: ubuntu-24.04
@@ -498,6 +501,7 @@ jobs:
           HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_API_URL: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_API_URL || 'https://api.example.invalid' }}
           HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_BEARER_TOKEN: ${{ secrets.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_BEARER_TOKEN }}
           HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_TENANT: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_TENANT || 'tenant-a' }}
+          HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_REPO_REF: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_REPO_REF }}
         run: python scripts/dev/live_prod_profile_e2e.py
 
   ingestion-worker-crash-recovery-live:
@@ -637,6 +641,7 @@ jobs:
             "hallu-defense-sandbox:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
             "hallu-defense-pgvector:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
             "hallu-defense-opensearch:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
+            "hallu-defense-vault:kind-${HALLU_DEFENSE_LIVE_KIND_HELM_RUN_ID}"
           )
           images_before="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>&1)"
           if [ "$?" -ne 0 ]; then

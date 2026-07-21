@@ -14,7 +14,7 @@
 {{- if ne .Values.sandbox.image.pullPolicy "IfNotPresent" }}
 {{- fail "kindDependencies.enabled=true requires sandbox.image.pullPolicy=IfNotPresent for the locally loaded sandbox image" }}
 {{- end }}
-{{- if ne .Values.kindDependencies.vault.image "hallu-defense-vault:ci" }}
+{{- if or (eq .Values.kindDependencies.vault.image "hallu-defense-vault:kind-latest") (not (regexMatch "^hallu-defense-vault:(ci|kind-[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?)$" .Values.kindDependencies.vault.image)) }}
 {{- fail "kindDependencies.vault.image must remain the locally rebuilt scanned image" }}
 {{- end }}
 {{- if ne .Values.kindDependencies.redis.image "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" }}
@@ -81,11 +81,15 @@
 {{- if empty .Values.networkPolicy.ingress.console.callers }}
 {{- fail "networkPolicy.ingress.console.callers requires at least one explicit namespace and pod-label peer" }}
 {{- end }}
+{{- if empty .Values.networkPolicy.ingress.console.metricsScrapers }}
+{{- fail "networkPolicy.ingress.console.metricsScrapers requires at least one explicit namespace and pod-label peer" }}
+{{- end }}
 {{- $ingressPeerGroups := list
       (dict "path" "networkPolicy.ingress.api.callers" "peers" .Values.networkPolicy.ingress.api.callers)
       (dict "path" "networkPolicy.ingress.api.metricsScrapers" "peers" .Values.networkPolicy.ingress.api.metricsScrapers)
       (dict "path" "networkPolicy.ingress.worker.metricsScrapers" "peers" .Values.networkPolicy.ingress.worker.metricsScrapers)
-      (dict "path" "networkPolicy.ingress.console.callers" "peers" .Values.networkPolicy.ingress.console.callers) -}}
+      (dict "path" "networkPolicy.ingress.console.callers" "peers" .Values.networkPolicy.ingress.console.callers)
+      (dict "path" "networkPolicy.ingress.console.metricsScrapers" "peers" .Values.networkPolicy.ingress.console.metricsScrapers) -}}
 {{- range $group := $ingressPeerGroups }}
 {{- range $peer := $group.peers }}
 {{- $_ := required (printf "%s[].name is required" $group.path) $peer.name -}}
@@ -171,7 +175,7 @@ spec:
     - Ingress
     - Egress
   ingress:
-    {{- range $peer := .Values.networkPolicy.ingress.console.callers }}
+    {{- range $peer := concat .Values.networkPolicy.ingress.console.callers .Values.networkPolicy.ingress.console.metricsScrapers }}
     {{- $namespace := $peer.namespace }}
     {{- if eq $namespace "$release" }}{{- $namespace = $.Release.Namespace }}{{- end }}
     - from:

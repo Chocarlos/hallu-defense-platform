@@ -250,6 +250,14 @@ def test_rejects_live_smoke_with_manufactured_future_cutoff() -> None:
         _validate_current_live(live_smoke_text=broken)
 
 
+def test_rejects_live_smoke_that_serializes_an_untyped_exception_detail() -> None:
+    _config_text, _worker_text, live_smoke_text = load_current_runtime_config()
+    broken = live_smoke_text + '\nfailure["raw_error"] = str(exc)\n'
+
+    with pytest.raises(IngestionPipelineConfigError, match="sanitized, typed"):
+        _validate_current_live(live_smoke_text=broken)
+
+
 def test_rejects_live_workflow_that_can_silently_skip_smoke() -> None:
     live_workflow_text, _live_smoke_doc_text = load_current_live_config()
     broken = live_workflow_text.replace(

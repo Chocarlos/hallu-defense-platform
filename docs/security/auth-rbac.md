@@ -214,6 +214,14 @@ file and is not committed in Prometheus config or exposed as a process argument.
 The Vault-to-file rotation and sidecar/systemd deployment contract is documented
 in `docs/deployment/metrics-bearer-token-materializer.md`.
 
+The public Console exposes a separate `/metrics` endpoint for the privacy-safe
+demo counters. It uses the file-backed
+`HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE`, not the API bearer above. The
+managed Prometheus must mount the same Console token bytes at
+`/run/secrets/hallu_console_metrics_bearer` and use the dedicated
+`hallu-defense-console` scrape job; Kubernetes must separately allow its Pod
+through `networkPolicy.ingress.console.metricsScrapers`.
+
 ## RAG Corpus Grants And Metadata ABAC
 
 RAG corpora remain tenant-scoped. The API does not grant cross-tenant corpus

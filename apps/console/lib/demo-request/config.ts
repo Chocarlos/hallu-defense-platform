@@ -26,6 +26,7 @@ export interface EnabledDemoRuntimeConfig {
   readonly webhookAllowedOrigin: string;
   readonly webhookHmacSecretFile: string;
   readonly redisUrl: string;
+  readonly redisMode: "standalone" | "cluster";
   readonly redisCaPath?: string;
   readonly metricsBearerFile: string;
 }
@@ -236,6 +237,10 @@ function loadEnabledConfig(
     { allowLoopbackHttp: false }
   );
   const redisUrlFile = required(env, "HALLU_DEFENSE_DEMO_REDIS_URL_FILE");
+  const redisMode = parseRedisMode(
+    env.HALLU_DEFENSE_DEMO_REDIS_MODE,
+    productionLike
+  );
   const metricsBearerFile = required(
     env,
     "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE"
@@ -245,7 +250,7 @@ function loadEnabledConfig(
   const webhookUrl = decodeSecretText(readSecretBytes(webhookUrlFile));
   validateWebhookUrl(webhookUrl, webhookAllowedOrigin);
   const redisUrl = decodeSecretText(readSecretBytes(redisUrlFile));
-  validateRedisUrl(redisUrl, productionLike, redisCaPath);
+  validateRedisUrl(redisUrl, productionLike, redisCaPath, redisMode);
   if (readSecretBytes(webhookHmacSecretFile).byteLength < 32) {
     throw new DemoConfigurationError();
   }
@@ -267,6 +272,7 @@ function loadEnabledConfig(
     webhookAllowedOrigin,
     webhookHmacSecretFile,
     redisUrl,
+    redisMode,
     ...(redisCaPath === undefined ? {} : { redisCaPath }),
     metricsBearerFile
   };
@@ -301,7 +307,8 @@ function validateWebhookUrl(value: string, allowedOrigin: string): void {
 function validateRedisUrl(
   value: string,
   productionLike: boolean,
-  caPath: string | undefined
+  caPath: string | undefined,
+  redisMode: "standalone" | "cluster"
 ): void {
   const url = parseAbsoluteUrl(value);
   if (
@@ -316,6 +323,23 @@ function validateRedisUrl(
   if (productionLike && (url.protocol !== "rediss:" || caPath === undefined)) {
     throw new DemoConfigurationError();
   }
+  if (redisMode === "cluster" && url.pathname !== "/" && url.pathname !== "/0") {
+    throw new DemoConfigurationError();
+  }
+}
+
+function parseRedisMode(
+  value: string | undefined,
+  productionLike: boolean
+): "standalone" | "cluster" {
+  const mode = cleanValue(value) ?? (productionLike ? undefined : "standalone");
+  if (
+    (mode !== "standalone" && mode !== "cluster") ||
+    (productionLike && mode !== "cluster")
+  ) {
+    throw new DemoConfigurationError();
+  }
+  return mode;
 }
 
 function parseOrigin(

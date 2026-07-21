@@ -147,6 +147,10 @@ async function processEnabledRequest(
   if (reservation.status === "pending") {
     unavailable();
   }
+  if (reservation.status === "dispatching") {
+    dependencies.metrics.recordDispatchingGuard();
+    unavailable();
+  }
   if (reservation.status === "conflict") {
     throw new DemoRequestError(422, "Request payload is invalid.", "invalid");
   }

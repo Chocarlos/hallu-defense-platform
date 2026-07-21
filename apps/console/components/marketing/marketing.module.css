@@ -477,7 +477,7 @@
 }
 
 .revealPending {
-  opacity: 0;
+  opacity: 1;
   transform: translateY(1.2rem);
 }
 
@@ -487,7 +487,7 @@
 
 @keyframes reveal-in {
   from {
-    opacity: 0;
+    opacity: 1;
     transform: translateY(1.2rem);
   }
 

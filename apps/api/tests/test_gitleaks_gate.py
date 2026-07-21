@@ -16,6 +16,7 @@ from scripts.ci.run_gitleaks import (
     GITLEAKS_VERSION,
     ROOT,
     GitleaksExecutionError,
+    _verify_container_version,
     load_fixture_fingerprints,
     run_gitleaks,
 )
@@ -136,6 +137,25 @@ def test_gitleaks_docker_fallback_rejects_linked_worktree(
 
     with pytest.raises(GitleaksExecutionError, match="linked-worktree Git metadata"):
         run_gitleaks(tmp_path)
+
+
+def test_gitleaks_container_accepts_the_pinned_image_version_prefix() -> None:
+    def runner(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, f"v{GITLEAKS_VERSION}\n", "")
+
+    _verify_container_version(runner=runner)
+
+
+def test_gitleaks_container_rejects_a_different_version() -> None:
+    def runner(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, "v0.0.0\n", "")
+
+    with pytest.raises(GitleaksExecutionError, match="container version"):
+        _verify_container_version(runner=runner)
 
 
 def test_gitleaks_runner_suppresses_only_exact_synthetic_fingerprint(

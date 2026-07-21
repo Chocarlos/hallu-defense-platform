@@ -18,6 +18,7 @@ from urllib import error, parse, request
 from hallu_defense.config import Settings
 from hallu_defense.outbound_http import OutboundHttpRedirectError, open_url_no_redirect
 from hallu_defense.services.sandbox_exec import (
+    MAX_SANDBOX_BATCH_CONTROL_CHARS,
     MAX_SANDBOX_WORKSPACE_BYTES,
     MAX_SANDBOX_WORKSPACE_FILES,
     MAX_SANDBOX_OUTPUT_CHARS,
@@ -31,8 +32,8 @@ from hallu_defense.services.sandbox_exec import (
 )
 from hallu_defense.services.text import bounded
 
-SERVICE_ACCOUNT_TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
-SERVICE_ACCOUNT_CA_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+SERVICE_ACCOUNT_TOKEN_PATH = Path("/run/hallu-defense/kubernetes/token")
+SERVICE_ACCOUNT_CA_PATH = Path("/run/hallu-defense/kubernetes/ca.crt")
 NETWORK_POLICY_LABEL = "hallu-defense.openai.com/network-policy"
 NETWORK_POLICY_DENY_VALUE = "deny-egress"
 SANDBOX_LABEL = "hallu-defense.openai.com/sandbox"
@@ -355,7 +356,33 @@ class KubernetesJobBackend:
         output_caps: int,
         source_cwd: Path | None = None,
     ) -> ExecutionResult:
-        _validate_execution_request(argv, timeout=timeout, output_caps=output_caps)
+        return self._execute_control_command(
+            argv,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            output_caps=output_caps,
+            source_cwd=source_cwd,
+            max_output_caps=MAX_SANDBOX_OUTPUT_CHARS,
+        )
+
+    def _execute_control_command(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+        source_cwd: Path | None,
+        max_output_caps: int,
+    ) -> ExecutionResult:
+        _validate_execution_request(
+            argv,
+            timeout=timeout,
+            output_caps=output_caps,
+            max_output_caps=max_output_caps,
+        )
         effective_source_cwd = cwd if source_cwd is None else source_cwd
         if effective_source_cwd.resolve() != cwd.resolve():
             raise SandboxExecutionError(
@@ -546,10 +573,10 @@ class KubernetesJobBackend:
         )
         total_timeout = timeout * len(normalized_commands) + self._setup_grace_seconds
         control_output_caps = min(
-            MAX_KUBERNETES_RESPONSE_BYTES // 2,
+            MAX_SANDBOX_BATCH_CONTROL_CHARS,
             max(65_536, output_caps * len(normalized_commands) * 4),
         )
-        completed = self.execute(
+        completed = self._execute_control_command(
             [
                 "python",
                 SANDBOX_BATCH_RUNNER_PATH,
@@ -562,6 +589,7 @@ class KubernetesJobBackend:
             env=env,
             timeout=total_timeout,
             output_caps=control_output_caps,
+            max_output_caps=MAX_SANDBOX_BATCH_CONTROL_CHARS,
         )
         if completed.returncode != 0 or completed.timed_out:
             raise SandboxExecutionError("Kubernetes sandbox batch orchestration failed.")
@@ -1488,6 +1516,7 @@ def _validate_execution_request(
     *,
     timeout: float,
     output_caps: int,
+    max_output_caps: int = MAX_SANDBOX_OUTPUT_CHARS,
 ) -> None:
     if (
         not argv
@@ -1501,7 +1530,7 @@ def _validate_execution_request(
         raise SandboxExecutionError("Kubernetes sandbox argv exceeded the safety limit.")
     if timeout <= 0 or not math.isfinite(timeout):
         raise SandboxExecutionError("Kubernetes sandbox timeout must be finite and positive.")
-    if not 0 < output_caps <= MAX_SANDBOX_OUTPUT_CHARS:
+    if not 0 < output_caps <= max_output_caps:
         raise SandboxExecutionError("Kubernetes sandbox output cap must be positive and bounded.")
 
 

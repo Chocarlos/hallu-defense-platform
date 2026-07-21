@@ -33,17 +33,19 @@ RUN test "$(grep -F -c 'addr := fmt.Sprintf(":%d", *options.port)' weed/command/
     && ! grep -Fq 'addr := fmt.Sprintf(":%d", *options.port)' weed/command/admin.go \
     && ! grep -Fq 'net.Listen("tcp", fmt.Sprintf(":%d", port))' weed/admin/dash/worker_grpc_server.go
 
-# SeaweedFS 4.29 shipped with vulnerable Go 1.25.10, x/net 0.54.0, and a
-# replacement that forced Thrift 0.22.0. Build the immutable upstream commit
-# with the fixed, exact dependency versions and verify the resulting module
-# graph before compilation.
+# SeaweedFS 4.29 shipped with vulnerable Go 1.25.10, x/net 0.54.0,
+# x/image 0.39.0, and a replacement that forced Thrift 0.22.0. Build the
+# immutable upstream commit with fixed, exact dependency versions and verify
+# the resulting module graph before compilation.
 RUN go mod edit -dropreplace=github.com/apache/thrift \
     && go mod edit -require=github.com/apache/thrift@v0.23.0 \
     && go mod edit -require=golang.org/x/net@v0.55.0 \
+    && go mod edit -require=golang.org/x/image@v0.43.0 \
     && go mod download all \
     && go mod verify \
     && test "$(go list -m -f '{{.Version}}' github.com/apache/thrift)" = "v0.23.0" \
-    && test "$(go list -m -f '{{.Version}}' golang.org/x/net)" = "v0.55.0"
+    && test "$(go list -m -f '{{.Version}}' golang.org/x/net)" = "v0.55.0" \
+    && test "$(go list -m -f '{{.Version}}' golang.org/x/image)" = "v0.43.0"
 
 RUN mkdir -p /out \
     && go build -mod=readonly -trimpath -buildvcs=false \
@@ -54,7 +56,8 @@ RUN mkdir -p /out \
     && mv /out/weed.first /out/weed \
     && rm /out/weed.second \
     && go version -m /out/weed | awk '$1 == "dep" && $2 == "github.com/apache/thrift" && $3 == "v0.23.0" { found=1 } END { exit !found }' \
-    && go version -m /out/weed | awk '$1 == "dep" && $2 == "golang.org/x/net" && $3 == "v0.55.0" { found=1 } END { exit !found }'
+    && go version -m /out/weed | awk '$1 == "dep" && $2 == "golang.org/x/net" && $3 == "v0.55.0" { found=1 } END { exit !found }' \
+    && go version -m /out/weed | awk '$1 == "dep" && $2 == "golang.org/x/image" && $3 == "v0.43.0" { found=1 } END { exit !found }'
 
 COPY infra/docker/seaweedfs_launcher.go /launcher/seaweedfs_launcher.go
 

@@ -157,6 +157,7 @@ function productionFixture(): Readonly<Record<string, string>> {
     HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE: hmacFile,
     HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN: "https://crm.example.test",
     HALLU_DEFENSE_DEMO_REDIS_URL_FILE: redisFile,
+    HALLU_DEFENSE_DEMO_REDIS_MODE: "cluster",
     HALLU_DEFENSE_DEMO_REDIS_CA_PATH: caFile,
     HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE: metricsFile
   };

@@ -25,6 +25,7 @@ from hallu_defense.services.sandbox import (
 from hallu_defense.services.sandbox_exec import (
     ExecutionResult,
     SandboxExecutionBatchResult,
+    SandboxExecutionError,
 )
 
 
@@ -184,6 +185,31 @@ class PostMismatchedSnapshotBatchBackend:
             ),
             pre_snapshot_fingerprint=pre_fingerprint,
             post_snapshot_fingerprint=post_fingerprint,
+        )
+
+
+class FailedInspectorBatchBackend:
+    def execute_batch(
+        self,
+        commands: Sequence[Sequence[str]],
+        *,
+        cwd: Path,
+        source_cwd: Path,
+        env: Mapping[str, str],
+        timeout: float,
+        output_caps: int,
+    ) -> SandboxExecutionBatchResult:
+        del source_cwd, env, timeout, output_caps
+        if any(SANDBOX_GIT_INSPECTOR_PATH in command for command in commands):
+            raise SandboxExecutionError("Kubernetes sandbox stdout exporter failed.")
+        fingerprint = sandbox_module._workspace_fingerprint(cwd)
+        return SandboxExecutionBatchResult(
+            executions=tuple(
+                ExecutionResult(returncode=0, stdout="command-ok\n", stderr="")
+                for _command in commands
+            ),
+            pre_snapshot_fingerprint=fingerprint,
+            post_snapshot_fingerprint=fingerprint,
         )
 
 
@@ -394,6 +420,60 @@ def test_batch_git_inspection_rejects_post_snapshot_mutation(
 
     assert run.verdict is VerdictStatus.CONTRADICTED
     assert git_report["errors"][0]["command"] == "isolated_git_inspector"
+    assert git_report["errors"][0]["error"] == (
+        "Git inspection snapshot does not match the requested source workspace"
+    )
+
+
+def test_git_inspection_reports_a_bounded_safe_timeout_reason(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / ".git").mkdir()
+    backend = RecordingBackend(
+        inspector_result=ExecutionResult(
+            returncode=124,
+            stdout="",
+            stderr="internal stderr must not be exposed",
+            timed_out=True,
+        )
+    )
+    runner = SandboxRunner(_settings(tmp_path), execution_backend=backend)
+
+    run = runner.run(_request())
+    git_report = run.evidence[-1].structured_content["git"]
+
+    assert run.verdict is VerdictStatus.CONTRADICTED
+    assert git_report["errors"] == [
+        {
+            "command": "isolated_git_inspector",
+            "error": "isolated Git inspector timed out",
+        }
+    ]
+    assert "internal stderr" not in json.dumps(git_report)
+
+
+def test_batch_git_inspection_reports_the_safe_backend_failure_reason(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    (repo / ".git").mkdir()
+    runner = SandboxRunner(
+        _settings(tmp_path),
+        execution_backend=FailedInspectorBatchBackend(),
+    )
+
+    run = runner.run(_request())
+    git_report = run.evidence[-1].structured_content["git"]
+
+    assert run.verdict is VerdictStatus.CONTRADICTED
+    assert git_report["errors"] == [
+        {
+            "command": "isolated_git_inspector",
+            "error": (
+                "isolated Git inspector could not execute: "
+                "Kubernetes sandbox stdout exporter failed."
+            ),
+        }
+    ]
 
 
 def test_container_and_api_workspace_fingerprint_algorithms_match(tmp_path: Path) -> None:
