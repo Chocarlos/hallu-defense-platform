@@ -780,18 +780,38 @@ class PgVectorRagIndexBackend:
         parameters = [
             _pgvector_chunk_parameters(chunk, self._embedder) for chunk in ordered_chunks
         ]
-        reconciliation_parameters = _pgvector_reconciliation_parameters(ordered_chunks)
+        reconciliation_groups = _revision_reconciliation_groups(ordered_chunks)
+        reconciliation_parameters = _pgvector_reconciliation_parameters(
+            reconciliation_groups
+        )
         if reconciliation_parameters:
             lock_statement = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
-            lock_parameters = [
+            legacy_lock_parameters = [
                 [
                     json.dumps(
-                        [values[0], values[1], values[2]],
+                        [group.tenant_id, group.source_ref, parameters[2]],
                         separators=(",", ":"),
                     )
                 ]
-                for values in reconciliation_parameters
+                for group, parameters in zip(
+                    reconciliation_groups, reconciliation_parameters, strict=True
+                )
             ]
+            authoritative_lock_parameters = [
+                [
+                    json.dumps(
+                        [group.tenant_id, group.source_ref, group.corpus_id],
+                        separators=(",", ":"),
+                    )
+                ]
+                for group in reconciliation_groups
+            ]
+            # Keep the historical JSON-filter lock first for rolling-upgrade
+            # exclusion with older API/worker pods, then acquire the stable
+            # authoritative corpus lock used by this version.
+            lock_parameters = (
+                legacy_lock_parameters + authoritative_lock_parameters
+            )
             reconciliation_statement = (
                 f"DELETE FROM {self._table_name} "
                 "WHERE tenant_id = %s AND source_ref = %s "
@@ -1662,7 +1682,7 @@ def _pgvector_chunk_parameters(chunk: RagChunk, embedder: TextEmbedder) -> list[
 
 
 def _pgvector_reconciliation_parameters(
-    chunks: Sequence[RagChunk],
+    groups: Sequence[RevisionReconciliationGroup],
 ) -> list[list[object]]:
     return [
         [
@@ -1672,7 +1692,7 @@ def _pgvector_reconciliation_parameters(
             group.document_revision,
             list(group.evidence_ids),
         ]
-        for group in _revision_reconciliation_groups(chunks)
+        for group in groups
     ]
 
 

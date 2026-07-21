@@ -51,7 +51,8 @@ describe("demo runtime configuration", () => {
       enabled: true,
       webhookUrl: "https://crm.example.test/hooks/demo",
       webhookAllowedOrigin: "https://crm.example.test",
-      redisUrl: "rediss://demo:secret@redis.example.test:6380/0"
+      redisUrl: "rediss://demo:secret@redis.example.test:6380/0",
+      redisMode: "cluster"
     });
     expect(JSON.stringify(config)).not.toContain("metrics-bearer-value");
     expect(JSON.stringify(config)).not.toContain("webhook-hmac-value");
@@ -90,6 +91,22 @@ describe("demo runtime configuration", () => {
     ).toThrow(DemoConfigurationError);
 
     writeSecureSecret(fixture.redisFile, "redis://redis.example.test:6379/0\n");
+    expect(() => loadDemoRuntimeConfig(fixture.env)).toThrow(DemoConfigurationError);
+  });
+
+  it("requires Redis Cluster topology in production and database zero", () => {
+    const fixture = productionFixture();
+    expect(() =>
+      loadDemoRuntimeConfig({
+        ...fixture.env,
+        HALLU_DEFENSE_DEMO_REDIS_MODE: "standalone"
+      })
+    ).toThrow(DemoConfigurationError);
+
+    writeSecureSecret(
+      fixture.redisFile,
+      "rediss://demo:secret@redis.example.test:6380/2\n"
+    );
     expect(() => loadDemoRuntimeConfig(fixture.env)).toThrow(DemoConfigurationError);
   });
 
@@ -148,6 +165,7 @@ function productionFixture() {
       HALLU_DEFENSE_DEMO_WEBHOOK_HMAC_SECRET_FILE: hmacFile,
       HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN: "https://crm.example.test",
       HALLU_DEFENSE_DEMO_REDIS_URL_FILE: redisFile,
+      HALLU_DEFENSE_DEMO_REDIS_MODE: "cluster",
       HALLU_DEFENSE_DEMO_REDIS_CA_PATH: caFile,
       HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE: metricsFile
     }

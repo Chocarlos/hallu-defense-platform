@@ -90,6 +90,7 @@ networkPolicy:
       metricsScrapers: []
     console:
       callers: []
+      metricsScrapers: []
   api:
     external: []
   console:
@@ -199,6 +200,7 @@ demoRequests:
   enabled: false
   privacyContactEmail: ""
   webhookAllowedOrigin: ""
+  redisMode: cluster
   redisCaPath: /run/hallu-defense/demo/redis-ca.pem
 
 worker:

@@ -727,3 +727,50 @@ def test_container_workspace_copy_accepts_zero_byte_at_exact_limit(
     copied = destination / "zero.bin"
     assert copied.is_file()
     assert copied.stat().st_size == 0
+
+
+def test_container_network_guard_waits_for_three_consecutive_denials() -> None:
+    runner = _load_helper("sandbox_runner_network_guard", "sandbox_runner.py")
+    clock = [0.0]
+    outcomes = iter((True, True, False, False, False))
+    closed = 0
+
+    class Connection:
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    def connect(address: tuple[str, int], *, timeout: float) -> object:
+        assert address == runner.NETWORK_GUARD_TARGET
+        assert timeout == runner.NETWORK_GUARD_CONNECT_TIMEOUT_SECONDS
+        if next(outcomes):
+            return Connection()
+        raise OSError("denied")
+
+    runner.wait_for_network_denial(
+        connect=connect,
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert closed == 2
+
+
+def test_container_network_guard_fails_closed_while_egress_remains_open() -> None:
+    runner = _load_helper("sandbox_runner_network_guard_open", "sandbox_runner.py")
+    clock = [0.0]
+    closed = 0
+
+    class Connection:
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    with pytest.raises(RuntimeError, match="deny-egress policy was not observably active"):
+        runner.wait_for_network_denial(
+            connect=lambda _address, *, timeout: Connection(),
+            monotonic=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    assert closed > 0

@@ -23,6 +23,7 @@ SECRET_PREFLIGHT_PATH = ROOT / "scripts" / "dev" / "preflight_runtime_secret_fil
 POSTGRES_TLS_PATH = ROOT / "apps" / "api" / "src" / "hallu_defense" / "postgres_tls.py"
 
 PROMETHEUS_METRICS_CREDENTIALS_FILE = "/run/secrets/hallu_defense_metrics_bearer_token"
+PROMETHEUS_CONSOLE_METRICS_CREDENTIALS_FILE = "/run/secrets/hallu_console_metrics_bearer"
 COMPOSE_CONFIG_COMMAND = (
     "docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet"
 )
@@ -127,6 +128,7 @@ REQUIRED_CONSOLE_DEMO_ENV = {
         "${HALLU_DEFENSE_DEMO_WEBHOOK_ALLOWED_ORIGIN:-}"
     ),
     "HALLU_DEFENSE_DEMO_REDIS_URL_FILE": "/run/secrets/hallu_demo_redis_url",
+    "HALLU_DEFENSE_DEMO_REDIS_MODE": "cluster",
     "HALLU_DEFENSE_DEMO_REDIS_CA_PATH": "/run/secrets/hallu_demo_redis_ca",
     "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE": (
         "/run/secrets/hallu_console_metrics_bearer"
@@ -535,7 +537,7 @@ def _validate_demo_intake_profile(
     if actual_demo_keys != set(REQUIRED_CONSOLE_DEMO_ENV):
         errors.append(
             "prod console demo environment must expose only the disabled flag, "
-            "public metadata, and five file pointers"
+            "public metadata, cluster mode, and five file pointers"
         )
     if prod_console.get("group_add") != ["10001"]:
         errors.append(
@@ -978,9 +980,9 @@ def _validate_api_overlay(
         "${HALLU_DEFENSE_ALLOWED_WORKSPACE_HOST:?",
         ":/workspace:ro",
         "${HALLU_DEFENSE_SANDBOX_KUBERNETES_TOKEN_HOST_PATH:?",
-        ":/var/run/secrets/kubernetes.io/serviceaccount/token:ro",
+        ":/run/hallu-defense/kubernetes/token:ro",
         "${HALLU_DEFENSE_SANDBOX_KUBERNETES_CA_HOST_PATH:?",
-        ":/var/run/secrets/kubernetes.io/serviceaccount/ca.crt:ro",
+        ":/run/hallu-defense/kubernetes/ca.crt:ro",
     ):
         if not any(marker in volume for volume in api_volumes):
             errors.append(f"prod api volumes missing required marker {marker}")
@@ -1368,24 +1370,49 @@ def _validate_prometheus_config(
     scrape_configs = _sequence(
         prometheus_prod.get("scrape_configs"), "prometheus prod scrape_configs", errors
     )
-    api_scrape = None
+    scrapes_by_name: dict[str, Mapping[str, object]] = {}
     for scrape in scrape_configs:
         candidate = _mapping(scrape, "prometheus prod scrape_config", errors)
-        if candidate.get("job_name") == "hallu-defense-api":
-            api_scrape = candidate
-            break
-    if api_scrape is None:
-        errors.append("prometheus.prod.yml missing hallu-defense-api scrape job")
-        return
-    auth = _mapping(
-        api_scrape.get("authorization"), "prometheus prod authorization", errors
-    )
-    if auth.get("type") != "Bearer":
-        errors.append("prometheus prod scrape must use Bearer authorization")
-    if auth.get("credentials_file") != PROMETHEUS_METRICS_CREDENTIALS_FILE:
-        errors.append("prometheus prod scrape must read JWT from credentials_file")
-    if "credentials" in auth:
-        errors.append("prometheus prod scrape must not inline credentials")
+        job_name = candidate.get("job_name")
+        if isinstance(job_name, str):
+            scrapes_by_name[job_name] = candidate
+    for job_name, credentials_file, target, scheme in (
+        (
+            "hallu-defense-api",
+            PROMETHEUS_METRICS_CREDENTIALS_FILE,
+            "api:8000",
+            "https",
+        ),
+        (
+            "hallu-defense-console",
+            PROMETHEUS_CONSOLE_METRICS_CREDENTIALS_FILE,
+            "console:3000",
+            "http",
+        ),
+    ):
+        scrape = scrapes_by_name.get(job_name)
+        if scrape is None:
+            errors.append(f"prometheus.prod.yml missing {job_name} scrape job")
+            continue
+        if scrape.get("metrics_path") != "/metrics" or scrape.get("scheme") != scheme:
+            errors.append(
+                f"prometheus prod {job_name} must scrape {scheme.upper()} /metrics"
+            )
+        if scrape.get("static_configs") != [{"targets": [target]}]:
+            errors.append(f"prometheus prod {job_name} must target only {target}")
+        auth = _mapping(
+            scrape.get("authorization"),
+            f"prometheus prod {job_name} authorization",
+            errors,
+        )
+        if auth.get("type") != "Bearer":
+            errors.append(f"prometheus prod {job_name} must use Bearer authorization")
+        if auth.get("credentials_file") != credentials_file:
+            errors.append(
+                f"prometheus prod {job_name} must read its distinct credentials_file"
+            )
+        if "credentials" in auth:
+            errors.append(f"prometheus prod {job_name} must not inline credentials")
 
 
 def _validate_no_default_credentials(
@@ -1448,8 +1475,8 @@ def _validate_supporting_files(
         "HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_URL_SECRET_NAME=quotas/tool-validation/redis-url",
         "HALLU_DEFENSE_TOOL_VALIDATION_RATE_LIMIT_REDIS_CA_PATH=/run/hallu-defense/redis/ca.crt",
         "HALLU_DEFENSE_SANDBOX_BACKEND=kubernetes",
-        "/var/run/secrets/kubernetes.io/serviceaccount/token",
-        "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+        "/run/hallu-defense/kubernetes/token",
+        "/run/hallu-defense/kubernetes/ca.crt",
         "minimum RBAC",
         "OPA 1.18.2",
         "read_only: true",
@@ -1505,6 +1532,12 @@ def _validate_supporting_files(
         errors.append("live workflow must include prod-profile-e2e job")
     if "HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_ENABLED" not in live_workflow_text:
         errors.append("prod-profile-e2e job must wire the prod profile smoke env gate")
+    for marker in (
+        "PYTHONPATH: ${{ github.workspace }}/apps/api/src",
+        "HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_REPO_REF: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_REPO_REF }}",
+    ):
+        if marker not in live_workflow_text:
+            errors.append(f"live workflow missing production smoke marker `{marker}`")
 
 
 def _makefile_phony_includes(makefile_text: str, target: str) -> bool:

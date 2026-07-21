@@ -83,6 +83,23 @@ def test_prod_profile_config_accepts_current_repository() -> None:
     validate_prod_profile_config(**_current_inputs())
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "PYTHONPATH: ${{ github.workspace }}/apps/api/src",
+        "HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_REPO_REF: ${{ vars.HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_REPO_REF }}",
+    ],
+)
+def test_prod_profile_config_requires_live_python_and_repo_ref(marker: str) -> None:
+    inputs = _current_inputs()
+    inputs["live_workflow_text"] = str(inputs["live_workflow_text"]).replace(
+        marker, "removed-marker"
+    )
+
+    with pytest.raises(ProdProfileConfigError, match="production smoke marker"):
+        validate_prod_profile_config(**inputs)
+
+
 def test_prod_profile_config_requires_opensearch_bootstrap_service() -> None:
     inputs = _current_inputs()
     prod_compose = copy.deepcopy(inputs["prod_compose"])
@@ -731,8 +748,8 @@ def test_prod_profile_config_rejects_direct_redis_url() -> None:
         "/run/hallu-defense/vault/ca.crt:ro",
         "/run/hallu-defense/opensearch/ca.crt:ro",
         "/run/hallu-defense/redis/ca.crt:ro",
-        "/var/run/secrets/kubernetes.io/serviceaccount/token:ro",
-        "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt:ro",
+        "/run/hallu-defense/kubernetes/token:ro",
+        "/run/hallu-defense/kubernetes/ca.crt:ro",
     ],
 )
 def test_prod_profile_config_requires_read_only_trust_and_identity_mounts(
@@ -1031,6 +1048,24 @@ def test_prod_profile_config_rejects_inline_prometheus_credentials() -> None:
     inputs["prometheus_prod"] = prometheus_prod
 
     with pytest.raises(ProdProfileConfigError, match="inline credentials"):
+        validate_prod_profile_config(**inputs)
+
+
+def test_prod_profile_config_requires_console_metrics_scrape() -> None:
+    inputs = _current_inputs()
+    prometheus_prod = copy.deepcopy(inputs["prometheus_prod"])
+    assert isinstance(prometheus_prod, dict)
+    scrape_configs = prometheus_prod["scrape_configs"]
+    assert isinstance(scrape_configs, list)
+    prometheus_prod["scrape_configs"] = [
+        scrape
+        for scrape in scrape_configs
+        if isinstance(scrape, dict)
+        and scrape.get("job_name") != "hallu-defense-console"
+    ]
+    inputs["prometheus_prod"] = prometheus_prod
+
+    with pytest.raises(ProdProfileConfigError, match="hallu-defense-console"):
         validate_prod_profile_config(**inputs)
 
 

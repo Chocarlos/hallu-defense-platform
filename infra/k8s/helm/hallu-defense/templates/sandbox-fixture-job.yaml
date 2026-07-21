@@ -25,6 +25,7 @@ spec:
     spec:
       restartPolicy: OnFailure
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
         fsGroupChangePolicy: OnRootMismatch
@@ -58,7 +59,7 @@ spec:
               import sys
 
               Path("artifacts").mkdir(exist_ok=True)
-              Path("artifacts/sandbox-smoke.txt").write_text("sandbox-artifact\n", encoding="utf-8")
+              Path("artifacts/sandbox-smoke.txt").write_text("sandbox-artifact\\n", encoding="utf-8")
               print("sandbox-stdout")
               print("sandbox-stderr", file=sys.stderr)
               raise SystemExit(7)
@@ -93,6 +94,28 @@ spec:
                   check=True,
                   timeout=10,
               )
+              subprocess.run(
+                  ["git", "-C", str(root), "add", "--", "probe.py", "timeout.py", "egress.py"],
+                  check=True,
+                  timeout=10,
+              )
+              subprocess.run(
+                  [
+                      "git",
+                      "-C",
+                      str(root),
+                      "-c",
+                      "user.name=Hallu Defense Fixture",
+                      "-c",
+                      "user.email=fixture@invalid.example",
+                      "commit",
+                      "--quiet",
+                      "--message",
+                      "sandbox fixture",
+                  ],
+                  check=True,
+                  timeout=10,
+              )
               ready_marker.write_text("ready\n", encoding="utf-8")
               time.sleep(int(os.environ["HALLU_FIXTURE_READY_HOLD_SECONDS"]))
           readinessProbe:
@@ -116,7 +139,7 @@ spec:
                   raise SystemExit(0 if ready else 1)
             initialDelaySeconds: 1
             periodSeconds: 1
-            timeoutSeconds: 1
+            timeoutSeconds: 5
             failureThreshold: 30
           volumeMounts:
             - name: workspace

@@ -62,10 +62,13 @@ REQUIRED_ROOT_NPM_SCRIPTS = {
 }
 REQUIRED_ROOT_DEV_DEPENDENCIES = {
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.10",
-    "next": "16.2.10",
+    "eslint-config-next": "16.2.11",
+    "next": "16.2.11",
 }
-REQUIRED_OVERRIDES = {"next": {"postcss": "8.5.10"}}
+REQUIRED_OVERRIDES = {
+    "next": {"postcss": "8.5.10"},
+    "sharp": "0.35.3",
+}
 REQUIRED_MAKE_TARGETS = (
     "lint",
     "typecheck",
@@ -248,7 +251,9 @@ def _validate_monorepo_layout(
                 f"package.json devDependency `{dependency}` must be `{expected_version}`"
             )
     if package_json.get("overrides") != REQUIRED_OVERRIDES:
-        errors.append("package.json must contain only the approved next -> postcss 8.5.10 override")
+        errors.append(
+            "package.json must contain only the reviewed Next/PostCSS and Sharp overrides"
+        )
     if package_json.get("resolutions") not in (None, {}):
         errors.append("package.json must not contain dependency resolutions")
     if package_json.get("engines") != {"node": "24.18.0", "npm": "11.16.0"}:
@@ -272,15 +277,17 @@ def _validate_monorepo_layout(
                 f"package-lock.json root devDependency `{dependency}` must match package.json"
             )
     if package_lock.get("overrides") not in (None, REQUIRED_OVERRIDES):
-        errors.append("package-lock.json overrides must match the approved PostCSS correction")
+        errors.append(
+            "package-lock.json overrides must match the reviewed dependency corrections"
+        )
     next_package = lock_packages.get("node_modules/next", {}) if isinstance(lock_packages, dict) else {}
     nested_postcss = (
         lock_packages.get("node_modules/next/node_modules/postcss", {})
         if isinstance(lock_packages, dict)
         else {}
     )
-    if not isinstance(next_package, dict) or next_package.get("version") != "16.2.10":
-        errors.append("package-lock.json must resolve Next 16.2.10 exactly")
+    if not isinstance(next_package, dict) or next_package.get("version") != "16.2.11":
+        errors.append("package-lock.json must resolve Next 16.2.11 exactly")
     if not isinstance(nested_postcss, dict) or nested_postcss.get("version") != "8.5.10":
         errors.append("package-lock.json must resolve Next's PostCSS to 8.5.10")
 

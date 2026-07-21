@@ -15,6 +15,28 @@ from hallu_defense.services.sandbox_exec import (
     build_sandbox_execution_backend,
     decode_sandbox_execution_batch,
 )
+from scripts.dev import live_docker_sandbox_smoke
+
+
+def test_live_smoke_subprocess_capture_is_utf8_and_decode_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+    monkeypatch.setattr(live_docker_sandbox_smoke.subprocess, "run", fake_run)
+
+    completed = live_docker_sandbox_smoke._run(["docker", "version"], timeout=5)
+
+    assert completed.stdout == "ok"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+    assert captured["text"] is True
+    assert captured["capture_output"] is True
 
 
 class RecordingDockerRunner:

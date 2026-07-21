@@ -7,6 +7,9 @@ import {
   RELEASE_SCRIPT,
   RESERVE_SCRIPT,
   RedisDemoStore,
+  createRedisDemoStore,
+  redisClusterClientOptions,
+  type DemoRedisClientFactory,
   type RedisCommandClient
 } from "./redis";
 
@@ -14,6 +17,77 @@ const requestId = `dr_${"A".repeat(24)}`;
 const payloadDigest = "c".repeat(64);
 
 describe("Redis demo request state", () => {
+  it("propagates decoded authentication to every discovered cluster node", () => {
+    const redisUrl = new URL("redis://redis.example.test:6379/0");
+    redisUrl.username = "cluster-user";
+    redisUrl.password = ["p", "@ssword"].join("");
+    const redisUrlText = redisUrl.toString();
+    const options = redisClusterClientOptions({
+      enabled: true,
+      environment: "development",
+      productionLike: false,
+      publicOrigin: "http://localhost:3000",
+      privacyContactEmail: "privacy@example.invalid",
+      webhookUrl: "https://crm.example.test/hooks/demo",
+      webhookAllowedOrigin: "https://crm.example.test",
+      webhookHmacSecretFile: "/run/secrets/webhook-hmac",
+      redisUrl: redisUrlText,
+      redisMode: "cluster",
+      metricsBearerFile: "/run/secrets/metrics-bearer"
+    });
+
+    expect(options.rootNodes).toEqual([
+      {
+        url: redisUrlText
+      }
+    ]);
+    expect(options.defaults).toMatchObject({
+      username: "cluster-user",
+      password: "p@ssword",
+      socket: {
+        connectTimeout: 1_000,
+        socketTimeout: 1_000,
+        reconnectStrategy: false
+      }
+    });
+  });
+
+  it.each(["standalone", "cluster"] as const)(
+    "selects the explicit %s client topology",
+    (redisMode) => {
+      const client = fakeClient("allowed");
+      const factory: DemoRedisClientFactory = {
+        createStandalone: vi.fn(() => client),
+        createCluster: vi.fn(() => client)
+      };
+
+      createRedisDemoStore(
+        {
+          enabled: true,
+          environment: redisMode === "cluster" ? "production" : "development",
+          productionLike: redisMode === "cluster",
+          publicOrigin: "https://defense.example.test",
+          privacyContactEmail: "privacy@example.invalid",
+          webhookUrl: "https://crm.example.test/hooks/demo",
+          webhookAllowedOrigin: "https://crm.example.test",
+          webhookHmacSecretFile: "/run/secrets/webhook-hmac",
+          redisUrl: "rediss://redis.example.test:6380/0",
+          redisMode,
+          redisCaPath: "/run/secrets/redis-ca.pem",
+          metricsBearerFile: "/run/secrets/metrics-bearer"
+        },
+        factory
+      );
+
+      expect(factory.createCluster).toHaveBeenCalledTimes(
+        redisMode === "cluster" ? 1 : 0
+      );
+      expect(factory.createStandalone).toHaveBeenCalledTimes(
+        redisMode === "standalone" ? 1 : 0
+      );
+    }
+  );
+
   it("consumes the global boundary before parsing with a bounded Lua result", async () => {
     const client = fakeClient("allowed");
     const store = new RedisDemoStore(client);
@@ -85,6 +159,7 @@ describe("Redis demo request state", () => {
   it.each([
     ["duplicate", requestId],
     ["pending", requestId],
+    ["dispatching", requestId],
     ["conflict", ""],
     ["rate_email", ""]
   ])("parses the bounded Redis result %s", async (status, id) => {

@@ -20,6 +20,7 @@ spec:
     spec:
       restartPolicy: OnFailure
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
       containers:

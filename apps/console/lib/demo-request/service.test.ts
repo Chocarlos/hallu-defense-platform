@@ -88,6 +88,7 @@ describe("demo request service", () => {
   it.each([
     ["duplicate", 202],
     ["pending", 503],
+    ["dispatching", 503],
     ["conflict", 422],
     ["rate_global", 429],
     ["rate_email", 429]
@@ -242,6 +243,7 @@ function reservingStore(
     | "reserved"
     | "duplicate"
     | "pending"
+    | "dispatching"
     | "conflict"
     | "rate_global"
     | "rate_email" = "reserved"
@@ -304,6 +306,7 @@ const config: EnabledDemoRuntimeConfig = {
   webhookAllowedOrigin: "https://crm.example.test",
   webhookHmacSecretFile: "/run/secrets/demo-webhook-hmac",
   redisUrl: "rediss://redis.example.test:6380/0",
+  redisMode: "cluster",
   redisCaPath: "/run/secrets/redis-ca.pem",
   metricsBearerFile: "/run/secrets/metrics-bearer"
 };

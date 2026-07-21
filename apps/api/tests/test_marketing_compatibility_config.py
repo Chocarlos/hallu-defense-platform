@@ -20,8 +20,14 @@ REQUIRED_PATHS = (
     "infra/k8s/helm/hallu-defense/values.schema.json",
     "infra/k8s/helm/hallu-defense/templates/console-deployment.yaml",
     "infra/k8s/helm/hallu-defense/templates/application-egress-network-policies.yaml",
+    "infra/prometheus/demo-request-alerts.yml",
+    "infra/prometheus/prometheus.yml",
+    "infra/prometheus/prometheus.prod.yml",
     "infra/docker/console.Dockerfile",
     "apps/console/package.json",
+    "apps/console/components/marketing/marketing.module.css",
+    "apps/console/lib/demo-request/redis.ts",
+    "apps/console/lib/demo-request/metrics.ts",
     "apps/console/playwright.marketing.config.ts",
     "apps/console/e2e-marketing/marketing.spec.ts",
     "apps/console/e2e-marketing/accessibility.spec.ts",
@@ -43,6 +49,23 @@ REQUIRED_PATHS = (
 
 def test_current_marketing_compatibility_config_is_valid() -> None:
     validate(REPO_ROOT)
+
+
+def test_gate_rejects_alert_without_console_metrics_scrape(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    prometheus = tmp_path / "infra/prometheus/prometheus.prod.yml"
+    prometheus.write_text(
+        prometheus.read_text(encoding="utf-8").replace(
+            "job_name: hallu-defense-console",
+            "job_name: removed-console-metrics",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        MarketingCompatibilityConfigError, match="hallu-defense-console"
+    ):
+        validate(tmp_path)
 
 
 def test_gate_rejects_silent_browserstack_minimum_reduction(tmp_path: Path) -> None:
@@ -114,6 +137,48 @@ def test_gate_rejects_disabled_axe_target_size_rule(tmp_path: Path) -> None:
     )
 
     with pytest.raises(MarketingCompatibilityConfigError, match="target-size"):
+        validate(tmp_path)
+
+
+def test_gate_requires_axe_in_the_enabled_form_phase(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    spec = tmp_path / "apps/console/e2e-marketing/accessibility.spec.ts"
+    spec.write_text(
+        spec.read_text(encoding="utf-8").replace(
+            "@form axe WCAG 2.2 AA enabled form states",
+            "axe enabled form states",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="@form axe"):
+        validate(tmp_path)
+
+
+def test_gate_rejects_contrast_diluting_reveal_opacity(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    stylesheet = tmp_path / "apps/console/components/marketing/marketing.module.css"
+    stylesheet.write_text(
+        stylesheet.read_text(encoding="utf-8").replace(
+            ".revealPending {\n  opacity: 1;",
+            ".revealPending {\n  opacity: 0;",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="revealPending"):
+        validate(tmp_path)
+
+
+def test_gate_requires_redis_cluster_client_and_dispatch_alert(tmp_path: Path) -> None:
+    _copy_fixture(tmp_path)
+    redis = tmp_path / "apps/console/lib/demo-request/redis.ts"
+    redis.write_text(
+        redis.read_text(encoding="utf-8").replace("createCluster", "removedCluster"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MarketingCompatibilityConfigError, match="createCluster"):
         validate(tmp_path)
 
 

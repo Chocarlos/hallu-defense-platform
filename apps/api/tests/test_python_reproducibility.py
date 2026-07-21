@@ -123,7 +123,7 @@ def test_repeated_wheel_build_rejects_byte_drift(
     ("package_mutation", "npmrc", "expected"),
     (
         (
-            {"allowScripts": {"sharp": True}},
+            {"allowScripts": {"sharp": False}},
             "ignore-scripts=true\nstrict-allow-scripts=true",
             "install script",
         ),
@@ -152,6 +152,44 @@ def test_node_reproducibility_rejects_npm_policy_drift(
     npmrc_path.write_text(npmrc, encoding="utf-8")
     monkeypatch.setattr(reproducibility, "PACKAGE_JSON_PATH", package_path)
     monkeypatch.setattr(reproducibility, "NPMRC_PATH", npmrc_path)
+    errors: list[str] = []
+
+    reproducibility._validate_node_reproducibility(errors)
+
+    assert any(expected in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("lock_path", "mutated_value", "expected"),
+    (
+        (("node_modules/next", "version"), "16.2.10", "Next 16.2.11"),
+        (("node_modules/sharp", "version"), "0.34.5", "Sharp 0.35.3"),
+        (
+            ("node_modules/sharp", "hasInstallScript"),
+            True,
+            "free of install scripts",
+        ),
+        (
+            ("node_modules/ajv/node_modules/fast-uri", "version"),
+            "3.1.3",
+            "fast-uri 3.1.4",
+        ),
+    ),
+)
+def test_node_reproducibility_rejects_security_lock_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lock_path: tuple[str, str],
+    mutated_value: object,
+    expected: str,
+) -> None:
+    package_lock = json.loads(
+        reproducibility.PACKAGE_LOCK_PATH.read_text(encoding="utf-8")
+    )
+    package_lock["packages"][lock_path[0]][lock_path[1]] = mutated_value
+    package_lock_path = tmp_path / "package-lock.json"
+    package_lock_path.write_text(json.dumps(package_lock), encoding="utf-8")
+    monkeypatch.setattr(reproducibility, "PACKAGE_LOCK_PATH", package_lock_path)
     errors: list[str] = []
 
     reproducibility._validate_node_reproducibility(errors)

@@ -274,7 +274,7 @@ def test_container_scan_config_rejects_conditional_continue_on_error() -> None:
         ),
         (
             "opensearch",
-            "ARG AMAZON_LINUX_RELEASEVER=2023.12.20260706",
+            "ARG AMAZON_LINUX_RELEASEVER=2023.12.20260720",
             "OpenSearch integrity marker",
         ),
         (
@@ -435,6 +435,7 @@ def test_container_scan_config_rejects_weakened_source_rebuild(
         'net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))',
         "github.com/apache/thrift@v0.23.0",
         "golang.org/x/net@v0.55.0",
+        "golang.org/x/image@v0.43.0",
         "cmp /out/weed.first /out/weed.second",
         "cmp /out/seaweedfs-launcher.first /out/seaweedfs-launcher.second",
         'ENTRYPOINT ["/usr/local/bin/seaweedfs-launcher"]',

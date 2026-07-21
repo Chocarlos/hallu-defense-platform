@@ -330,7 +330,10 @@ def test_pgvector_revision_reconciliation_is_rerunnable_and_tenant_scoped() -> N
     )
     lock_statement, lock_parameters = connection.transaction_calls[-1][0]
     assert "pg_advisory_xact_lock" in lock_statement
-    assert len(lock_parameters) == 1
+    assert lock_parameters == [
+        ['["tenant-a","policy-a","{\\"corpus_id\\": \\"hr\\"}"]'],
+        ['["tenant-a","policy-a","hr"]'],
+    ]
     delete_statement, delete_parameters = connection.transaction_calls[-1][2]
     assert "tenant_id = %s AND source_ref = %s" in delete_statement
     assert "metadata @> %s::jsonb" in delete_statement

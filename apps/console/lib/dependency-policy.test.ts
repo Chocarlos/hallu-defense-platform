@@ -14,6 +14,10 @@ type ConsoleManifest = {
   dependencies?: Record<string, string>;
 };
 
+type NextManifest = {
+  optionalDependencies?: Record<string, string>;
+};
+
 type PackageLock = {
   packages?: Record<
     string,
@@ -35,13 +39,14 @@ describe("frontend dependency security policy", () => {
     const root = readJson<RootManifest>("../../../package.json");
     const console = readJson<ConsoleManifest>("../package.json");
 
-    expect(root.devDependencies?.next).toBe("16.2.10");
-    expect(root.devDependencies?.["eslint-config-next"]).toBe("16.2.10");
-    expect(console.dependencies?.next).toBe("16.2.10");
+    expect(root.devDependencies?.next).toBe("16.2.11");
+    expect(root.devDependencies?.["eslint-config-next"]).toBe("16.2.11");
+    expect(console.dependencies?.next).toBe("16.2.11");
     expect(root.overrides).toEqual({
       next: {
         postcss: "8.5.10",
       },
+      sharp: "0.35.3",
     });
   });
 
@@ -51,6 +56,32 @@ describe("frontend dependency security policy", () => {
     expect(lock.packages?.["node_modules/next/node_modules/postcss"]?.version).toBe(
       "8.5.10",
     );
+  });
+
+  it("exercises the reviewed Sharp security override", async () => {
+    const lock = readJson<PackageLock>("../../../package-lock.json");
+    const next = readJson<NextManifest>("../../../node_modules/next/package.json");
+    const sharpModule = await import("sharp");
+    const sharp = sharpModule.default;
+
+    expect(next.optionalDependencies?.sharp).toBe("^0.34.5");
+    expect(lock.packages?.["node_modules/sharp"]?.version).toBe("0.35.3");
+    expect(lock.packages?.["node_modules/sharp"]?.hasInstallScript).toBeUndefined();
+
+    const { data, info } = await sharp({
+      create: {
+        width: 3,
+        height: 3,
+        channels: 4,
+        background: { r: 15, g: 30, b: 45, alpha: 1 },
+      },
+    })
+      .resize(2, 2)
+      .png()
+      .toBuffer({ resolveWithObject: true });
+
+    expect(data.byteLength).toBeGreaterThan(0);
+    expect(info).toMatchObject({ format: "png", width: 2, height: 2 });
   });
 
   it("fails closed on dependency install scripts with the pinned npm policy", () => {
@@ -67,7 +98,6 @@ describe("frontend dependency security policy", () => {
     expect(root.allowScripts).toEqual({
       esbuild: false,
       fsevents: false,
-      sharp: false,
       "unrs-resolver": false,
     });
     expect(npmrc.trim().split(/\r?\n/)).toEqual([
@@ -78,7 +108,6 @@ describe("frontend dependency security policy", () => {
     const expectedDeniedScripts = new Map<string, ReadonlySet<string>>([
       ["esbuild", new Set(["0.28.1"])],
       ["fsevents", new Set(["2.3.2", "2.3.3"])],
-      ["sharp", new Set(["0.34.5"])],
       ["unrs-resolver", new Set(["1.12.2"])],
     ]);
     const installScriptPackages = Object.entries(lock.packages ?? {})
@@ -89,7 +118,7 @@ describe("frontend dependency security policy", () => {
         return [packageName, entry.version] as const;
       });
 
-    expect(installScriptPackages).toHaveLength(5);
+    expect(installScriptPackages).toHaveLength(4);
     for (const [packageName, version] of installScriptPackages) {
       expect(expectedDeniedScripts.get(packageName)?.has(version ?? "")).toBe(true);
       expect(root.allowScripts?.[packageName]).toBe(false);

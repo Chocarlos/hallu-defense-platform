@@ -18,6 +18,7 @@ LIVE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "live.yml"
 
 OTEL_FILE_EXPORTER_PATH = "/otel-output/spans.jsonl"
 PROMETHEUS_METRICS_CREDENTIALS_FILE = "/run/secrets/hallu_defense_metrics_bearer_token"
+PROMETHEUS_CONSOLE_METRICS_CREDENTIALS_FILE = "/run/secrets/hallu_console_metrics_bearer"
 REQUIRED_MAKE_TARGETS = (
     "observability-config",
     "otel-export-live-smoke",
@@ -89,33 +90,59 @@ def _validate_prod_prometheus_scrape_auth(
     prometheus_prod: Mapping[str, object],
     errors: list[str],
 ) -> None:
-    scrape = _prometheus_api_scrape(prometheus_prod, errors)
-    if scrape is None:
-        return
-    authorization = _mapping(scrape.get("authorization"), "prometheus.prod authorization", errors)
-    if authorization.get("type") != "Bearer":
-        errors.append("prometheus.prod.yml authorization.type must be Bearer")
-    if authorization.get("credentials_file") != PROMETHEUS_METRICS_CREDENTIALS_FILE:
-        errors.append(
-            "prometheus.prod.yml authorization.credentials_file must be "
-            f"{PROMETHEUS_METRICS_CREDENTIALS_FILE}"
+    for job_name, credentials_file, target, scheme in (
+        (
+            "hallu-defense-api",
+            PROMETHEUS_METRICS_CREDENTIALS_FILE,
+            "api:8000",
+            "https",
+        ),
+        (
+            "hallu-defense-console",
+            PROMETHEUS_CONSOLE_METRICS_CREDENTIALS_FILE,
+            "console:3000",
+            "http",
+        ),
+    ):
+        scrape = _prometheus_scrape(prometheus_prod, job_name, errors)
+        if scrape is None:
+            continue
+        if scrape.get("metrics_path") != "/metrics" or scrape.get("scheme") != scheme:
+            errors.append(
+                f"prometheus.prod.yml {job_name} must scrape {scheme.upper()} /metrics"
+            )
+        if scrape.get("static_configs") != [{"targets": [target]}]:
+            errors.append(f"prometheus.prod.yml {job_name} must target only {target}")
+        authorization = _mapping(
+            scrape.get("authorization"),
+            f"prometheus.prod {job_name} authorization",
+            errors,
         )
-    if "credentials" in authorization:
-        errors.append("prometheus.prod.yml must use credentials_file, not inline credentials")
+        if authorization.get("type") != "Bearer":
+            errors.append(f"prometheus.prod.yml {job_name} authorization.type must be Bearer")
+        if authorization.get("credentials_file") != credentials_file:
+            errors.append(
+                f"prometheus.prod.yml {job_name} authorization.credentials_file "
+                f"must be {credentials_file}"
+            )
+        if "credentials" in authorization:
+            errors.append(
+                f"prometheus.prod.yml {job_name} must use credentials_file, "
+                "not inline credentials"
+            )
 
 
-def _prometheus_api_scrape(
+def _prometheus_scrape(
     prometheus_prod: Mapping[str, object],
+    job_name: str,
     errors: list[str],
 ) -> Mapping[str, object] | None:
     scrape_configs = _sequence(prometheus_prod.get("scrape_configs"), "prometheus scrape_configs", errors)
     for candidate in scrape_configs:
         scrape = _mapping(candidate, "prometheus scrape_config", errors)
-        if scrape.get("job_name") == "hallu-defense-api":
-            if scrape.get("metrics_path") != "/metrics":
-                errors.append("prometheus.prod.yml hallu-defense-api job must scrape /metrics")
+        if scrape.get("job_name") == job_name:
             return scrape
-    errors.append("prometheus.prod.yml missing hallu-defense-api scrape job")
+    errors.append(f"prometheus.prod.yml missing {job_name} scrape job")
     return None
 
 

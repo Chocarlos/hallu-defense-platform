@@ -962,6 +962,7 @@ def _validate_seaweedfs_dockerfile(
         "go mod edit -dropreplace=github.com/apache/thrift",
         "github.com/apache/thrift@v0.23.0",
         "golang.org/x/net@v0.55.0",
+        "golang.org/x/image@v0.43.0",
         "go mod verify",
         "go build -mod=readonly -trimpath -buildvcs=false",
         "cmp /out/weed.first /out/weed.second",
@@ -1089,10 +1090,14 @@ def _validate_opensearch_dockerfile(
 ) -> None:
     markers = (
         "opensearchproject/opensearch:3.7.0@sha256:123e6591a47b1d54686890551bdb35739c85193ecded381219fc9e059e18128f",
-        "ARG AMAZON_LINUX_RELEASEVER=2023.12.20260706",
+        "ARG AMAZON_LINUX_RELEASEVER=2023.12.20260720",
         '--releasever="${AMAZON_LINUX_RELEASEVER}" upgrade',
         'openssl-libs)" = "3.5.5-1.amzn2023.0.5',
         'expat)" = "2.6.3-1.amzn2023.0.6',
+        'glib2)" = "2.82.2-770.amzn2023',
+        'libacl)" = "2.4.0-1.amzn2023.0.1',
+        'python3)" = "3.9.25-1.amzn2023.0.8',
+        'system-release)" = "2023.12.20260720-0.amzn2023',
         "/usr/share/opensearch/plugins/*",
         "/usr/share/opensearch/modules/ingest-geoip",
         'test -z "$(ls -A /usr/share/opensearch/plugins)"',

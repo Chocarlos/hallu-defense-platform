@@ -58,6 +58,7 @@ spec:
         app.kubernetes.io/component: vault
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 100

@@ -28,6 +28,7 @@ spec:
       # The token is projected explicitly into the API container only. Init
       # containers cannot use the Kubernetes API identity.
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
       initContainers:
@@ -121,7 +122,7 @@ spec:
               mountPath: {{ .Values.sandbox.workspace.mountPath | quote }}
               readOnly: true
             - name: kube-api-access
-              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              mountPath: /run/hallu-defense/kubernetes
               readOnly: true
             - name: redis-ca
               mountPath: {{ .Values.rateLimit.redis.caPath | quote }}

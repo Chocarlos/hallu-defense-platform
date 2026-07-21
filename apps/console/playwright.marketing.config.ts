@@ -32,6 +32,7 @@ const demoRuntimeEnvironment =
         HALLU_DEFENSE_DEMO_REDIS_URL_FILE: requiredEnvironment(
           "HALLU_DEFENSE_DEMO_REDIS_URL_FILE"
         ),
+        HALLU_DEFENSE_DEMO_REDIS_MODE: "standalone",
         HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE: requiredEnvironment(
           "HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE"
         )

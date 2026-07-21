@@ -163,8 +163,8 @@ Goal: add a bilingual public entry point and a privacy-preserving demo-request
 boundary without extending earlier QA acceptance to unverified launch code. Six
 independent fronts started at checkpoint
 `fb111c1e15c87e40006844d62e37616a84ab796f`; selective root integration and
-corrections produced code candidate
-`d6c15bda15dda7a5e901f913d1007fd04d3089c5` with current local evidence.
+corrections produced the historical code candidate
+`d6c15bda15dda7a5e901f913d1007fd04d3089c5`.
 
 - TS-011: bilingual landing and privacy routes at `/`, `/en`, `/privacy`, and
   `/en/privacy`; preserved authenticated Console at `/console`; localized
@@ -179,14 +179,24 @@ corrections produced code candidate
   turn missing credentials or unexecuted browsers into compatibility evidence.
 
 Integration decision: TS-011, SEC-020, and CI-033 are `tested`, not `accepted`.
-The exact candidate passes the three-engine 320/768/1440 production matrix
-(148 passed, 68 deliberate skips), the enabled-form matrix (59 passed, 40
-deliberate skips), Console tests/lint/types/build, the global code/security
-gates, and a scratch-only real Redis 7.0.15 plus HTTPS webhook intake smoke.
+The 2026-07-20/21 acceptance-hardening campaign started from
+`98a6bd135e075ed5db48af28fe2b6d6fc01e3fda`. Its current tree passes the
+three-engine 320/768/1440 production matrix (148 passed, 68 deliberate skips)
+and the expanded enabled-form/Axe matrix (77 passed, 40 deliberate skips).
+It also proves the production Redis adapter against a scratch six-node Cluster
+(three masters plus three replicas), including discovery from a non-owner,
+`MOVED`, idempotent delivery state, primary loss and failover recovery. The
+security campaign rebuilt all ten first-party images and scanned them plus the
+two immutable external images with Trivy 0.72.0; OpenSearch and SeaweedFS
+findings were fixed at their pinned dependency inputs and their replacement
+images rescanned with zero HIGH/CRITICAL findings. Global gates and the final
+Kind result are recorded in the traceability matrix and worklog rather than
+inferred from this plan.
 Browser inspection confirmed bilingual semantics, metadata, responsive layout,
 tour control, privacy boundaries, Console separation, zero browser errors and a
 1200x630 social image. Acceptance remains blocked on native browser-UI zoom,
 manual screen-reader/contrast review, real BrowserStack sessions at the stated
 minimums, deployment-specific Redis/CRM/ingress/secrets evidence, and legal
-approval of controller/contact/retention. Kind and current Trivy image execution
-also remain unavailable locally because Docker Desktop's daemon was not active.
+approval of controller/contact/retention. Remote GitHub Actions are also blocked
+before runner allocation by the repository billing/spending limit; a local pass
+must not be represented as a remote green check.

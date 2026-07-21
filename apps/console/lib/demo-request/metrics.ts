@@ -19,6 +19,7 @@ const WEBHOOK_DURATION_BUCKETS = [0.1, 0.25, 0.5, 1, 2.5, 5] as const;
 export interface DemoMetricsRecorder {
   recordDemoResult(outcome: DemoResultOutcome): void;
   recordWebhook(outcome: WebhookOutcome, durationSeconds: number): void;
+  recordDispatchingGuard(): void;
 }
 
 export class DemoMetrics implements DemoMetricsRecorder {
@@ -27,6 +28,7 @@ export class DemoMetrics implements DemoMetricsRecorder {
   private readonly webhookBucketTotals = new Map<number, number>();
   private webhookDurationCount = 0;
   private webhookDurationSum = 0;
+  private dispatchingGuardTotal = 0;
 
   recordDemoResult(outcome: DemoResultOutcome): void {
     assertDemoOutcome(outcome);
@@ -49,6 +51,10 @@ export class DemoMetrics implements DemoMetricsRecorder {
         );
       }
     }
+  }
+
+  recordDispatchingGuard(): void {
+    this.dispatchingGuardTotal += 1;
   }
 
   render(): string {
@@ -82,7 +88,10 @@ export class DemoMetrics implements DemoMetricsRecorder {
     lines.push(
       `hallu_demo_webhook_duration_seconds_bucket{le="+Inf"} ${this.webhookDurationCount}`,
       `hallu_demo_webhook_duration_seconds_sum ${this.webhookDurationSum}`,
-      `hallu_demo_webhook_duration_seconds_count ${this.webhookDurationCount}`
+      `hallu_demo_webhook_duration_seconds_count ${this.webhookDurationCount}`,
+      "# HELP hallu_demo_dispatching_guard_total Demo retries suppressed by an ambiguous dispatching state.",
+      "# TYPE hallu_demo_dispatching_guard_total counter",
+      `hallu_demo_dispatching_guard_total ${this.dispatchingGuardTotal}`
     );
     return `${lines.join("\n")}\n`;
   }

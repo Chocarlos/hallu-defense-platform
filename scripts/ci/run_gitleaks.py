@@ -536,7 +536,8 @@ def _verify_container_version(*, runner: Runner) -> None:
         ],
         runner=runner,
     )
-    if completed.returncode != 0 or completed.stdout.strip() != GITLEAKS_VERSION:
+    reported_version = completed.stdout.strip().removeprefix("v")
+    if completed.returncode != 0 or reported_version != GITLEAKS_VERSION:
         raise GitleaksExecutionError(
             "Gitleaks container version does not match the pin."
         )

@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography import x509
@@ -33,6 +34,7 @@ class RecordingExecutor:
         migration_checksums_valid: bool = True,
         fail_prefix: tuple[str, ...] | None = None,
         missing_network_policy: str | None = None,
+        default_deny_allows_ingress: bool = False,
         docker_architecture: str = "amd64",
         opensearch_replica_count: int = 1,
         opensearch_cluster_status: str = "yellow",
@@ -66,6 +68,7 @@ class RecordingExecutor:
         self.migration_checksums_valid = migration_checksums_valid
         self.fail_prefix = fail_prefix
         self.missing_network_policy = missing_network_policy
+        self.default_deny_allows_ingress = default_deny_allows_ingress
         self.docker_architecture = docker_architecture
         self.opensearch_replica_count = opensearch_replica_count
         self.opensearch_cluster_status = opensearch_cluster_status
@@ -161,6 +164,65 @@ class RecordingExecutor:
                 argv,
                 0,
                 "\n".join(sorted(self.kind_clusters)) + ("\n" if self.kind_clusters else ""),
+                "",
+            )
+        if "get" in argv and "service" in argv and "kubernetes" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "spec": {
+                            "clusterIP": "10.96.0.1",
+                            "ports": [
+                                {
+                                    "name": "https",
+                                    "port": 443,
+                                    "protocol": "TCP",
+                                    "targetPort": 6443,
+                                }
+                            ],
+                        }
+                    }
+                ),
+                "",
+            )
+        if "get" in argv and "endpointslice" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "endpoints": [
+                                    {
+                                        "addresses": ["172.19.0.2"],
+                                        "conditions": {"ready": True},
+                                    }
+                                ],
+                                "ports": [{"name": "https", "port": 6443, "protocol": "TCP"}],
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+        if "get" in argv and "nodes" in argv and "--output=json" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "status": {
+                                    "addresses": [{"type": "InternalIP", "address": "172.19.0.2"}]
+                                }
+                            }
+                        ]
+                    }
+                ),
                 "",
             )
         if argv[:2] in (["helm", "lint"], ["helm", "template"], ["helm", "upgrade"]):
@@ -333,9 +395,7 @@ class RecordingExecutor:
         ):
             selector = next(item for item in argv if item.startswith("--selector="))
             applied = (
-                []
-                if "release-revision=2" in selector
-                else list(smoke.EXPECTED_MIGRATION_VERSIONS)
+                [] if "release-revision=2" in selector else list(smoke.EXPECTED_MIGRATION_VERSIONS)
             )
             payload = (
                 {
@@ -430,10 +490,12 @@ class RecordingExecutor:
                 argv, 0, "pod/hallu-network-ingress-probe labeled\n", ""
             )
         if "application_ingress_allowlist_probe" in " ".join(argv):
+            pod_reference = next(item for item in argv if item.startswith("pod/"))
+            label = pod_reference.rsplit("-", 1)[-1]
             expected = {
-                "api": self.network_client_label in {"api", "metrics"},
-                "console": self.network_client_label == "console",
-                "worker": self.network_client_label == "metrics",
+                "api": label in {"api", "metrics"},
+                "console": label in {"console", "metrics"},
+                "worker": label == "metrics",
             }
             return subprocess.CompletedProcess(argv, 0, json.dumps(expected) + "\n", "")
         if "api_workspace_read_only" in " ".join(argv):
@@ -505,7 +567,12 @@ class RecordingExecutor:
             command = body["commands"][0]
             if body["repo_ref"] == "../":
                 status = 400
-                response = {"detail": "repo_ref escapes the configured workspace"}
+                response = {
+                    "trace_id": "trc_kind_path_escape",
+                    "error": "http_400",
+                    "message": "repo_ref escapes the configured workspace",
+                    "details": {},
+                }
             elif command == "python probe.py":
                 status = 200
                 batched = len(body["commands"]) == 2
@@ -586,13 +653,11 @@ class RecordingExecutor:
                                         "name": f"hallu-defense-{component}-{revision}",
                                         "labels": {
                                             "app.kubernetes.io/component": component,
-                                            "hallu-defense.openai.com/release-revision": revision
+                                            "hallu-defense.openai.com/release-revision": revision,
                                         },
                                     },
                                     "status": {
-                                        "conditions": [
-                                            {"type": "Complete", "status": "True"}
-                                        ]
+                                        "conditions": [{"type": "Complete", "status": "True"}]
                                     },
                                 }
                             ]
@@ -622,7 +687,11 @@ class RecordingExecutor:
                         "spec": {
                             "podSelector": {},
                             "policyTypes": ["Ingress"],
-                            "ingress": [],
+                            **(
+                                {"ingress": [{"from": [{"podSelector": {}}]}]}
+                                if self.default_deny_allows_ingress
+                                else {}
+                            ),
                         },
                     }
                 )
@@ -634,7 +703,7 @@ class RecordingExecutor:
             }
             external_ingress_allowlists = {
                 "api": (("api", "metrics"), 8000),
-                "console": (("console",), 3000),
+                "console": (("console", "metrics"), 3000),
                 "worker": (("metrics",), 9090),
             }
             for component in (
@@ -714,6 +783,54 @@ class RecordingExecutor:
                         ],
                     }
                 ]
+                api_egress = [
+                    {
+                        "to": [
+                            {
+                                "namespaceSelector": {
+                                    "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
+                                },
+                                "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                            }
+                        ],
+                        "ports": [
+                            {"protocol": "UDP", "port": 53},
+                            {"protocol": "TCP", "port": 53},
+                        ],
+                    },
+                    *[
+                        {
+                            "to": [
+                                {
+                                    "podSelector": {
+                                        "matchLabels": {
+                                            "app.kubernetes.io/name": "hallu-defense",
+                                            "app.kubernetes.io/instance": "hallu-defense",
+                                            "app.kubernetes.io/component": dependency,
+                                        }
+                                    }
+                                }
+                            ],
+                            "ports": [{"protocol": "TCP", "port": port}],
+                        }
+                        for dependency, port in (
+                            ("pgvector", 5432),
+                            ("vault", 8200),
+                            ("redis", 6379),
+                            ("opensearch", 9200),
+                        )
+                    ],
+                    *[
+                        {
+                            "to": [{"ipBlock": {"cidr": cidr}}],
+                            "ports": [{"protocol": "TCP", "port": port}],
+                        }
+                        for cidr, port in (
+                            ("10.96.0.1/32", 443),
+                            ("172.19.0.2/32", 6443),
+                        )
+                    ],
+                ]
                 policy_spec = {
                     "podSelector": {
                         "matchLabels": {
@@ -733,9 +850,13 @@ class RecordingExecutor:
                         if empty_egress
                         else console_dns_egress
                         if component == "console"
+                        else api_egress
+                        if component == "api"
                         else [{"to": []}]
                     ),
                 }
+                if empty_egress:
+                    policy_spec.pop("egress")
                 if ingress is not None:
                     policy_spec["ingress"] = ingress
                 policies.append(
@@ -750,7 +871,12 @@ class RecordingExecutor:
                 json.dumps({"items": policies}) + "\n",
                 "",
             )
-        if argv[-4:-1] == ["get", "pod", "hallu-network-ingress-probe"]:
+        if (
+            "get" in argv
+            and "pod" in argv
+            and "--output=name" in argv
+            and any(item.startswith("hallu-network-ingress-probe") for item in argv)
+        ):
             return subprocess.CompletedProcess(argv, 1, "", "NotFound")
         if (
             "get" in argv
@@ -805,7 +931,7 @@ class RecordingExecutor:
                                                         },
                                                         "initialDelaySeconds": 1,
                                                         "periodSeconds": 1,
-                                                        "timeoutSeconds": 1,
+                                                        "timeoutSeconds": 5,
                                                     }
                                                 }
                                                 if self.fixture_probe_valid
@@ -1015,6 +1141,42 @@ class CleanupFailingExecutor(RecordingExecutor):
             timeout_seconds=timeout_seconds,
             input_text=input_text,
         )
+
+
+class InexactNetworkPolicyExecutor(RecordingExecutor):
+    def __init__(self, *, mode: str) -> None:
+        super().__init__()
+        self.mode = mode
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        result = super().__call__(
+            command,
+            check=check,
+            timeout_seconds=timeout_seconds,
+            input_text=input_text,
+        )
+        argv = list(command)
+        if not ("get" in argv and "networkpolicy" in argv and "--output=json" in argv):
+            return result
+        payload = json.loads(result.stdout)
+        policies = {item["metadata"]["name"]: item for item in payload["items"]}
+        if self.mode == "drop-post-dnat":
+            policies["hallu-defense-api-egress"]["spec"]["egress"].pop()
+        else:
+            policies["hallu-defense-worker-egress"]["spec"]["egress"].append(
+                {
+                    "to": [{"ipBlock": {"cidr": "172.19.0.2/32"}}],
+                    "ports": [{"protocol": "TCP", "port": 6443}],
+                }
+            )
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
 
 
 class ConcurrentClusterExecutor(RecordingExecutor):
@@ -1254,6 +1416,103 @@ def test_enabled_smoke_rejects_non_amd64_docker_server() -> None:
     assert not any(command[:2] == ["kind", "create"] for command in executor.commands)
 
 
+def _kubernetes_api_discovery_payloads() -> dict[str, Any]:
+    return {
+        "service": {
+            "spec": {
+                "clusterIP": "10.96.0.1",
+                "ports": [
+                    {
+                        "name": "https",
+                        "port": 443,
+                        "protocol": "TCP",
+                        "targetPort": 6443,
+                    }
+                ],
+            }
+        },
+        "slice": {
+            "items": [
+                {
+                    "endpoints": [
+                        {
+                            "addresses": ["172.19.0.2"],
+                            "conditions": {"ready": True},
+                        }
+                    ],
+                    "ports": [{"name": "https", "port": 6443, "protocol": "TCP"}],
+                }
+            ]
+        },
+        "nodes": {
+            "items": [{"status": {"addresses": [{"type": "InternalIP", "address": "172.19.0.2"}]}}]
+        },
+    }
+
+
+def _discover_with_payloads(payloads: dict[str, Any]) -> list[dict[str, object]]:
+    def executor(
+        command: Sequence[str],
+        *,
+        check: bool = True,
+        timeout_seconds: float = 120,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, timeout_seconds, input_text
+        argv = list(command)
+        key = "slice" if "endpointslice" in argv else "nodes" if "nodes" in argv else "service"
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payloads[key]), "")
+
+    return smoke._discover_kind_kubernetes_api_peers(
+        executor,
+        kubectl_cluster=["kubectl", "--context", "kind-test"],
+    )
+
+
+def test_kind_kubernetes_api_peer_discovery_is_exact() -> None:
+    assert _discover_with_payloads(_kubernetes_api_discovery_payloads()) == [
+        {"cidr": "10.96.0.1/32", "port": 443},
+        {"cidr": "172.19.0.2/32", "port": 6443},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    (
+        ("service_port", "Service must expose only"),
+        ("multiple_slices", "exactly one EndpointSlice"),
+        ("not_ready", "explicitly Ready"),
+        ("multiple_endpoints", "exactly one endpoint"),
+        ("slice_port", "EndpointSlice must expose only"),
+        ("endpoint_mismatch", "sole control-plane InternalIP"),
+        ("multiple_control_planes", "exactly one control-plane"),
+    ),
+)
+def test_kind_kubernetes_api_peer_discovery_fails_closed(
+    case: str,
+    message: str,
+) -> None:
+    payloads = _kubernetes_api_discovery_payloads()
+    if case == "service_port":
+        payloads["service"]["spec"]["ports"][0]["targetPort"] = 443
+    elif case == "multiple_slices":
+        payloads["slice"]["items"].append(payloads["slice"]["items"][0])
+    elif case == "not_ready":
+        payloads["slice"]["items"][0]["endpoints"][0]["conditions"]["ready"] = False
+    elif case == "multiple_endpoints":
+        payloads["slice"]["items"][0]["endpoints"].append(
+            {"addresses": ["172.19.0.3"], "conditions": {"ready": True}}
+        )
+    elif case == "slice_port":
+        payloads["slice"]["items"][0]["ports"][0]["protocol"] = "UDP"
+    elif case == "endpoint_mismatch":
+        payloads["slice"]["items"][0]["endpoints"][0]["addresses"] = ["172.19.0.3"]
+    else:
+        payloads["nodes"]["items"].append(payloads["nodes"]["items"][0])
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match=message):
+        _discover_with_payloads(payloads)
+
+
 def test_application_egress_fails_when_any_workload_policy_is_missing() -> None:
     executor = RecordingExecutor(missing_network_policy="console")
 
@@ -1270,6 +1529,34 @@ def test_application_ingress_fails_without_namespace_default_deny() -> None:
     with pytest.raises(smoke.LiveKindHelmSmokeError, match="default-deny ingress"):
         smoke._verify_application_egress(
             executor,
+            kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+        )
+
+
+def test_application_ingress_fails_when_default_deny_allows_ingress() -> None:
+    executor = RecordingExecutor(default_deny_allows_ingress=True)
+
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match="default-deny ingress"):
+        smoke._verify_application_egress(
+            executor,
+            kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+        )
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    (
+        ("drop-post-dnat", "API egress allowlist is not exact"),
+        ("worker-kubernetes-api", "must not allow Kubernetes API IP blocks"),
+    ),
+)
+def test_application_egress_rejects_inexact_kubernetes_api_rules(
+    mode: str,
+    message: str,
+) -> None:
+    with pytest.raises(smoke.LiveKindHelmSmokeError, match=message):
+        smoke._verify_application_egress(
+            InexactNetworkPolicyExecutor(mode=mode),
             kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
         )
 
@@ -1360,6 +1647,12 @@ def test_hybrid_lifecycle_tombstone_probe_script_compiles() -> None:
         "<hybrid-lifecycle-tombstone>",
         "exec",
     )
+    assert "SELECT payload FROM audit_events WHERE event_id = %s" in (
+        smoke.HYBRID_LIFECYCLE_TOMBSTONE_PROBE_SCRIPT
+    )
+    assert "SELECT outcome, metadata FROM audit_events" not in (
+        smoke.HYBRID_LIFECYCLE_TOMBSTONE_PROBE_SCRIPT
+    )
 
 
 def test_hybrid_lifecycle_tombstone_probe_fails_closed_on_reingestion() -> None:
@@ -1392,12 +1685,8 @@ def test_console_oidc_runtime_probe_targets_authenticated_console_route() -> Non
     assert 'HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "false"' in (
         smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT
     )
-    assert 'fetch("http://127.0.0.1:3000/console"' in (
-        smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT
-    )
-    assert 'fetch("http://127.0.0.1:3000/"' not in (
-        smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT
-    )
+    assert 'fetch("http://127.0.0.1:3000/console"' in (smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT)
+    assert 'fetch("http://127.0.0.1:3000/"' not in (smoke.CONSOLE_OIDC_RUNTIME_PROBE_SCRIPT)
 
 
 def test_projected_migration_dsn_probe_requires_successful_job_evidence() -> None:
@@ -1619,8 +1908,7 @@ def test_sandbox_request_timeout_budgets_are_derived_not_magic() -> None:
     assert "timeout=$request_timeout_seconds" in source
     assert smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS == 5
     assert smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS == (
-        smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS
-        * smoke.SANDBOX_KUBE_API_POLL_REQUESTS
+        smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS * smoke.SANDBOX_KUBE_API_POLL_REQUESTS
     )
     assert smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS == (
         smoke.SANDBOX_SETUP_BUDGET_SECONDS
@@ -1629,8 +1917,7 @@ def test_sandbox_request_timeout_budgets_are_derived_not_magic() -> None:
         + smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
     )
     assert smoke.SANDBOX_REQUEST_EXEC_TIMEOUT_SECONDS == (
-        smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS
-        + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+        smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
     )
     assert smoke.SANDBOX_CLEANUP_GRACE_MIN_SECONDS == 15
     assert smoke.SANDBOX_CLEANUP_GRACE_MAX_SECONDS == 30
@@ -1652,9 +1939,7 @@ def test_sandbox_cleanup_exec_timeout_never_precedes_supported_cleanup_path(
         + smoke.SANDBOX_COMMAND_BUDGET_SECONDS * command_count
         + cleanup_grace_seconds
     )
-    request_timeout_seconds = (
-        supported_path_seconds + smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
-    )
+    request_timeout_seconds = supported_path_seconds + smoke.SANDBOX_KUBE_API_POLL_ALLOWANCE_SECONDS
     request_join_timeout_seconds = (
         request_timeout_seconds + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
     )
@@ -1666,18 +1951,23 @@ def test_sandbox_cleanup_exec_timeout_never_precedes_supported_cleanup_path(
     )
 
     exec_timeout_seconds = smoke._sandbox_cleanup_exec_timeout_seconds(
-        command_count,
-        cleanup_grace_seconds
+        command_count, cleanup_grace_seconds
     )
 
-    assert smoke._sandbox_supported_request_path_seconds(
-        command_count,
-        cleanup_grace_seconds,
-    ) == supported_path_seconds
-    assert smoke._sandbox_request_timeout_seconds(
-        command_count,
-        cleanup_grace_seconds,
-    ) == request_timeout_seconds
+    assert (
+        smoke._sandbox_supported_request_path_seconds(
+            command_count,
+            cleanup_grace_seconds,
+        )
+        == supported_path_seconds
+    )
+    assert (
+        smoke._sandbox_request_timeout_seconds(
+            command_count,
+            cleanup_grace_seconds,
+        )
+        == request_timeout_seconds
+    )
     assert exec_timeout_seconds > inner_budget_seconds
     assert exec_timeout_seconds == (
         inner_budget_seconds + smoke.SANDBOX_CLEANUP_OUTER_SAFETY_MARGIN_SECONDS
@@ -1687,16 +1977,8 @@ def test_sandbox_cleanup_exec_timeout_never_precedes_supported_cleanup_path(
         cleanup_grace_seconds,
     )
     assert f"urlopen(request, timeout={request_timeout_seconds})" in script
-    assert (
-        "request_thread.join(timeout="
-        f"{request_join_timeout_seconds})"
-        in script
-    )
-    assert (
-        "timeout_seconds="
-        f"{smoke.SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS}"
-        in script
-    )
+    assert f"request_thread.join(timeout={request_join_timeout_seconds})" in script
+    assert f"timeout_seconds={smoke.SANDBOX_CLEANUP_INITIAL_INVENTORY_ALLOWANCE_SECONDS}" in script
     assert "capture_remaining = capture_deadline - time.monotonic()" in script
     assert "timeout_seconds=min(\n                5,\n                capture_remaining" in script
 
@@ -1868,9 +2150,7 @@ def _execute_embedded_cleanup_probe(
                 if cleanup_pod_uids
                 else None
             )
-            return FakeResponse(
-                {"items": [] if owner_uid is None else [pod_owned_by(owner_uid)]}
-            )
+            return FakeResponse({"items": [] if owner_uid is None else [pod_owned_by(owner_uid)]})
         if "/jobs/" in url:
             state["job_gets"] += 1
             if state["job_gets"] == 1:
@@ -1933,8 +2213,7 @@ def _execute_embedded_cleanup_probe(
     assert "signed-test-jwt" not in stdout.getvalue()
     assert "service-account-token" not in stdout.getvalue()
     assert join_timeouts == [
-        smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS
-        + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
+        smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS + smoke.SANDBOX_REQUEST_SAFETY_MARGIN_SECONDS
     ]
     repo_timeouts = [
         timeout
@@ -1949,8 +2228,7 @@ def _execute_embedded_cleanup_probe(
     assert repo_timeouts == [smoke.SANDBOX_REQUEST_TIMEOUT_SECONDS]
     assert kube_timeouts
     assert all(
-        0 < timeout <= smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS
-        for timeout in kube_timeouts
+        0 < timeout <= smoke.SANDBOX_KUBE_API_REQUEST_TIMEOUT_SECONDS for timeout in kube_timeouts
     )
     return envelope, state
 
@@ -1979,11 +2257,7 @@ def test_embedded_cleanup_probe_requires_two_consecutive_clean_observations(
     [
         ({"cleanup_job_state": "present"}, "cleanup deadline expired"),
         (
-            {
-                "cleanup_pod_uids": (
-                    "11111111-1111-4111-8111-111111111111",
-                )
-            },
+            {"cleanup_pod_uids": ("11111111-1111-4111-8111-111111111111",)},
             "cleanup deadline expired",
         ),
         ({"cleanup_job_state": "rebound"}, "rebound to a different UID"),
@@ -2149,6 +2423,10 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
         "default_cni_enabled": True,
         "runtime_denials_verified": True,
     }
+    assert result["kubernetes_api_network_peers"] == [
+        {"cidr": "10.96.0.1/32", "port": 443},
+        {"cidr": "172.19.0.2/32", "port": 6443},
+    ]
     assert result["migration_count"] == smoke.EXPECTED_MIGRATION_COUNT
     assert result["bootstrap_jobs"] == {
         "revision_1": {
@@ -2249,18 +2527,35 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert any(item.startswith("helm template") for item in command_text)
     assert any(item.startswith("helm upgrade --install") for item in command_text)
     assert sum(item.startswith("helm upgrade") for item in command_text) == 2
+    helm_commands = [
+        argv
+        for argv in executor.commands
+        if argv[:2] in (["helm", "lint"], ["helm", "template"], ["helm", "upgrade"])
+        and "--show-only" not in argv
+    ]
+    expected_api_peers_json = json.dumps(
+        [
+            {"cidr": "10.96.0.1/32", "port": 443},
+            {"cidr": "172.19.0.2/32", "port": 6443},
+        ],
+        separators=(",", ":"),
+    )
+    assert len(helm_commands) == 4
+    for helm_command in helm_commands:
+        set_json_index = helm_command.index("--set-json")
+        assert (
+            helm_command[set_json_index + 1]
+            == f"networkPolicy.kubernetesApi={expected_api_peers_json}"
+        )
     assert any(
-        item.startswith("helm upgrade hallu-defense")
-        and "sandbox.fixture.enabled=false" in item
+        item.startswith("helm upgrade hallu-defense") and "sandbox.fixture.enabled=false" in item
         for item in command_text
     )
     assert all("--rollback-on-failure" not in item for item in command_text)
     assert all("--wait-for-jobs" not in item for item in command_text)
     upgrade_timeouts = [
         timeout
-        for argv, timeout in zip(
-            executor.commands, executor.command_timeouts, strict=True
-        )
+        for argv, timeout in zip(executor.commands, executor.command_timeouts, strict=True)
         if argv[:2] == ["helm", "upgrade"]
     ]
     assert upgrade_timeouts == [
@@ -2303,8 +2598,7 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     second_upgrade_index = next(
         index
         for index, item in enumerate(command_text)
-        if item.startswith("helm upgrade hallu-defense")
-        and "--install" not in item
+        if item.startswith("helm upgrade hallu-defense") and "--install" not in item
     )
     revision_two_migration_job_index = next(
         index
@@ -2340,14 +2634,9 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert any("rollout status deployment/hallu-defense-vault" in item for item in command_text)
     assert any("rollout status deployment/hallu-defense-redis" in item for item in command_text)
     assert any("app.kubernetes.io/component=vault-bootstrap" in item for item in command_text)
-    assert any(
-        "COALESCE(checksum_sha256, '<NULL>')" in item for item in command_text
-    )
+    assert any("COALESCE(checksum_sha256, '<NULL>')" in item for item in command_text)
     assert result["migration_checksums"] == smoke.EXPECTED_MIGRATION_CHECKSUMS
-    assert (
-        result["migration_checksum_aggregate"]
-        == smoke.EXPECTED_MIGRATION_CHECKSUM_AGGREGATE
-    )
+    assert result["migration_checksum_aggregate"] == smoke.EXPECTED_MIGRATION_CHECKSUM_AGGREGATE
     assert any("http://127.0.0.1:8000/health" in item for item in command_text)
     assert any("http://127.0.0.1:8000/ready" in item for item in command_text)
     assert any(
@@ -2431,6 +2720,11 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
             "list:pods": True,
         },
     }
+    pod_log_rbac_probes = [
+        item for item in command_text if "auth can-i get pods --subresource=log --as" in item
+    ]
+    assert len(pod_log_rbac_probes) == 2
+    assert not any("auth can-i get pods/log" in item for item in command_text)
     assert result["opensearch_schema"] == {
         "template_name": "hallu_evidence_template",
         "index_name": "hallu_evidence",
@@ -2482,8 +2776,19 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
         "lexical_path_preserved": True,
         "manager_type": "VaultSecretManager",
         "original_restored": True,
+        "runtime_components_recovered": ["api", "worker"],
     }
-    assert sum("vault_manager_projected_rotation_probe" in item for item in command_text) >= 3
+    assert sum("vault_manager_projected_rotation_probe" in item for item in command_text) >= 6
+    assert any(
+        "wait --for=condition=Ready --timeout=90s pod "
+        "--selector=app.kubernetes.io/component=api" in item
+        for item in command_text
+    )
+    assert any(
+        "wait --for=condition=Ready --timeout=90s pod "
+        "--selector=app.kubernetes.io/component=worker" in item
+        for item in command_text
+    )
     assert result["hybrid_lifecycle_tombstone"] == {
         "audit_parity": True,
         "backend": "hybrid",
@@ -2515,7 +2820,7 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
             "explicit_application_allowlists": {
                 "api": {"api": True, "console": False, "worker": False},
                 "console": {"api": False, "console": True, "worker": False},
-                "metrics": {"api": True, "console": False, "worker": True},
+                "metrics": {"api": True, "console": True, "worker": True},
             },
             "opensearch": False,
             "opensearch_transport_pod_ip_9300": False,
@@ -2538,8 +2843,7 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
             for node in tree.body
             if isinstance(node, ast.Assign)
             and any(
-                isinstance(target, ast.Name) and target.id == "expected"
-                for target in node.targets
+                isinstance(target, ast.Name) and target.id == "expected" for target in node.targets
             )
         )
         assert isinstance(expected_assignment.value, ast.Call)
@@ -2555,7 +2859,7 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert decoded_allowlists == [
         {"api": True, "console": False, "worker": False},
         {"api": False, "console": True, "worker": False},
-        {"api": True, "console": False, "worker": True},
+        {"api": True, "console": True, "worker": True},
     ]
     assert set(application_egress["policies"]) == {
         "api",
@@ -2588,6 +2892,11 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
         "redis",
     ]
     assert any("delete pod hallu-network-ingress-probe" in item for item in command_text)
+    for identity in ("api", "console", "metrics"):
+        assert any(
+            f"exec pod/hallu-network-ingress-probe-{identity}" in item for item in command_text
+        )
+    assert not any(" label pod hallu-network-ingress-probe" in item for item in command_text)
     assert set(result["workloads"]) == set(smoke.EXPECTED_WORKLOAD_COMPONENTS)
     assert all(item["restarts"] == 0 for item in result["workloads"].values())
     assert result["cleanup"] == {
@@ -2608,12 +2917,8 @@ def test_live_kind_helm_smoke_runs_install_and_runtime_checks() -> None:
     assert admission_commands
     assert all("--dry-run=server" in argv for argv in admission_commands)
     assert any("hallu-defense.openai.com/sandbox=true" in item for item in command_text)
-    assert any(
-        item == f"kind delete cluster --name {result['cluster']}" for item in command_text
-    )
-    assert all(
-        "--kubeconfig" in argv for argv in executor.commands if argv[:1] == ["kubectl"]
-    )
+    assert any(item == f"kind delete cluster --name {result['cluster']}" for item in command_text)
+    assert all("--kubeconfig" in argv for argv in executor.commands if argv[:1] == ["kubectl"])
     assert not executor.docker_images
     assert not executor.kind_clusters
     secrets_by_name = {
@@ -2854,7 +3159,7 @@ def test_live_command_output_replaces_invalid_utf8() -> None:
         ),
         (
             RecordingExecutor(opensearch_transport_listeners=("0.0.0.0",)),
-            "port 9300 must listen only on IPv4 loopback",
+            "port 9300 must listen only on loopback",
         ),
     ],
 )
@@ -2867,6 +3172,17 @@ def test_opensearch_schema_health_readback_fails_closed(
             executor,
             kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
         )
+
+
+def test_opensearch_transport_accepts_ipv4_mapped_loopback_listener() -> None:
+    executor = RecordingExecutor(
+        opensearch_transport_listeners=("127.0.0.1", "::ffff:127.0.0.1"),
+    )
+
+    assert smoke._verify_opensearch_transport_loopback(
+        executor,
+        kubectl=["kubectl", "--namespace", smoke.DEFAULT_NAMESPACE],
+    ) == ["127.0.0.1"]
 
 
 def test_opensearch_schema_health_script_reads_canonical_nested_settings(

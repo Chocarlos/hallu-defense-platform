@@ -1,0 +1,13 @@
+groups:
+  - name: hallu-defense-demo-request
+    rules:
+      - alert: HalluDefenseDemoDispatchingGuardObserved
+        expr: increase(hallu_demo_dispatching_guard_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Demo intake suppressed a retry in dispatching state
+          description: >-
+            A demo request retry encountered an ambiguous dispatching guard.
+            Inspect the CRM delivery and Redis state without replaying the webhook.

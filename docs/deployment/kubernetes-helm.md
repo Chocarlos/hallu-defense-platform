@@ -242,6 +242,16 @@ Vault port 8200. Redis retains exactly DNS and Vault:8200 because its one-shot
 seeder must store the generated TLS URL in Vault; its guard and server receive
 no broader destination.
 
+The Kind live gate does not assume that a CNI evaluates the Kubernetes Service
+VIP before translation. It validates the `default/kubernetes` Service, its sole
+Ready EndpointSlice endpoint, and the sole control-plane Node InternalIP, then
+passes exactly two API-only peers to every Helm operation: the Service VIP on
+443 and the matching post-DNAT endpoint on 6443. This covers kindnet's current
+post-DNAT evaluation without broadening the allowlist; any ambiguity, mismatch,
+extra endpoint, or unexpected port fails the gate. Production operators must
+perform the equivalent validation for their chosen CNI because Service
+translation and NetworkPolicy ordering are implementation-dependent.
+
 Kind dependency ingress is equally explicit: pgvector accepts only API, worker,
 and migrations on 5432; OpenSearch accepts only API and worker Pods (including
 their schema init containers) on 9200; Vault accepts only API, worker,
@@ -261,7 +271,9 @@ traffic through stable single-host egress gateways.
 Ingress is default-deny for the application namespace and for the dedicated
 sandbox namespace. API and console accept traffic only from explicit
 namespace-plus-pod-label caller allowlists; the API has a separate explicit
-Prometheus scraper peer. Kind proves an unlabeled Pod cannot reach either
+Prometheus scraper peer, and Console has its own distinct
+`networkPolicy.ingress.console.metricsScrapers` allowlist for `/metrics`.
+Kind proves an unlabeled Pod cannot reach either
 service, then proves only the `api`, `console`, and `metrics` caller labels reach
 their intended port. Dependency ingress remains component-scoped as described
 above.
@@ -276,7 +288,15 @@ The runtime Kubernetes Secret has no metrics bearer token, and `values.yaml`
 has no plaintext equivalent. This chart does not deploy Prometheus; an external
 Prometheus must use the
 [metrics token materializer](metrics-bearer-token-materializer.md) to write the
-Vault value to its private file mount.
+API Vault value to its private file mount. Console metrics use the separate
+file-backed bearer in `secretRefs.demo.metricsBearerKey`; the managed
+Prometheus must receive the same bytes at
+`/run/secrets/hallu_console_metrics_bearer` and must not reuse the API token.
+The stock Console Service is HTTP on port 3000, so the bearer travels only on
+the explicitly allowlisted in-cluster path. If the environment requires
+encrypted east-west traffic, deploy a real TLS/mTLS sidecar or service-mesh
+listener and configure Prometheus CA/SNI against that listener; the chart does
+not claim TLS merely by changing a scrape scheme.
 
 ## Kubernetes sandbox boundary
 

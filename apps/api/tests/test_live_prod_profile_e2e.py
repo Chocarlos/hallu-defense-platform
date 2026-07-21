@@ -19,6 +19,17 @@ def test_live_prod_profile_e2e_enabled_requires_bearer_token() -> None:
     assert exit_code == 1
 
 
+def test_live_prod_profile_e2e_enabled_requires_explicit_sandbox_repo_ref() -> None:
+    exit_code = smoke.main(
+        env={
+            smoke.ENABLED_ENV: "true",
+            smoke.BEARER_TOKEN_ENV: "synthetic-token",
+        }
+    )
+
+    assert exit_code == 1
+
+
 def test_live_prod_profile_e2e_skip_output_does_not_leak_tokens(
     capsys,
 ) -> None:

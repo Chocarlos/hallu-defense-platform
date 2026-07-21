@@ -445,7 +445,7 @@ class SandboxRunner:
                         expected_source_fingerprint=source_fingerprint,
                     )
                 except SandboxError as exc:
-                    git_report = _failed_git_inspection(type(exc).__name__)
+                    git_report = _failed_git_inspection(str(exc))
                 else:
                     git_report = self._git_report_from_inspector(
                         static_report,
@@ -656,7 +656,7 @@ class SandboxRunner:
                 source_repo_path=source_repo_path,
             )
         except SandboxError as exc:
-            return _failed_git_inspection(type(exc).__name__)
+            return _failed_git_inspection(str(exc))
         return self._git_report_from_inspector(static_report, inspector)
 
     def _git_report_from_inspector(
@@ -823,8 +823,13 @@ class SandboxRunner:
                     output_caps=control_output_chars,
                 )
         except SandboxExecutionError as exc:
-            raise SandboxError("isolated Git inspector could not execute") from exc
-        if completed.returncode != 0 or completed.timed_out:
+            detail = bounded(str(exc), MAX_GIT_ERROR_CHARS)
+            raise SandboxError(
+                f"isolated Git inspector could not execute: {detail}"
+            ) from exc
+        if completed.timed_out:
+            raise SandboxError("isolated Git inspector timed out")
+        if completed.returncode != 0:
             raise SandboxError("isolated Git inspector failed")
         try:
             decoded = json.loads(completed.stdout)

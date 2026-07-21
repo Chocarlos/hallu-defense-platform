@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 import pathlib
 import signal
+import socket
 import stat
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 
 try:
     import resource
@@ -33,6 +36,40 @@ child: subprocess.Popen[bytes] | None = None
 source_dir = pathlib.Path("/hallu-source")
 workspace_dir = pathlib.Path("/workspace")
 workspace_copy_stage = "not-started"
+NETWORK_GUARD_TARGET = ("1.1.1.1", 443)
+NETWORK_GUARD_CONNECT_TIMEOUT_SECONDS = 0.25
+NETWORK_GUARD_DEADLINE_SECONDS = 5.0
+NETWORK_GUARD_REQUIRED_DENIALS = 3
+NETWORK_GUARD_OBSERVATION_INTERVAL_SECONDS = 0.1
+
+
+def wait_for_network_denial(
+    *,
+    connect: Callable[..., object] = socket.create_connection,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Fail closed until the Pod's deny-egress policy is observably active."""
+
+    deadline = monotonic() + NETWORK_GUARD_DEADLINE_SECONDS
+    consecutive_denials = 0
+    while monotonic() < deadline:
+        try:
+            connection = connect(
+                NETWORK_GUARD_TARGET,
+                timeout=NETWORK_GUARD_CONNECT_TIMEOUT_SECONDS,
+            )
+        except OSError:
+            consecutive_denials += 1
+            if consecutive_denials >= NETWORK_GUARD_REQUIRED_DENIALS:
+                return
+        else:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+            consecutive_denials = 0
+        sleep(NETWORK_GUARD_OBSERVATION_INTERVAL_SECONDS)
+    raise RuntimeError("sandbox deny-egress policy was not observably active")
 
 
 def validate_workspace_tree(
@@ -278,6 +315,9 @@ def main() -> int:
             raise ValueError("invalid process limit")
         stage = "process-limit"
         setrlimit(rlimit_nproc, (effective_limit, effective_limit))
+        stage = "network-guard"
+        if os.environ.get("HALLU_DEFENSE_NETWORK_POLICY") == "deny":
+            wait_for_network_denial()
         stage = "workspace-copy"
         create_working_copy(
             max_files=max_workspace_files,

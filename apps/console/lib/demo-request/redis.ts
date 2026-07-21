@@ -1,4 +1,4 @@
-import { createClient } from "redis";
+import { createClient, createCluster } from "redis";
 
 import { readSecretBytes, type EnabledDemoRuntimeConfig } from "./config";
 
@@ -30,7 +30,7 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
     return {'duplicate', state[2]}
   end
   if state[1] == 'dispatching' then
-    return {'pending', state[2]}
+    return {'dispatching', state[2]}
   end
   local lease_until = tonumber(state[3] or '0')
   if state[1] == 'processing' and lease_until > now_milliseconds then
@@ -94,6 +94,7 @@ export type ReservationStatus =
   | "reserved"
   | "duplicate"
   | "pending"
+  | "dispatching"
   | "conflict"
   | "rate_email";
 
@@ -253,7 +254,62 @@ export class RedisDemoStore implements DemoStore {
   }
 }
 
-export function createRedisDemoStore(config: EnabledDemoRuntimeConfig): RedisDemoStore {
+export interface DemoRedisClientFactory {
+  createStandalone(config: EnabledDemoRuntimeConfig): RedisCommandClient;
+  createCluster(config: EnabledDemoRuntimeConfig): RedisCommandClient;
+}
+
+export function createRedisDemoStore(
+  config: EnabledDemoRuntimeConfig,
+  clientFactory: DemoRedisClientFactory = defaultRedisClientFactory
+): RedisDemoStore {
+  const client =
+    config.redisMode === "cluster"
+      ? clientFactory.createCluster(config)
+      : clientFactory.createStandalone(config);
+  return new RedisDemoStore(client);
+}
+
+const defaultRedisClientFactory: DemoRedisClientFactory = {
+  createStandalone(config) {
+    const standalone = createClient({
+      url: config.redisUrl,
+      socket: redisSocketOptions(config)
+    });
+    standalone.on("error", () => undefined);
+    return standalone;
+  },
+  createCluster(config) {
+    const cluster = createCluster(redisClusterClientOptions(config));
+    cluster.on("error", () => undefined);
+    return new RedisClusterCommandClient(cluster);
+  }
+};
+
+export function redisClusterClientOptions(
+  config: EnabledDemoRuntimeConfig
+): Parameters<typeof createCluster>[0] {
+  const redisUrl = new URL(config.redisUrl);
+  const username = redisUrl.username
+    ? decodeURIComponent(redisUrl.username)
+    : undefined;
+  const password = redisUrl.password
+    ? decodeURIComponent(redisUrl.password)
+    : undefined;
+
+  return {
+    rootNodes: [{ url: config.redisUrl }],
+    defaults: {
+      socket: redisSocketOptions(config),
+      ...(username === undefined ? {} : { username }),
+      ...(password === undefined ? {} : { password })
+    },
+    useReplicas: false,
+    maxCommandRedirections: 4
+  };
+}
+
+function redisSocketOptions(config: EnabledDemoRuntimeConfig) {
   const socket = config.redisUrl.startsWith("rediss:")
     ? {
         connectTimeout: 1_000,
@@ -270,9 +326,55 @@ export function createRedisDemoStore(config: EnabledDemoRuntimeConfig): RedisDem
         socketTimeout: 1_000,
         reconnectStrategy: false as const
       };
-  const client = createClient({ url: config.redisUrl, socket });
-  client.on("error", () => undefined);
-  return new RedisDemoStore(client);
+  return socket;
+}
+
+interface RawRedisClusterClient {
+  readonly isOpen: boolean;
+  connect(): Promise<unknown>;
+  sendCommand(
+    firstKey: string,
+    isReadonly: boolean,
+    arguments_: string[],
+    options?: { readonly abortSignal?: AbortSignal }
+  ): Promise<unknown>;
+}
+
+class RedisClusterCommandClient implements RedisCommandClient {
+  constructor(private readonly cluster: RawRedisClusterClient) {}
+
+  get isOpen(): boolean {
+    return this.cluster.isOpen;
+  }
+
+  async connect(): Promise<unknown> {
+    return this.cluster.connect();
+  }
+
+  async sendCommand(
+    arguments_: readonly string[],
+    options?: { readonly abortSignal?: AbortSignal }
+  ): Promise<unknown> {
+    const firstKey = evalFirstKey(arguments_);
+    return this.cluster.sendCommand(
+      firstKey,
+      false,
+      [...arguments_],
+      options
+    );
+  }
+}
+
+function evalFirstKey(arguments_: readonly string[]): string {
+  if (
+    arguments_[0] !== "EVAL" ||
+    !/^\d+$/u.test(arguments_[2] ?? "") ||
+    Number(arguments_[2]) < 1 ||
+    arguments_[3] === undefined
+  ) {
+    throw new DemoStoreUnavailableError();
+  }
+  return arguments_[3];
 }
 
 function parseReservation(value: unknown): DemoReservation {
@@ -322,6 +424,7 @@ function isReservationStatus(value: string): value is ReservationStatus {
     "reserved",
     "duplicate",
     "pending",
+    "dispatching",
     "conflict",
     "rate_email"
   ].includes(value);

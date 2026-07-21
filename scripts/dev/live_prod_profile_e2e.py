@@ -28,7 +28,6 @@ TIMEOUT_ENV = "HALLU_DEFENSE_LIVE_PROD_PROFILE_E2E_TIMEOUT_SECONDS"
 
 DEFAULT_API_URL = "https://api.example.invalid"
 DEFAULT_TENANT = "tenant-a"
-DEFAULT_REPO_REF = "."
 DEFAULT_TIMEOUT_SECONDS = 10
 
 class LiveProdProfileE2eError(RuntimeError):
@@ -254,11 +253,16 @@ def _config_from_env(env: Mapping[str, str]) -> LiveProdProfileE2eConfig:
     token = _optional(env, BEARER_TOKEN_ENV)
     if token is None:
         raise LiveProdProfileE2eError(f"{BEARER_TOKEN_ENV} is required when {ENABLED_ENV}=true")
+    repo_ref = _optional(env, REPO_REF_ENV)
+    if repo_ref is None:
+        raise LiveProdProfileE2eError(
+            f"{REPO_REF_ENV} is required when {ENABLED_ENV}=true"
+        )
     return LiveProdProfileE2eConfig(
         api_url=_optional(env, API_URL_ENV) or DEFAULT_API_URL,
         bearer_token=token,
         tenant_id=_optional(env, TENANT_ENV) or DEFAULT_TENANT,
-        repo_ref=_optional(env, REPO_REF_ENV) or DEFAULT_REPO_REF,
+        repo_ref=repo_ref,
         timeout_seconds=_int_env(env, TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS),
     )
 

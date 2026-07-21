@@ -323,14 +323,18 @@ def _validate_workflows(errors: list[str]) -> None:
 def _validate_node_reproducibility(errors: list[str]) -> None:
     package = json.loads(PACKAGE_JSON_PATH.read_text(encoding="utf-8"))
     package_lock = json.loads(PACKAGE_LOCK_PATH.read_text(encoding="utf-8"))
-    required_versions = {"next": "16.2.10", "eslint-config-next": "16.2.10"}
+    required_versions = {"next": "16.2.11", "eslint-config-next": "16.2.11"}
     root_dev = package.get("devDependencies", {})
     for name, version in required_versions.items():
         if root_dev.get(name) != version:
             errors.append(f"package.json must pin {name} {version} exactly.")
-    if package.get("overrides") != {"next": {"postcss": "8.5.10"}}:
+    if package.get("overrides") != {
+        "next": {"postcss": "8.5.10"},
+        "sharp": "0.35.3",
+    }:
         errors.append(
-            "package.json must contain only the scoped Next PostCSS 8.5.10 override."
+            "package.json must contain only the reviewed Next PostCSS 8.5.10 and "
+            "Sharp 0.35.3 overrides."
         )
     if package.get("packageManager") != "npm@11.16.0":
         errors.append("package.json must pin packageManager npm@11.16.0.")
@@ -344,7 +348,6 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
     if package.get("allowScripts") != {
         "esbuild": False,
         "fsevents": False,
-        "sharp": False,
         "unrs-resolver": False,
     }:
         errors.append(
@@ -371,8 +374,18 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
         errors.append(
             "package-lock.json root engines must pin Node 24.18.0 and npm 11.16.0."
         )
-    if packages.get("node_modules/next", {}).get("version") != "16.2.10":
-        errors.append("package-lock.json must resolve Next 16.2.10.")
+    if packages.get("node_modules/next", {}).get("version") != "16.2.11":
+        errors.append("package-lock.json must resolve Next 16.2.11.")
+    sharp_package = packages.get("node_modules/sharp", {})
+    if sharp_package.get("version") != "0.35.3":
+        errors.append("package-lock.json must resolve Sharp 0.35.3.")
+    if sharp_package.get("hasInstallScript") is not None:
+        errors.append("Sharp 0.35.3 must remain free of install scripts.")
+    if (
+        packages.get("node_modules/ajv/node_modules/fast-uri", {}).get("version")
+        != "3.1.4"
+    ):
+        errors.append("package-lock.json must resolve fast-uri 3.1.4.")
     if (
         packages.get("node_modules/next/node_modules/postcss", {}).get("version")
         != "8.5.10"

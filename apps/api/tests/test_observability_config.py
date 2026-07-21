@@ -83,6 +83,47 @@ def test_observability_config_rejects_inline_prometheus_credentials() -> None:
         validate_observability_config(**inputs)
 
 
+def test_observability_config_rejects_missing_console_metrics_scrape() -> None:
+    inputs = _current_inputs()
+    prometheus = copy.deepcopy(inputs["prometheus_prod"])
+    assert isinstance(prometheus, dict)
+    scrape_configs = prometheus["scrape_configs"]
+    assert isinstance(scrape_configs, list)
+    prometheus["scrape_configs"] = [
+        scrape
+        for scrape in scrape_configs
+        if isinstance(scrape, dict)
+        and scrape.get("job_name") != "hallu-defense-console"
+    ]
+    inputs["prometheus_prod"] = prometheus
+
+    with pytest.raises(ObservabilityConfigError, match="hallu-defense-console"):
+        validate_observability_config(**inputs)
+
+
+def test_observability_config_rejects_api_bearer_for_console_metrics() -> None:
+    inputs = _current_inputs()
+    prometheus = copy.deepcopy(inputs["prometheus_prod"])
+    assert isinstance(prometheus, dict)
+    scrape_configs = prometheus["scrape_configs"]
+    assert isinstance(scrape_configs, list)
+    console_scrape = next(
+        scrape
+        for scrape in scrape_configs
+        if isinstance(scrape, dict)
+        and scrape.get("job_name") == "hallu-defense-console"
+    )
+    authorization = console_scrape["authorization"]
+    assert isinstance(authorization, dict)
+    authorization["credentials_file"] = (
+        "/run/secrets/hallu_defense_metrics_bearer_token"
+    )
+    inputs["prometheus_prod"] = prometheus
+
+    with pytest.raises(ObservabilityConfigError, match="hallu_console_metrics_bearer"):
+        validate_observability_config(**inputs)
+
+
 def test_observability_config_rejects_default_ci_live_script_wiring() -> None:
     inputs = _current_inputs()
     inputs["ci_workflow_text"] = (

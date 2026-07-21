@@ -52,8 +52,7 @@ EXPECTED_MIGRATION_CHECKSUMS = {
 EXPECTED_MIGRATION_LEDGER = tuple(EXPECTED_MIGRATION_CHECKSUMS.items())
 EXPECTED_MIGRATION_CHECKSUM_AGGREGATE = hashlib.sha256(
     "".join(
-        f"{version}\0{checksum}\n"
-        for version, checksum in EXPECTED_MIGRATION_LEDGER
+        f"{version}\0{checksum}\n" for version, checksum in EXPECTED_MIGRATION_LEDGER
     ).encode("utf-8")
 ).hexdigest()
 EXPECTED_OPENSEARCH_SCHEMA_VERSION = "rag-opensearch-template.v3"
@@ -76,6 +75,10 @@ SCRATCH_IMAGE_REPOSITORIES = {
 KIND_POD_SUBNET = "192.168.0.0/16"
 KIND_NETWORK_POLICY_PROVIDER = "kindnet"
 KIND_PLATFORM = "linux/amd64"
+DEFAULT_KIND_KUBERNETES_API_PEERS: tuple[Mapping[str, object], ...] = (
+    {"cidr": "10.96.0.1/32", "port": 443},
+    {"cidr": "172.19.0.2/32", "port": 6443},
+)
 KIND_NODE_IMAGE_ENV = "HALLU_DEFENSE_LIVE_KIND_NODE_IMAGE"
 KIND_NODE_IMAGE = (
     "kindest/node:v1.36.1@sha256:"
@@ -349,10 +352,10 @@ import hashlib
 import json
 import os
 
-from hallu_defense.config import RUNTIME_ROLE_API, load_settings
+from hallu_defense.config import load_settings
 from hallu_defense.services.secrets import VaultSecretManager, create_secret_manager
 
-settings = load_settings(expected_runtime_role=RUNTIME_ROLE_API)
+settings = load_settings(expected_runtime_role=os.environ["HALLU_DEFENSE_RUNTIME_ROLE"])
 manager = create_secret_manager(settings)
 if not isinstance(manager, VaultSecretManager):
     raise RuntimeError("VaultSecretManager was not selected")
@@ -518,12 +521,13 @@ try:
     ]:
         raise RuntimeError("hybrid lifecycle tenant tombstone was not durable and exact")
     audit_rows = connection.fetch_all(
-        "SELECT outcome, metadata FROM audit_events WHERE event_id = %s",
+        "SELECT payload FROM audit_events WHERE event_id = %s",
         (report.audit_event_id,),
     )
-    if len(audit_rows) != 1 or audit_rows[0].get("outcome") != "success":
+    audit_payload = audit_rows[0].get("payload") if len(audit_rows) == 1 else None
+    if not isinstance(audit_payload, dict) or audit_payload.get("outcome") != "success":
         raise RuntimeError("hybrid lifecycle success audit was not committed")
-    audit_metadata = audit_rows[0].get("metadata")
+    audit_metadata = audit_payload.get("metadata")
     if not isinstance(audit_metadata, dict) or (
         audit_metadata.get("rag_lifecycle_operation_id") != report.run_id
         or audit_metadata.get("rag_external_deleted_count") != 1
@@ -636,6 +640,152 @@ def run_from_env(
     )
 
 
+def _discover_kind_kubernetes_api_peers(
+    execute: CommandExecutor,
+    *,
+    kubectl_cluster: Sequence[str],
+) -> list[dict[str, object]]:
+    """Return exact pre- and post-DNAT Kubernetes API destinations for Kind."""
+
+    def inventory(arguments: Sequence[str], description: str) -> object:
+        result = execute([*kubectl_cluster, *arguments], timeout_seconds=30)
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise LiveKindHelmSmokeError(
+                f"{description} inventory did not return JSON"
+            ) from exc
+
+    service_payload = inventory(
+        ["--namespace", "default", "get", "service", "kubernetes", "--output=json"],
+        "Kubernetes API Service",
+    )
+    service_spec = (
+        service_payload.get("spec") if isinstance(service_payload, Mapping) else None
+    )
+    cluster_ip = (
+        service_spec.get("clusterIP") if isinstance(service_spec, Mapping) else None
+    )
+    service_ports = (
+        service_spec.get("ports") if isinstance(service_spec, Mapping) else None
+    )
+    try:
+        service_address = (
+            ipaddress.ip_address(cluster_ip) if isinstance(cluster_ip, str) else None
+        )
+    except ValueError as exc:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API Service ClusterIP is invalid"
+        ) from exc
+    if service_address is None or service_address.version != 4:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API Service must expose one valid IPv4 ClusterIP"
+        )
+    if service_ports != [
+        {
+            "name": "https",
+            "port": 443,
+            "protocol": "TCP",
+            "targetPort": 6443,
+        }
+    ]:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API Service must expose only https/TCP 443 to targetPort 6443"
+        )
+
+    slice_payload = inventory(
+        [
+            "--namespace",
+            "default",
+            "get",
+            "endpointslice",
+            "--selector=kubernetes.io/service-name=kubernetes",
+            "--output=json",
+        ],
+        "Kubernetes API EndpointSlice",
+    )
+    slice_items = (
+        slice_payload.get("items") if isinstance(slice_payload, Mapping) else None
+    )
+    if not isinstance(slice_items, list) or len(slice_items) != 1:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API must have exactly one EndpointSlice in the Kind smoke"
+        )
+    endpoint_slice = slice_items[0]
+    endpoints = (
+        endpoint_slice.get("endpoints") if isinstance(endpoint_slice, Mapping) else None
+    )
+    endpoint_ports = (
+        endpoint_slice.get("ports") if isinstance(endpoint_slice, Mapping) else None
+    )
+    if endpoint_ports != [{"name": "https", "port": 6443, "protocol": "TCP"}]:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API EndpointSlice must expose only https/TCP port 6443"
+        )
+    if not isinstance(endpoints, list) or len(endpoints) != 1:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API EndpointSlice must contain exactly one endpoint"
+        )
+    endpoint = endpoints[0]
+    conditions = endpoint.get("conditions") if isinstance(endpoint, Mapping) else None
+    addresses = endpoint.get("addresses") if isinstance(endpoint, Mapping) else None
+    if not isinstance(conditions, Mapping) or conditions.get("ready") is not True:
+        raise LiveKindHelmSmokeError("Kubernetes API endpoint must be explicitly Ready")
+    if not isinstance(addresses, list) or len(addresses) != 1:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API endpoint must expose exactly one address"
+        )
+    try:
+        endpoint_address = ipaddress.ip_address(addresses[0])
+    except (TypeError, ValueError) as exc:
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API endpoint address is invalid"
+        ) from exc
+    if endpoint_address.version != 4:
+        raise LiveKindHelmSmokeError("Kubernetes API endpoint must be IPv4 in Kind")
+
+    node_payload = inventory(
+        [
+            "get",
+            "nodes",
+            "--selector=node-role.kubernetes.io/control-plane",
+            "--output=json",
+        ],
+        "Kind control-plane Node",
+    )
+    node_items = (
+        node_payload.get("items") if isinstance(node_payload, Mapping) else None
+    )
+    if not isinstance(node_items, list) or len(node_items) != 1:
+        raise LiveKindHelmSmokeError(
+            "Kind smoke must contain exactly one control-plane Node"
+        )
+    node_status = (
+        node_items[0].get("status") if isinstance(node_items[0], Mapping) else None
+    )
+    node_addresses = (
+        node_status.get("addresses") if isinstance(node_status, Mapping) else None
+    )
+    if not isinstance(node_addresses, list):
+        raise LiveKindHelmSmokeError(
+            "Kind control-plane Node address inventory is invalid"
+        )
+    internal_ips = [
+        address.get("address")
+        for address in node_addresses
+        if isinstance(address, Mapping) and address.get("type") == "InternalIP"
+    ]
+    if len(internal_ips) != 1 or internal_ips[0] != str(endpoint_address):
+        raise LiveKindHelmSmokeError(
+            "Kubernetes API endpoint must equal the sole control-plane InternalIP"
+        )
+
+    return [
+        {"cidr": f"{service_address}/32", "port": 443},
+        {"cidr": f"{endpoint_address}/32", "port": 6443},
+    ]
+
+
 def run_smoke(
     *,
     cluster: str,
@@ -685,7 +835,7 @@ def run_smoke(
         if cluster in baseline_clusters:
             raise LiveKindHelmSmokeError(
                 f"refusing to reuse or delete existing kind cluster {cluster!r}"
-        )
+            )
         _ensure_scratch_images_absent(execute, scratch_images)
         execute(
             [
@@ -775,6 +925,10 @@ def run_smoke(
             ],
             timeout_seconds=330,
         )
+        kubernetes_api_peers = _discover_kind_kubernetes_api_peers(
+            execute,
+            kubectl_cluster=kubectl_cluster,
+        )
         execute(
             [
                 "kind",
@@ -831,6 +985,9 @@ def run_smoke(
             f"kindDependencies.opensearch.image={effective_images['opensearch']}",
             "--set-string",
             f"kindDependencies.vault.image={effective_images['vault']}",
+            "--set-json",
+            "networkPolicy.kubernetesApi="
+            + json.dumps(kubernetes_api_peers, separators=(",", ":")),
         ]
         helm_cluster_args = [
             "--kubeconfig",
@@ -1050,6 +1207,7 @@ def run_smoke(
             execute,
             kubectl=kubectl,
             probe_image=effective_images["api"],
+            kubernetes_api_peers=kubernetes_api_peers,
         )
         sandbox = _verify_kubernetes_sandbox(
             execute,
@@ -1075,6 +1233,7 @@ def run_smoke(
                 "default_cni_enabled": True,
                 "runtime_denials_verified": True,
             },
+            "kubernetes_api_network_peers": kubernetes_api_peers,
             "migration_count": len(migration_versions),
             "migration_versions": list(migration_versions),
             "migration_checksums": dict(migration_ledger),
@@ -1283,7 +1442,9 @@ def _ensure_scratch_images_absent(
             )
         if not _docker_reports_missing_image(result):
             detail = _redact_sensitive_output(
-                result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+                result.stderr.strip()
+                or result.stdout.strip()
+                or f"exit {result.returncode}"
             )
             raise LiveKindHelmSmokeError(
                 f"could not prove scratch image {image!r} absent: {detail[:1000]}"
@@ -1307,9 +1468,7 @@ def _remove_scratch_images(
                 or removal.stdout.strip()
                 or f"exit {removal.returncode}"
             )
-            failures.append(
-                f"removal failed for {image!r}: {detail[:1000]}"
-            )
+            failures.append(f"removal failed for {image!r}: {detail[:1000]}")
     remaining: list[str] = []
     for image in images:
         inspection = execute(
@@ -1578,7 +1737,9 @@ def _wait_for_fixture_pod_ready(
         pod_spec = pod.get("spec") if isinstance(pod, Mapping) else None
         status = pod.get("status") if isinstance(pod, Mapping) else None
         name = metadata.get("name") if isinstance(metadata, Mapping) else None
-        owners = metadata.get("ownerReferences") if isinstance(metadata, Mapping) else None
+        owners = (
+            metadata.get("ownerReferences") if isinstance(metadata, Mapping) else None
+        )
         labels = metadata.get("labels") if isinstance(metadata, Mapping) else None
         conditions = status.get("conditions") if isinstance(status, Mapping) else None
         containers = (
@@ -1587,14 +1748,11 @@ def _wait_for_fixture_pod_ready(
         spec_containers = (
             pod_spec.get("containers") if isinstance(pod_spec, Mapping) else None
         )
-        ready_condition = (
-            isinstance(conditions, list)
-            and any(
-                isinstance(condition, Mapping)
-                and condition.get("type") == "Ready"
-                and condition.get("status") == "True"
-                for condition in conditions
-            )
+        ready_condition = isinstance(conditions, list) and any(
+            isinstance(condition, Mapping)
+            and condition.get("type") == "Ready"
+            and condition.get("status") == "True"
+            for condition in conditions
         )
         ready_containers = (
             isinstance(containers, list)
@@ -1606,19 +1764,27 @@ def _wait_for_fixture_pod_ready(
                 for container in containers
             )
         )
-        job_owners = [
-            owner
-            for owner in owners
-            if isinstance(owner, Mapping)
-            and owner.get("kind") == "Job"
-            and owner.get("controller") is True
-        ] if isinstance(owners, list) else []
-        fixture_specs = [
-            container
-            for container in spec_containers
-            if isinstance(container, Mapping)
-            and container.get("name") == "prepare-sandbox-fixture"
-        ] if isinstance(spec_containers, list) else []
+        job_owners = (
+            [
+                owner
+                for owner in owners
+                if isinstance(owner, Mapping)
+                and owner.get("kind") == "Job"
+                and owner.get("controller") is True
+            ]
+            if isinstance(owners, list)
+            else []
+        )
+        fixture_specs = (
+            [
+                container
+                for container in spec_containers
+                if isinstance(container, Mapping)
+                and container.get("name") == "prepare-sandbox-fixture"
+            ]
+            if isinstance(spec_containers, list)
+            else []
+        )
         readiness_probe = (
             fixture_specs[0].get("readinessProbe") if len(fixture_specs) == 1 else None
         )
@@ -1627,13 +1793,14 @@ def _wait_for_fixture_pod_ready(
             if isinstance(readiness_probe, Mapping)
             else None
         )
-        probe_command = probe_exec.get("command") if isinstance(probe_exec, Mapping) else None
+        probe_command = (
+            probe_exec.get("command") if isinstance(probe_exec, Mapping) else None
+        )
         exact_job_name = f"{RELEASE_NAME}-sandbox-fixture-{revision}"
         if (
             isinstance(name, str)
             and isinstance(labels, Mapping)
-            and labels.get("hallu-defense.openai.com/release-revision")
-            == str(revision)
+            and labels.get("hallu-defense.openai.com/release-revision") == str(revision)
             and isinstance(status, Mapping)
             and status.get("phase") == "Running"
             and ready_condition
@@ -1643,11 +1810,10 @@ def _wait_for_fixture_pod_ready(
             and isinstance(readiness_probe, Mapping)
             and readiness_probe.get("initialDelaySeconds") == 1
             and readiness_probe.get("periodSeconds") == 1
-            and readiness_probe.get("timeoutSeconds") == 1
+            and readiness_probe.get("timeoutSeconds") == 5
             and isinstance(probe_command, list)
-            and "HALLU_FIXTURE_READY_MARKER" in " ".join(
-                str(part) for part in probe_command
-            )
+            and "HALLU_FIXTURE_READY_MARKER"
+            in " ".join(str(part) for part in probe_command)
         ):
             return {
                 "job": exact_job_name,
@@ -1767,6 +1933,7 @@ def _verify_helm_release_secret_boundary(
         "kindRedisTlsCertificate",
         "kindRedisTlsPrivateKey",
     }
+
     def inspect_release_value(
         value: object,
         path: str,
@@ -1875,7 +2042,9 @@ def _verify_helm_release_secret_boundary(
             )
         revision_names[revision] = actual_names
     if revision_names[1] != revision_names[2]:
-        raise LiveKindHelmSmokeError("Helm release Secret references changed across revisions")
+        raise LiveKindHelmSmokeError(
+            "Helm release Secret references changed across revisions"
+        )
     return {
         "manifest_secret_objects": 0,
         "revisions_checked": [1, 2],
@@ -2226,7 +2395,20 @@ def _verify_runtime_secret_rotation(
         raise restore_exc
     if primary_error is not None:
         raise primary_error
+    for component in ("api", "worker"):
+        execute(
+            [
+                *kubectl,
+                "wait",
+                "--for=condition=Ready",
+                "--timeout=90s",
+                "pod",
+                f"--selector=app.kubernetes.io/component={component}",
+            ],
+            timeout_seconds=105,
+        )
     return {
+        "runtime_components_recovered": ["api", "worker"],
         "fingerprint_changed": observed_rotated,
         "lexical_path_preserved": True,
         "manager_type": "VaultSecretManager",
@@ -2266,36 +2448,39 @@ def _wait_for_vault_manager_fingerprint(
         raise LiveKindHelmSmokeError(
             "runtime Secret rotation polling bounds are invalid"
         )
-    for attempt in range(attempts):
-        result = execute(
-            [
-                *kubectl,
-                "exec",
-                f"deployment/{RELEASE_NAME}-api",
-                "--",
-                "python",
-                "-c",
-                VAULT_MANAGER_ROTATION_PROBE_SCRIPT,
-            ],
-            check=False,
-            timeout_seconds=30,
-        )
-        if result.returncode == 0:
-            try:
-                payload = json.loads(result.stdout.strip())
-            except json.JSONDecodeError:
-                payload = None
-            if payload == {
-                "lexical_path_preserved": True,
-                "manager_type": "VaultSecretManager",
-                "token_sha256": expected_fingerprint,
-            }:
-                return
-        if attempt + 1 < attempts:
-            time.sleep(interval_seconds)
-    raise LiveKindHelmSmokeError(
-        "API VaultSecretManager did not observe the expected projected-token revision"
-    )
+    for component in ("api", "worker"):
+        for attempt in range(attempts):
+            result = execute(
+                [
+                    *kubectl,
+                    "exec",
+                    f"deployment/{RELEASE_NAME}-{component}",
+                    "--",
+                    "python",
+                    "-c",
+                    VAULT_MANAGER_ROTATION_PROBE_SCRIPT,
+                ],
+                check=False,
+                timeout_seconds=30,
+            )
+            if result.returncode == 0:
+                try:
+                    payload = json.loads(result.stdout.strip())
+                except json.JSONDecodeError:
+                    payload = None
+                if payload == {
+                    "lexical_path_preserved": True,
+                    "manager_type": "VaultSecretManager",
+                    "token_sha256": expected_fingerprint,
+                }:
+                    break
+            if attempt + 1 < attempts:
+                time.sleep(interval_seconds)
+        else:
+            raise LiveKindHelmSmokeError(
+                f"{component} VaultSecretManager did not observe the expected "
+                "projected-token revision"
+            )
 
 
 def _verify_console_oidc_runtime(
@@ -2613,6 +2798,7 @@ def _verify_opensearch_transport_loopback(
 ) -> list[str]:
     script = r"""
 import json
+import ipaddress
 import socket
 
 opensearch_transport_loopback = True
@@ -2629,7 +2815,11 @@ for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         if path.endswith("tcp"):
             listeners.append(socket.inet_ntoa(bytes.fromhex(address_hex)[::-1]))
         else:
-            listeners.append("tcp6:" + address_hex)
+            packed = b"".join(
+                bytes.fromhex(address_hex[index:index + 8])[::-1]
+                for index in range(0, 32, 8)
+            )
+            listeners.append(str(ipaddress.IPv6Address(packed)))
 print(json.dumps({"listeners": sorted(listeners)}, sort_keys=True))
 """
     result = execute(
@@ -2650,11 +2840,34 @@ print(json.dumps({"listeners": sorted(listeners)}, sort_keys=True))
         raise LiveKindHelmSmokeError(
             "OpenSearch transport listener readback did not return JSON"
         ) from exc
-    if payload != {"listeners": ["127.0.0.1"]}:
+    raw_listeners = payload.get("listeners") if isinstance(payload, Mapping) else None
+    if not isinstance(raw_listeners, list) or not raw_listeners:
         raise LiveKindHelmSmokeError(
-            "OpenSearch transport port 9300 must listen only on IPv4 loopback"
+            "OpenSearch transport port 9300 did not expose bounded listener evidence"
         )
-    return ["127.0.0.1"]
+    normalized: set[str] = set()
+    for listener in raw_listeners:
+        if not isinstance(listener, str):
+            raise LiveKindHelmSmokeError(
+                "OpenSearch transport port 9300 returned an invalid listener"
+            )
+        try:
+            address = ipaddress.ip_address(listener)
+        except ValueError:
+            raise LiveKindHelmSmokeError(
+                "OpenSearch transport port 9300 returned an invalid listener"
+            ) from None
+        if (
+            isinstance(address, ipaddress.IPv6Address)
+            and address.ipv4_mapped is not None
+        ):
+            address = address.ipv4_mapped
+        if not address.is_loopback:
+            raise LiveKindHelmSmokeError(
+                "OpenSearch transport port 9300 must listen only on loopback"
+            )
+        normalized.add(str(address))
+    return sorted(normalized)
 
 
 def _verify_application_egress(
@@ -2662,6 +2875,9 @@ def _verify_application_egress(
     *,
     kubectl: Sequence[str],
     probe_image: str = API_IMAGE,
+    kubernetes_api_peers: Sequence[
+        Mapping[str, object]
+    ] = DEFAULT_KIND_KUBERNETES_API_PEERS,
 ) -> dict[str, object]:
     policy_result = execute(
         [*kubectl, "get", "networkpolicy", "--output=json"],
@@ -2686,11 +2902,19 @@ def _verify_application_egress(
         and isinstance(metadata.get("name"), str)
     }
     default_deny = policies_by_name.get(f"{RELEASE_NAME}-default-deny-ingress")
-    if not isinstance(default_deny, Mapping) or default_deny.get("spec") != {
-        "podSelector": {},
-        "policyTypes": ["Ingress"],
-        "ingress": [],
-    }:
+    default_deny_spec = (
+        default_deny.get("spec") if isinstance(default_deny, Mapping) else None
+    )
+    # The Kubernetes API omits an explicitly empty ``ingress: []`` field when it
+    # serializes NetworkPolicy objects.  Missing and empty are the same
+    # default-deny semantic, but no additional spec fields are permitted here.
+    if (
+        not isinstance(default_deny_spec, Mapping)
+        or set(default_deny_spec) - {"podSelector", "policyTypes", "ingress"}
+        or default_deny_spec.get("podSelector") != {}
+        or default_deny_spec.get("policyTypes") != ["Ingress"]
+        or default_deny_spec.get("ingress", []) != []
+    ):
         raise LiveKindHelmSmokeError(
             "application namespace default-deny ingress policy is missing or inexact"
         )
@@ -2726,7 +2950,10 @@ def _verify_application_egress(
             8000,
         ),
         "console": (
-            (("hallu-defense.openai.com/network-client", "console"),),
+            (
+                ("hallu-defense.openai.com/network-client", "console"),
+                ("hallu-defense.openai.com/network-client", "metrics"),
+            ),
             3000,
         ),
         "worker": (
@@ -2825,7 +3052,10 @@ def _verify_application_egress(
             raise LiveKindHelmSmokeError(
                 f"egress-only NetworkPolicy {policy_name} must not alter ingress"
             )
-        egress_rules = spec.get("egress")
+        # Kubernetes omits an explicitly empty egress list in JSON.  With the
+        # Egress policyType present, an omitted list is the canonical deny-all
+        # representation and is equivalent to ``egress: []``.
+        egress_rules = spec.get("egress", [])
         if not isinstance(egress_rules, list):
             raise LiveKindHelmSmokeError(
                 f"NetworkPolicy {policy_name} has invalid egress rules"
@@ -2855,6 +3085,69 @@ def _verify_application_egress(
         if component in {"pgvector", "opensearch", "vault"} and egress_rules:
             raise LiveKindHelmSmokeError(
                 f"NetworkPolicy {policy_name} must deny all egress"
+            )
+        if component == "api":
+            expected_api_egress = [
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": "kube-system"
+                                }
+                            },
+                            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                        }
+                    ],
+                    "ports": [
+                        {"protocol": "UDP", "port": 53},
+                        {"protocol": "TCP", "port": 53},
+                    ],
+                },
+                *[
+                    {
+                        "to": [
+                            {
+                                "podSelector": {
+                                    "matchLabels": {
+                                        "app.kubernetes.io/name": RELEASE_NAME,
+                                        "app.kubernetes.io/instance": RELEASE_NAME,
+                                        "app.kubernetes.io/component": dependency,
+                                    }
+                                }
+                            }
+                        ],
+                        "ports": [{"protocol": "TCP", "port": port}],
+                    }
+                    for dependency, port in (
+                        ("pgvector", 5432),
+                        ("vault", 8200),
+                        ("redis", 6379),
+                        ("opensearch", 9200),
+                    )
+                ],
+                *[
+                    {
+                        "to": [{"ipBlock": {"cidr": str(peer["cidr"])}}],
+                        "ports": [{"protocol": "TCP", "port": int(str(peer["port"]))}],
+                    }
+                    for peer in kubernetes_api_peers
+                ],
+            ]
+            if egress_rules != expected_api_egress:
+                raise LiveKindHelmSmokeError(
+                    f"NetworkPolicy {policy_name} API egress allowlist is not exact"
+                )
+        if component == "worker" and any(
+            isinstance(destination, Mapping) and "ipBlock" in destination
+            for rule in egress_rules
+            if isinstance(rule, Mapping)
+            for destination in (
+                rule.get("to") if isinstance(rule.get("to"), list) else []
+            )
+        ):
+            raise LiveKindHelmSmokeError(
+                f"NetworkPolicy {policy_name} must not allow Kubernetes API IP blocks"
             )
         policy_evidence[component] = {
             "name": policy_name,
@@ -2911,7 +3204,8 @@ print(json.dumps({
             ) from exc
         if payload != expected[component]:
             raise LiveKindHelmSmokeError(
-                f"{component} application egress policy returned unexpected evidence"
+                f"{component} application egress policy returned unexpected "
+                f"bounded evidence: {json.dumps(payload, sort_keys=True)}"
             )
         probes[component] = payload
 
@@ -2981,6 +3275,7 @@ def _verify_dependency_ingress_denial(
     probe_image: str = API_IMAGE,
 ) -> dict[str, object]:
     pod_name = "hallu-network-ingress-probe"
+    probe_names = [pod_name]
     opensearch_pod_ip = _selected_opensearch_pod_ip(execute, kubectl=kubectl)
     manifest = {
         "apiVersion": "v1",
@@ -3047,7 +3342,7 @@ unauthorized_dependency_ingress_probe = True
 
 def connected(host, port):
     try:
-        connection = socket.create_connection((host, port), timeout=2)
+        connection = socket.create_connection((host, port), timeout=1)
     except OSError:
         return False
     connection.close()
@@ -3110,37 +3405,56 @@ def snapshot():
         "worker": connected("hallu-defense-worker", 9090),
     }
 
-for _ in range(20):
+for _ in range(15):
     actual = snapshot()
     if actual == expected:
         print(json.dumps(actual, sort_keys=True))
         break
     time.sleep(0.25)
 else:
-    raise SystemExit("application ingress allowlist did not converge")
+    raise SystemExit(
+        "application ingress allowlist did not converge: "
+        + json.dumps(actual, sort_keys=True)
+    )
 """
         explicit_allowlists: dict[str, dict[str, bool]] = {}
         for label_value, expected_connections in (
             ("api", {"api": True, "console": False, "worker": False}),
             ("console", {"api": False, "console": True, "worker": False}),
-            ("metrics", {"api": True, "console": False, "worker": True}),
+            ("metrics", {"api": True, "console": True, "worker": True}),
         ):
+            identity_pod_name = f"{pod_name}-{label_value}"
+            identity_manifest = copy.deepcopy(manifest)
+            identity_manifest["metadata"]["name"] = identity_pod_name
+            identity_manifest["metadata"]["labels"][
+                "hallu-defense.openai.com/network-client"
+            ] = label_value
+            probe_names.append(identity_pod_name)
             execute(
                 [
                     *kubectl,
-                    "label",
-                    "pod",
-                    pod_name,
-                    f"hallu-defense.openai.com/network-client={label_value}",
-                    "--overwrite",
+                    "apply",
+                    "--filename",
+                    "-",
                 ],
                 timeout_seconds=30,
+                input_text=json.dumps(identity_manifest, separators=(",", ":")),
+            )
+            execute(
+                [
+                    *kubectl,
+                    "wait",
+                    "--for=condition=Ready",
+                    "--timeout=60s",
+                    f"pod/{identity_pod_name}",
+                ],
+                timeout_seconds=75,
             )
             allow_result = execute(
                 [
                     *kubectl,
                     "exec",
-                    f"pod/{pod_name}",
+                    f"pod/{identity_pod_name}",
                     "--",
                     "python",
                     "-c",
@@ -3149,7 +3463,7 @@ else:
                         json.dumps(json.dumps(expected_connections, sort_keys=True)),
                     ),
                 ],
-                timeout_seconds=15,
+                timeout_seconds=45,
             )
             try:
                 allow_payload = json.loads(allow_result.stdout.strip())
@@ -3171,7 +3485,7 @@ else:
                 *kubectl,
                 "delete",
                 "pod",
-                pod_name,
+                *probe_names,
                 "--ignore-not-found=true",
                 "--wait=true",
                 "--timeout=60s",
@@ -3179,16 +3493,21 @@ else:
             check=False,
             timeout_seconds=75,
         )
-        absence_result = execute(
-            [*kubectl, "get", "pod", pod_name, "--output=name"],
-            check=False,
-            timeout_seconds=15,
-        )
         cleanup_error = None
         if delete_result.returncode != 0:
             cleanup_error = delete_result.stderr.strip() or "probe Pod delete failed"
-        elif absence_result.returncode == 0:
-            cleanup_error = "unauthorized ingress probe Pod remained after delete"
+        else:
+            for deleted_probe_name in probe_names:
+                absence_result = execute(
+                    [*kubectl, "get", "pod", deleted_probe_name, "--output=name"],
+                    check=False,
+                    timeout_seconds=15,
+                )
+                if absence_result.returncode == 0:
+                    cleanup_error = (
+                        f"ingress probe Pod {deleted_probe_name} remained after delete"
+                    )
+                    break
         if cleanup_error is not None:
             if probe_error is None:
                 raise LiveKindHelmSmokeError(cleanup_error)
@@ -3654,7 +3973,15 @@ def _verify_api_sandbox_rbac(
         f"system:serviceaccount:{application_namespace}:{RELEASE_NAME}-api"
     )
 
-    def can_i(namespace: str, verb: str, resource: str) -> bool:
+    def can_i(
+        namespace: str,
+        verb: str,
+        resource: str,
+        subresource: str | None = None,
+    ) -> bool:
+        subresource_args = (
+            [f"--subresource={subresource}"] if subresource is not None else []
+        )
         result = execute(
             [
                 *command_prefix,
@@ -3664,6 +3991,7 @@ def _verify_api_sandbox_rbac(
                 "can-i",
                 verb,
                 resource,
+                *subresource_args,
                 "--as",
                 service_account,
             ],
@@ -3673,20 +4001,24 @@ def _verify_api_sandbox_rbac(
         answer = result.stdout.strip().lower()
         if answer not in {"yes", "no"}:
             raise LiveKindHelmSmokeError(
-                f"kubectl auth can-i returned invalid evidence for {verb} {resource}"
+                "kubectl auth can-i returned invalid evidence for "
+                f"{verb} {resource}{f'/{subresource}' if subresource else ''}"
             )
         if (answer == "yes") != (result.returncode == 0):
             raise LiveKindHelmSmokeError(
-                f"kubectl auth can-i exit status disagreed for {verb} {resource}"
+                "kubectl auth can-i exit status disagreed for "
+                f"{verb} {resource}{f'/{subresource}' if subresource else ''}"
             )
         return answer == "yes"
 
     application_denials = {
-        f"{verb}:{resource}": can_i(application_namespace, verb, resource)
-        for verb, resource in (
-            ("list", "pods"),
-            ("get", "pods/log"),
-            ("delete", "jobs.batch"),
+        f"{verb}:{resource}{f'/{subresource}' if subresource else ''}": can_i(
+            application_namespace, verb, resource, subresource
+        )
+        for verb, resource, subresource in (
+            ("list", "pods", None),
+            ("get", "pods", "log"),
+            ("delete", "jobs.batch", None),
         )
     }
     if any(application_denials.values()):
@@ -3694,19 +4026,25 @@ def _verify_api_sandbox_rbac(
             "API ServiceAccount unexpectedly has workload access in the application namespace"
         )
     sandbox_grants = {
-        f"{verb}:{resource}": can_i(sandbox_namespace, verb, resource)
-        for verb, resource in (
-            ("create", "jobs.batch"),
-            ("get", "jobs.batch"),
-            ("delete", "jobs.batch"),
-            ("list", "pods"),
-            ("get", "pods/log"),
-            ("list", "networkpolicies.networking.k8s.io"),
+        f"{verb}:{resource}{f'/{subresource}' if subresource else ''}": can_i(
+            sandbox_namespace, verb, resource, subresource
+        )
+        for verb, resource, subresource in (
+            ("create", "jobs.batch", None),
+            ("get", "jobs.batch", None),
+            ("delete", "jobs.batch", None),
+            ("list", "pods", None),
+            ("get", "pods", "log"),
+            ("list", "networkpolicies.networking.k8s.io", None),
         )
     }
     if not all(sandbox_grants.values()):
+        missing = sorted(
+            name for name, allowed in sandbox_grants.items() if not allowed
+        )
         raise LiveKindHelmSmokeError(
-            "API ServiceAccount lacks an expected sandbox namespace operation"
+            "API ServiceAccount lacks expected sandbox namespace operations: "
+            + json.dumps(missing)
         )
     return {
         "application_namespace_denied": {
@@ -3796,7 +4134,8 @@ def _verify_kubernetes_sandbox(
     )
     if successful_run.get("exit_codes") != [7, 0]:
         raise LiveKindHelmSmokeError(
-            "sandbox smoke did not preserve both batched command exit codes"
+            "sandbox smoke did not preserve both batched command exit codes: "
+            + json.dumps(successful_run.get("exit_codes"))
         )
     stdout = successful_run.get("stdout")
     stderr = successful_run.get("stderr")
@@ -3843,7 +4182,10 @@ def _verify_kubernetes_sandbox(
             "sandbox fixture was not inspected as a real Git repository"
         )
     if git_report.get("errors") != []:
-        raise LiveKindHelmSmokeError("API runtime Git inspection reported errors")
+        raise LiveKindHelmSmokeError(
+            "API runtime Git inspection reported errors: "
+            + json.dumps(git_report.get("errors"), sort_keys=True)[:1000]
+        )
 
     escaped = _repo_checks_request(
         execute,
@@ -3856,7 +4198,15 @@ def _verify_kubernetes_sandbox(
         },
         expected_status=400,
     )
-    if "escapes the configured workspace" not in str(escaped.get("detail", "")):
+    if (
+        set(escaped) != {"trace_id", "error", "message", "details"}
+        or not isinstance(escaped.get("trace_id"), str)
+        or not escaped["trace_id"]
+        or escaped.get("error") != "http_400"
+        or escaped.get("details") != {}
+        or "escapes the configured workspace"
+        not in str(escaped.get("message", ""))
+    ):
         raise LiveKindHelmSmokeError(
             "sandbox path escape was not rejected by the workspace guard"
         )
@@ -3898,19 +4248,27 @@ def _verify_kubernetes_sandbox(
     )
     egress_stdout = egress_run.get("stdout")
     egress_stderr = egress_run.get("stderr")
+    if isinstance(egress_stderr, list) and any(
+        "egress-unexpectedly-allowed" in str(item) for item in egress_stderr
+    ):
+        raise LiveKindHelmSmokeError(
+            "sandbox egress unexpectedly reached the external endpoint"
+        )
     if egress_run.get("exit_codes") != [0] or (
         not isinstance(egress_stdout, list)
         or not egress_stdout
         or "egress-blocked" not in str(egress_stdout[0])
     ):
         raise LiveKindHelmSmokeError(
-            "kindnet did not produce real failed egress evidence"
-        )
-    if isinstance(egress_stderr, list) and any(
-        "egress-unexpectedly-allowed" in str(item) for item in egress_stderr
-    ):
-        raise LiveKindHelmSmokeError(
-            "sandbox egress unexpectedly reached the external endpoint"
+            "kindnet did not produce real failed egress evidence: "
+            + json.dumps(
+                {
+                    "exit_codes": egress_run.get("exit_codes"),
+                    "stdout": egress_stdout,
+                    "stderr": egress_stderr,
+                },
+                sort_keys=True,
+            )[:1000]
         )
 
     residual_jobs = _assert_empty_sandbox_workload_inventory(
@@ -4110,9 +4468,7 @@ def _wait_for_sandbox_admission_policy(
 ) -> dict[str, object]:
     activation_manifest = dict(
         _sandbox_admission_probe_manifests(namespace, image=sandbox_image)
-    )[
-        "hallu-sandbox-admission-finalizer"
-    ]
+    )["hallu-sandbox-admission-finalizer"]
     last_detail = ""
     for _ in range(ADMISSION_POLICY_ACTIVATION_ATTEMPTS):
         policy_result = execute(
@@ -4494,7 +4850,9 @@ print(json.dumps({"status": status, "body": body}, separators=(",", ":")))
         ),
         input_text=request_input,
     )
-    envelope = _decode_repo_checks_envelope(result.stdout, expected_status=expected_status)
+    envelope = _decode_repo_checks_envelope(
+        result.stdout, expected_status=expected_status
+    )
     return _decode_repo_checks_body(envelope)
 
 
@@ -4526,7 +4884,7 @@ service_port = os.environ["KUBERNETES_SERVICE_PORT_HTTPS"]
 if ":" in service_host and not service_host.startswith("["):
     service_host = "[" + service_host + "]"
 api_root = "https://" + service_host + ":" + service_port
-service_account_root = "/var/run/secrets/kubernetes.io/serviceaccount"
+service_account_root = "/run/hallu-defense/kubernetes"
 with open(service_account_root + "/token", encoding="utf-8") as token_file:
     service_account_token = token_file.read().strip()
 if not service_account_token:
@@ -4875,7 +5233,9 @@ def _repo_checks_request_with_cleanup_evidence(
         ),
         input_text=request_input,
     )
-    envelope = _decode_repo_checks_envelope(result.stdout, expected_status=expected_status)
+    envelope = _decode_repo_checks_envelope(
+        result.stdout, expected_status=expected_status
+    )
     cleanup = _validate_sandbox_cleanup_evidence(envelope.get("cleanup"))
     return _decode_repo_checks_body(envelope), cleanup
 
@@ -4922,7 +5282,9 @@ def _validate_sandbox_cleanup_evidence(raw: object) -> dict[str, object]:
         "target_owned_pods",
         "poll_attempts",
     }:
-        raise LiveKindHelmSmokeError("sandbox cleanup UID evidence was missing or malformed")
+        raise LiveKindHelmSmokeError(
+            "sandbox cleanup UID evidence was missing or malformed"
+        )
     job_name = raw.get("target_job_name")
     job_uid = raw.get("target_job_uid")
     attempts = raw.get("poll_attempts")

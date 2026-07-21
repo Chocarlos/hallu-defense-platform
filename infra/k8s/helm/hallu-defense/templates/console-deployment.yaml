@@ -74,6 +74,7 @@ spec:
         app.kubernetes.io/component: console
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         {{- include "hallu-defense.podSecurityContext" . | nindent 8 }}
       containers:
@@ -103,6 +104,8 @@ spec:
               value: {{ .Values.demoRequests.webhookAllowedOrigin | quote }}
             - name: HALLU_DEFENSE_DEMO_REDIS_URL_FILE
               value: /run/hallu-defense/demo/redis-url
+            - name: HALLU_DEFENSE_DEMO_REDIS_MODE
+              value: {{ .Values.demoRequests.redisMode | quote }}
             - name: HALLU_DEFENSE_DEMO_REDIS_CA_PATH
               value: {{ .Values.demoRequests.redisCaPath | quote }}
             - name: HALLU_DEFENSE_CONSOLE_METRICS_BEARER_FILE
