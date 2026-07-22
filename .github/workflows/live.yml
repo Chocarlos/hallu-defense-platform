@@ -278,7 +278,7 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Start OIDC Console and wait for readiness
         env:
-          HALLU_DEFENSE_ENV: local
+          HALLU_DEFENSE_ENV: test
           HALLU_DEFENSE_CONSOLE_AUTH_MODE: oidc
           HALLU_DEFENSE_CONSOLE_PUBLIC_ORIGIN: http://127.0.0.1:3100
           HALLU_DEFENSE_CONSOLE_API_ORIGIN: http://127.0.0.1:18123
@@ -393,6 +393,8 @@ jobs:
         run: |
           python scripts/ci/install_python_lock.py build-tools
           python scripts/ci/install_python_lock.py dev
+      - name: Prepare ephemeral OTEL output directory
+        run: sudo install -d -o 10001 -g 10001 -m 0755 var/otel
       - name: Start observability stack
         run: docker compose up -d --build grafana
       - name: Wait for API readiness
@@ -439,7 +441,12 @@ jobs:
           HALLU_DEFENSE_LIVE_OTEL_EXPORT_CHECK_ENABLED: "true"
           HALLU_DEFENSE_LIVE_OTEL_EXPORT_CHECK_API_BASE_URL: http://localhost:8000
           HALLU_DEFENSE_LIVE_OTEL_EXPORT_CHECK_SPANS_PATH: var/otel/spans.jsonl
-        run: python scripts/dev/live_otel_export_check.py
+        run: |
+          if ! python scripts/dev/live_otel_export_check.py; then
+            ls -la var/otel || true
+            docker compose logs api otel-collector || true
+            exit 1
+          fi
       - name: Run observability live smoke
         env:
           HALLU_DEFENSE_LIVE_OBSERVABILITY_SMOKE_ENABLED: "true"

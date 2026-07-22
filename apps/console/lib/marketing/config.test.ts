@@ -139,15 +139,27 @@ function productionFixture(): Readonly<Record<string, string>> {
   const redisFile = join(directory, "redis-url");
   const caFile = join(directory, "redis-ca.pem");
   const metricsFile = join(directory, "metrics-bearer");
-  writeFileSync(webhookFile, "https://crm.example.test/hooks/demo\n", "utf8");
-  writeFileSync(hmacFile, `webhook-hmac-${"x".repeat(32)}\n`, "utf8");
+  writeFileSync(webhookFile, "https://crm.example.test/hooks/demo\n", {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  writeFileSync(hmacFile, `webhook-hmac-${"x".repeat(32)}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
   writeFileSync(
     redisFile,
     "rediss://demo:secret@redis.example.test:6380/0\n",
-    "utf8"
+    { encoding: "utf8", mode: 0o600 }
   );
-  writeFileSync(caFile, rootCertificates[0] ?? "", "utf8");
-  writeFileSync(metricsFile, `metrics-bearer-${"x".repeat(32)}\n`, "utf8");
+  writeFileSync(caFile, rootCertificates[0] ?? "", {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  writeFileSync(metricsFile, `metrics-bearer-${"x".repeat(32)}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
   return {
     HALLU_DEFENSE_ENV: "production",
     HALLU_DEFENSE_DEMO_REQUESTS_ENABLED: "true",

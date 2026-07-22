@@ -1186,10 +1186,16 @@ def _validate_keycloak_dockerfile(
         "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.21.4/jackson-databind-2.21.4.jar",
         "sha256": "3888e9e69ab66fbacaacc9aea0e9ffbf15368288e4aca468b024dba11c09fbf9",
     }
+    postgresql_jdbc = {
+        "version": "42.7.12",
+        "url": "https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.7.12/postgresql-42.7.12.jar",
+        "sha256": "31fbf6f06b2217fb51d5100cee51b22625cc81640da0679b47914e54c1e6377c",
+    }
     expected_lock: dict[str, object] = {
         "schema_version": "keycloak-artifacts.v1",
         "keycloak": keycloak,
         "jackson_databind": jackson,
+        "postgresql_jdbc": postgresql_jdbc,
         "builder_image": (
             "eclipse-temurin:21.0.11_10-jre-alpine-3.23@sha256:"
             "3f08b13888f595cc49edabea7250ba69499ba25602b267da591720769400e08c"
@@ -1211,6 +1217,7 @@ def _validate_keycloak_dockerfile(
         f"FROM {expected_lock['runtime_image']}",
         f"ADD --checksum=sha256:{keycloak['sha256']} {keycloak['url']}",
         f"ADD --checksum=sha256:{jackson['sha256']} {jackson['url']}",
+        f"ADD --checksum=sha256:{postgresql_jdbc['sha256']} {postgresql_jdbc['url']}",
         "KC_DB=postgres",
         "KC_HEALTH_ENABLED=true",
         "KC_METRICS_ENABLED=true",
@@ -1220,7 +1227,7 @@ def _validate_keycloak_dockerfile(
         "com.fasterxml.jackson.core.jackson-databind-2.21.4.jar",
         "rm -rf /opt/keycloak/bin/client",
         "com.microsoft.sqlserver.mssql-jdbc-13.2.1.jre11.jar",
-        "org.postgresql.postgresql-42.7.11.jar",
+        "org.postgresql.postgresql-42.7.12.jar",
         "find /opt/keycloak -type d -exec chmod 0555",
         "find /opt/keycloak -type f -exec chmod 0444",
         "USER 10001:10001",

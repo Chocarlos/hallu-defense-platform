@@ -8224,3 +8224,46 @@ Remaining risks:
 - `master` currently has no GitHub ruleset or classic branch protection. Add a
   public-repository protection policy before accepting outside contributions if
   direct pushes or force pushes must be constrained.
+
+## 2026-07-21 - Prepare protected `main` and repair public-branch gates
+
+Slice selected:
+
+- Publish `main` from the verified clean `master` checkpoint, repair the
+  reproducible first-run CI/live/security failures, and require green remote
+  evidence before making `main` the protected default branch.
+
+Implementation:
+
+- Created and published `main` at the exact clean `master` commit `fe10bc8`.
+- Made production-like marketing test secret fixtures use POSIX mode `0600`,
+  preserving the runtime's fail-closed secret-file permission checks.
+- Marked the loopback OIDC Console smoke as a test environment and prepared the
+  ephemeral OTel export mount for collector uid/gid 10001 with failure logs.
+- Replaced Keycloak's vulnerable pgjdbc 42.7.11 (`CVE-2026-54291`) with
+  checksum-pinned 42.7.12, extended the generated-metadata rewrite, and updated
+  the approved artifact inventory and negative tests. No Trivy exception or
+  vulnerability ignore was added.
+
+Validation:
+
+- `npm --workspace @hallu-defense/console test -- lib/marketing/config.test.ts`:
+  7 passed; full Console suite: 262 passed; Console lint passed.
+- `python -m pytest apps/api/tests/test_patch_keycloak_metadata.py
+  apps/api/tests/test_container_scan_config.py -q`: 104 passed, 1 deselected.
+- `check_auth_config.py`, `check_observability_config.py`, and
+  `check_container_scan_config.py` passed; `git diff --check` passed.
+- Local Docker image construction was unavailable because Docker Desktop was not
+  running. Full root `npm test` reached all workspaces, but SDK/MCP live API
+  suites could not start FastAPI because this clean checkout's global Python
+  environment lacks `redis`; their non-live tests and the complete Console suite
+  ran. The pinned Linux workflows remain the authoritative final evidence.
+
+Remaining risks:
+
+- Do not switch the default branch or enable required checks until the new
+  `main` commit completes CI, eval, security, and live workflows successfully.
+- npm currently reports one moderate transitive advisory chain through the MCP
+  SDK's unused Hono HTTP adapter; the application uses the SDK's stdio transport.
+  The configured security gate blocks high/critical findings. A compatible SDK
+  resolution remains follow-up work rather than an unsafe major override.

@@ -2,6 +2,7 @@ FROM eclipse-temurin:21.0.11_10-jre-alpine-3.23@sha256:3f08b13888f595cc49edabea7
 
 ADD --checksum=sha256:f771df0aa1e4820f57d56f7d6d015beb6415487b43f8de7e5a6d48f8a7fe118a https://github.com/keycloak/keycloak/releases/download/26.7.0/keycloak-26.7.0.tar.gz /tmp/keycloak.tar.gz
 ADD --checksum=sha256:3888e9e69ab66fbacaacc9aea0e9ffbf15368288e4aca468b024dba11c09fbf9 https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.21.4/jackson-databind-2.21.4.jar /tmp/jackson-databind-2.21.4.jar
+ADD --checksum=sha256:31fbf6f06b2217fb51d5100cee51b22625cc81640da0679b47914e54c1e6377c https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.7.12/postgresql-42.7.12.jar /tmp/postgresql-42.7.12.jar
 
 RUN mkdir -p /opt/keycloak \
     && tar -xzf /tmp/keycloak.tar.gz --strip-components=1 -C /opt/keycloak \
@@ -9,17 +10,24 @@ RUN mkdir -p /opt/keycloak \
 
 RUN set -eux; \
     library=/opt/keycloak/lib/lib/main; \
-    legacy="$library/com.fasterxml.jackson.core.jackson-databind-2.21.2.jar"; \
-    corrected="$library/com.fasterxml.jackson.core.jackson-databind-2.21.4.jar"; \
-    test -f "$legacy"; \
-    install -m 0444 /tmp/jackson-databind-2.21.4.jar "$corrected"; \
-    rm "$legacy"; \
-    ln -s "$(basename "$corrected")" "$legacy"; \
-    test -L "$legacy"; \
-    test "$(readlink "$legacy")" = "$(basename "$corrected")"; \
-    unzip -p "$corrected" \
+    jackson_legacy="$library/com.fasterxml.jackson.core.jackson-databind-2.21.2.jar"; \
+    jackson_corrected="$library/com.fasterxml.jackson.core.jackson-databind-2.21.4.jar"; \
+    postgres_legacy="$library/org.postgresql.postgresql-42.7.11.jar"; \
+    postgres_corrected="$library/org.postgresql.postgresql-42.7.12.jar"; \
+    test -f "$jackson_legacy"; \
+    test -f "$postgres_legacy"; \
+    install -m 0444 /tmp/jackson-databind-2.21.4.jar "$jackson_corrected"; \
+    install -m 0444 /tmp/postgresql-42.7.12.jar "$postgres_corrected"; \
+    rm "$jackson_legacy" "$postgres_legacy"; \
+    ln -s "$(basename "$jackson_corrected")" "$jackson_legacy"; \
+    ln -s "$(basename "$postgres_corrected")" "$postgres_legacy"; \
+    test "$(readlink "$jackson_legacy")" = "$(basename "$jackson_corrected")"; \
+    test "$(readlink "$postgres_legacy")" = "$(basename "$postgres_corrected")"; \
+    unzip -p "$jackson_corrected" \
       META-INF/maven/com.fasterxml.jackson.core/jackson-databind/pom.properties \
-      | grep -Fx 'version=2.21.4'
+      | grep -Fx 'version=2.21.4'; \
+    unzip -p "$postgres_corrected" META-INF/maven/org.postgresql/postgresql/pom.properties \
+      | grep -Fx 'version=42.7.12'
 
 ENV KC_DB=postgres \
     KC_HEALTH_ENABLED=true \
@@ -49,7 +57,8 @@ RUN set -eux; \
       test -f "/opt/keycloak/$artifact"; \
       rm "/opt/keycloak/$artifact"; \
     done; \
-    test -f /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.11.jar; \
+    test -L /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.11.jar; \
+    test -f /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.12.jar; \
     test -f /opt/keycloak/lib/lib/main/io.quarkus.quarkus-jdbc-postgresql-3.33.2.1.jar; \
     test -f /opt/keycloak/lib/lib/deployment/io.quarkus.quarkus-jdbc-postgresql-deployment-3.33.2.1.jar; \
     test -L /opt/keycloak/lib/lib/main/com.fasterxml.jackson.core.jackson-databind-2.21.2.jar; \
@@ -64,7 +73,9 @@ COPY --from=keycloak-builder /opt/keycloak /opt/keycloak
 COPY scripts/ci/patch_keycloak_metadata.py /tmp/patch_keycloak_metadata.py
 RUN python /tmp/patch_keycloak_metadata.py \
     && test ! -e /opt/keycloak/lib/lib/main/com.fasterxml.jackson.core.jackson-databind-2.21.2.jar \
-    && test -f /opt/keycloak/lib/lib/main/com.fasterxml.jackson.core.jackson-databind-2.21.4.jar
+    && test -f /opt/keycloak/lib/lib/main/com.fasterxml.jackson.core.jackson-databind-2.21.4.jar \
+    && test ! -e /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.11.jar \
+    && test -f /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.12.jar
 
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
@@ -89,6 +100,8 @@ RUN addgroup -S -g 10001 keycloak \
     && /opt/keycloak/bin/kc.sh --version | grep -F '26.7.0' \
     && test ! -e /opt/keycloak/lib/lib/main/com.fasterxml.jackson.core.jackson-databind-2.21.2.jar \
     && test -f /opt/keycloak/lib/lib/main/com.fasterxml.jackson.core.jackson-databind-2.21.4.jar \
+    && test ! -e /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.11.jar \
+    && test -f /opt/keycloak/lib/lib/main/org.postgresql.postgresql-42.7.12.jar \
     && test ! -e /opt/keycloak/bin/client \
     && test ! -e /opt/keycloak/lib/lib/main/com.microsoft.sqlserver.mssql-jdbc-13.2.1.jre11.jar
 
