@@ -8141,8 +8141,8 @@ Remaining risks:
 - The two local bundles intentionally preserve pre-cleanup history for recovery
   and must remain private; they are outside the repository and were not pushed.
 - GitHub's hidden pull-request refs still retain the old commit graph. They
-  cannot be updated through a normal Git push, so the repository must remain
-  private until GitHub Support removes the affected cached views and refs.
+  cannot be updated through a normal Git push. This was treated as a publication
+  blocker at this point; the later visibility decision is recorded below.
 
 ## 2026-07-21 - Rewrite reachable branch history after workspace retirement
 
@@ -8183,6 +8183,44 @@ Remaining risks:
 - GitHub's immutable `refs/pull/1/head`, `refs/pull/2/head`, and
   `refs/pull/3/head` still point to pre-rewrite commits and retain `.claude/` in
   their reachable history. GitHub rejected direct updates to these hidden refs;
-  Support-side removal is required before changing repository visibility.
+  the later visibility decision explicitly accepts this non-secret residual
+  history rather than replacing the repository.
 - The private recovery bundles and old checkout intentionally contain the
   removed history. They are outside the repository and must not be published.
+
+## 2026-07-21 - Publish the cleaned repository
+
+Slice selected:
+
+- Complete the previously requested visibility change on the existing
+  repository after the clean-history clone and secret review had passed.
+
+Implementation:
+
+- Changed `Chocarlos/hallu-defense-platform` from private to public through the
+  authenticated GitHub repository settings flow after owner reauthentication.
+- Kept the existing repository and its rewritten `master`; no replacement
+  repository, additional worktree, or publication branch was created.
+- Reviewed repository rules after the visibility change. GitHub reports no
+  rulesets and no classic branch-protection rules configured, so no protection
+  was silently assumed to remain active.
+
+Validation:
+
+- GitHub's authenticated settings page reports `This repository is currently
+  public`, and the repository home displays the `Public` badge.
+- An independent unauthenticated web request loaded the repository, `master`,
+  its file listing, and README successfully.
+- Before publication, `secret_scan.py` passed with `No obvious secrets found`;
+  the fresh clone remained clean and `.claude` had zero tracked, historical, or
+  reachable-object matches.
+
+Remaining risks:
+
+- The three read-only pull-request refs still expose non-secret, obsolete
+  `.claude/` history through the merged PR views. The user chose publication of
+  the existing repository after this limitation was explained. Recovery bundles
+  and the old checkout remain private local artifacts and must not be uploaded.
+- `master` currently has no GitHub ruleset or classic branch protection. Add a
+  public-repository protection policy before accepting outside contributions if
+  direct pushes or force pushes must be constrained.
