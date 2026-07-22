@@ -236,13 +236,20 @@ async function tabFromConsentToBack(
   privacyLink: Locator,
   backButton: Locator
 ): Promise<void> {
-  // Playwright WebKit mirrors Safari's default keyboard preference, where Tab
-  // skips links. Chromium and Firefox must expose the privacy link in sequence;
-  // WebKit must follow its actual checkbox-to-Back sequence without a fake focus.
-  if (browserName !== "webkit") {
-    await tabTo(page, privacyLink);
+  await page.keyboard.press("Tab");
+  const privacyLinkFocused = await privacyLink.evaluate(
+    (element) => element === element.ownerDocument.activeElement
+  );
+  if (browserName !== "webkit" || privacyLinkFocused) {
+    await expect(privacyLink).toBeFocused();
+    await tabTo(page, backButton);
+    return;
   }
-  await tabTo(page, backButton);
+
+  // WebKit follows the host platform's full-keyboard-access preference: some
+  // environments include links and others move directly to the next form
+  // control. In both native sequences, Back must be the next button reached.
+  await expect(backButton).toBeFocused();
 }
 
 async function checkConsent(consent: ReturnType<Page["getByLabel"]>): Promise<void> {

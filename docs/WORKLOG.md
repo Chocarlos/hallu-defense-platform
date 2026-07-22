@@ -8257,6 +8257,11 @@ Validation:
   exposed that pgjdbc 42.7.12 no longer ships Maven `pom.properties`; its pinned
   version assertion now reads `Bundle-Version: 42.7.12` from the signed JAR
   manifest instead.
+- The next Linux browser matrix and a Windows WebKit reproduction showed two
+  native consent focus sequences: Linux WebKit included the privacy link while
+  Windows WebKit followed its host preference and moved directly to `Back`.
+  The test accepts only those two real WebKit branches without programmatic
+  focus, while Chromium and Firefox must still traverse the privacy link.
 - Local Docker image construction was unavailable because Docker Desktop was not
   running. Full root `npm test` reached all workspaces, but SDK/MCP live API
   suites could not start FastAPI because this clean checkout's global Python
