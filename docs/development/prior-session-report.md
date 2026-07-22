@@ -1,6 +1,6 @@
-# Fable Prior Session Report
+# Prior Session Report
 
-This report captures the previous-session context supplied by the user. Fable
+This report captures the previous-session context supplied by the user. A contributor
 must understand it before receiving implementation work, but must also verify
 the current repository state because later work may have superseded parts of
 the report.
@@ -14,36 +14,10 @@ Two real product slices were advanced:
 2. Eval history and console trends: persistent scenario history, public
    contracts, payload validation, and Next.js trend visualization were added.
 
-Claude/Fable delegation was attempted but did not produce an integrable diff in
-that session. Its work was treated as auxiliary and untrusted.
-
-## Fable / Claude Coordination From That Session
-
-- Direct `claude_code.Agent` launch with model `fable`, worktree isolation, and
-  automatic mode failed because the general-purpose agent was unavailable.
-- `claude_code.Workflow` launched, but worktree creation failed with:
-  `Failed to resolve base branch "HEAD": git rev-parse failed`.
-- The cause was verified: the repository was initialized as Git but had no valid
-  `HEAD`; files appeared as untracked and there was no commit base for normal
-  branches or worktrees.
-- A fallback copy was created at `.claude-fable-work/scenario-history`.
-- Fable was launched in that copy without worktree isolation and instructed to
-  work only there.
-- Fable could read files and move through the repo but became blocked by command
-  approvals.
-- Fable left no final complete report and no branch/diff that could be
-  integrated.
-- Result: no Fable output from that session was merged.
-
-Current status superseding that blocker:
-
-- The missing `HEAD` blocker has since been fixed with baseline commit
-  `8dec1b3`.
-- The current Fable delegation workflow is `.claude/workflows/fable-delegate.js`.
-- The current supported route is Claude Code `Workflow` with `model: "fable"`
-  and git worktree isolation.
-- Direct `mcp__claude_code.Agent` still reports no registered local agent types
-  in this session, so it remains unsupported here.
+An auxiliary implementation attempt from that session produced no integrable
+diff and was never authoritative. Its obsolete copies and repository-specific
+automation were later removed after the useful product work was verified in
+the current implementation.
 
 ## Product Work Completed In That Session
 
@@ -199,15 +173,13 @@ The platform was not marked globally complete or accepted.
 Historical blockers from that session:
 
 - Git had no valid `HEAD`, blocking normal branches/worktrees/PR flow.
-- Fable did not produce an integrable diff.
-- `.claude-fable-work/scenario-history` existed only as auxiliary evidence and
-  must not be treated as authoritative.
+- The auxiliary implementation attempt did not produce an integrable diff.
 
 Current status:
 
 - The Git `HEAD` blocker is fixed.
-- Fable can now be launched through saved Claude Code workflow.
-- Legacy auxiliary copies remain ignored and non-authoritative.
+- Obsolete auxiliary copies and vendor-specific repository automation were
+  removed after their useful product slices were verified in current code.
 
 Remaining product risks still relevant:
 
@@ -225,5 +197,6 @@ persistent retrieval isolation by tenant and explicit no-cross-tenant retrieval
 tests.
 
 Git state has now been repaired. The retrieval-persistence recommendation
-remains a valid candidate for a future bounded Fable slice, but Codex should
-select the next slice from the current traceability matrix and repository state.
+remains a valid candidate for a future bounded slice, but the integration owner
+should select the next slice from the current traceability matrix and repository
+state.

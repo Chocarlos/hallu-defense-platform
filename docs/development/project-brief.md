@@ -1,6 +1,6 @@
-# Fable Project Brief
+# Project Brief
 
-Status: canonical orientation brief for Claude Fable before any delegated work.
+Status: canonical orientation brief for scoped development work.
 
 ## Mission
 
@@ -75,17 +75,11 @@ input
 Every final decision must be explainable from claims, evidence, verdicts,
 policy version, validator trace, and audit events.
 
-## What Codex Already Built
+## Verified Platform Baseline
 
-The repository has a real baseline commit and verified local state:
-
-- `8dec1b3 chore: establish repository baseline`.
-- `4c18751 chore: add fable delegation workflow`.
-- `4da8223 chore: add fable project context package`.
-- `4ac9df5 docs: record fable context validation`.
-- `master` and `fable5/delegation` must be kept aligned before delegating
-  implementation work to Fable.
-- Fable delegation works through `.claude/workflows/fable-delegate.js`.
+The repository has a real Git history and a tested platform baseline. Current
+repository evidence, the traceability matrix, and the latest worklog entry are
+authoritative; historical coordination tooling is not part of the product.
 
 Major completed areas recorded in `docs/WORKLOG.md` and
 `docs/TRACEABILITY_MATRIX.md`:
@@ -120,10 +114,10 @@ checks are deterministic local tests, static validators, or dry-run validators.
 
 ## Prior Session Context
 
-Read `docs/development/fable-prior-session-report.md` before implementation.
+Read `docs/development/prior-session-report.md` before implementation.
 It captures the previous-session report supplied by the user, including the RAG
-structural chunking slice, eval scenario history slice, console trend work,
-validation evidence, and the earlier Fable/Git blockers.
+structural chunking slice, eval scenario history slice, console trend work, and
+validation evidence.
 
 Important: the report is historical. Its Git `HEAD` blocker has since been
 resolved by the baseline commit. If the prior-session report conflicts with
@@ -132,21 +126,18 @@ current repository evidence, report the conflict and trust current evidence.
 ## Known Local Environment Constraints
 
 - Windows PowerShell host.
-- `make`, `mingw32-make`, and `nmake` were previously unavailable, so commands
-  were often run directly through Python, npm, or scripts instead of `make`.
-- Docker was previously unavailable, so Docker Compose/runtime services and
-  live container scans were not locally executed.
-- Local `opa` binary was unavailable, so policy test runner used static Rego
-  validation unless CI installs OPA.
-- Direct `mcp__claude_code.Agent` does not expose local agent types in this
-  session. Use `mcp__claude_code.Workflow` with
-  `.claude/workflows/fable-delegate.js`.
+- Prefer the standard Makefile gates. If a required tool is unavailable, record
+  the exact skipped evidence rather than inferring success.
+- Docker and external-service availability vary by session; live claims require
+  current command evidence from isolated scratch infrastructure.
+- OPA/Rego and other security tools must use the pinned or validated versions
+  required by repository gates.
 
-## How Fable Should Work Here
+## Scoped Contributor Workflow
 
-Fable is a delegated teammate, not the final integrator.
+A scoped contributor is not the final integrator.
 
-Fable should:
+A contributor should:
 
 1. Orient with the required docs and this brief.
 2. Inspect current repo state.
@@ -155,9 +146,9 @@ Fable should:
 5. Run deterministic validation for its slice.
 6. Return changed files, validation outcomes, risks, and integration notes.
 
-Codex will:
+The integration owner will:
 
-1. Inspect Fable's actual diff.
+1. Inspect the contributor's actual diff.
 2. Integrate or reject changes.
 3. Run validation from the main workspace.
 4. Update traceability and worklog.

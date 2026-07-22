@@ -1,23 +1,13 @@
-# Fable Enterprise Batch Backlog
+# Enterprise Batch Backlog
 
-Status: active delegation plan as of 2026-07-08.
+Status: historical batch plan from 2026-07-08; superseded by the current plan,
+traceability matrix, worklog, and `enterprise-batch-2.md`.
 
-Codex keeps lighter, locally verifiable slices on `master`. Fable owns the
-larger product blocks, in batch, with disjoint scopes and Codex audit before
+The integration lead keeps lighter, locally verifiable slices on `master`. Secondary
+leaders own larger product blocks in batches with disjoint scopes and root audit before
 integration.
 
-## Active Batch
-
-- Workflow: `wf_6e5f935f-e44`.
-- Base commit: `1aad178`.
-- Branches aligned before launch: `master` and `fable5/delegation`.
-- Direct auto-permission route attempted first with `mcp__claude_code.Agent`,
-  `model=fable`, `mode=auto`, and worktree isolation.
-- Direct route failed with `Agent type 'general-purpose' not found`.
-- Fallback route: Claude Code `Workflow` with five parallel Fable agents using
-  worktree isolation.
-
-## Fable Blocks
+## Historical Workstreams
 
 1. RAG live persistence and tenant isolation.
    - Persistent OpenSearch/pgvector retrieval boundaries.
@@ -48,11 +38,12 @@ integration.
 
 ## Integration Rule
 
-Fable output is not authoritative until Codex:
+Contributor output is not authoritative until the integration owner:
 
 1. Inspects actual diffs.
 2. Rejects blocked/no-diff summaries.
 3. Runs focused validation from `master`.
 4. Updates traceability and worklog.
 5. Commits accepted changes.
-6. Fast-forwards `fable5/delegation` back to `master`.
+6. Integrates only the reviewed commit through the repository's protected
+   branch workflow.
