@@ -146,14 +146,44 @@ def test_enabled_path_passes_with_injected_fakes() -> None:
 
 def test_enabled_path_raises_when_prometheus_target_not_up() -> None:
     fetch = _fake_fetch_json(targets=_targets_payload(health="down"))
+    sleep = _no_op_sleep()
 
     with pytest.raises(smoke.LiveObservabilitySmokeError, match="not up"):
         smoke.run_from_env(
             _enabled_env(),
             fetch_json=fetch,
             post_json=_fake_post_json(),
-            sleep=_no_op_sleep(),
+            sleep=sleep,
         )
+
+    assert len(sleep.calls) == 2
+
+
+def test_enabled_path_waits_for_prometheus_target_to_become_up() -> None:
+    target_payloads = iter(
+        [
+            _targets_payload(health="unknown"),
+            _targets_payload(health="down"),
+            _targets_payload(health="up"),
+        ]
+    )
+    base_fetch = _fake_fetch_json()
+
+    def fetch(url: str, headers: Mapping[str, str] | None) -> object:
+        if url == f"{_PROMETHEUS_URL}/api/v1/targets":
+            return next(target_payloads)
+        return base_fetch(url, headers)
+
+    sleep = _no_op_sleep()
+    result = smoke.run_from_env(
+        _enabled_env(),
+        fetch_json=fetch,
+        post_json=_fake_post_json(),
+        sleep=sleep,
+    )
+
+    assert result["prometheus_targets_up"] is True
+    assert sleep.calls == [smoke.DEFAULT_POLL_INTERVAL_SECONDS] * 2
 
 
 def test_enabled_path_raises_when_prometheus_target_missing() -> None:

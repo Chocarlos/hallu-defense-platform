@@ -108,7 +108,7 @@ def run_live_smoke(
     run_id: str | None = None,
 ) -> dict[str, object]:
     smoke_run_id = run_id or uuid.uuid4().hex[:12]
-    prometheus_targets_up = _check_prometheus_target_up(fetch_json, config)
+    prometheus_targets_up = _poll_prometheus_target_up(fetch_json, config, sleep=sleep)
     _generate_load(post_json, config, smoke_run_id)
 
     http_requests_value = _poll_metric_value(
@@ -141,19 +141,37 @@ def run_live_smoke(
     }
 
 
-def _check_prometheus_target_up(fetch_json: JsonGetter, config: LiveObservabilitySmokeConfig) -> bool:
-    payload = fetch_json(f"{config.prometheus_url.rstrip('/')}/api/v1/targets", None)
-    active_targets = _active_targets(payload)
-    for target in active_targets:
-        labels = target.get("labels") if isinstance(target, Mapping) else None
-        if isinstance(labels, Mapping) and labels.get("job") == config.prometheus_job:
-            if target.get("health") == "up":
-                return True
-            raise LiveObservabilitySmokeError(
-                f"prometheus target job={config.prometheus_job!r} is not up "
-                f"(health={target.get('health')!r})"
-            )
-    raise LiveObservabilitySmokeError(f"prometheus has no active target for job={config.prometheus_job!r}")
+def _poll_prometheus_target_up(
+    fetch_json: JsonGetter,
+    config: LiveObservabilitySmokeConfig,
+    *,
+    sleep: Sleeper,
+) -> bool:
+    target_url = f"{config.prometheus_url.rstrip('/')}/api/v1/targets"
+    last_health: object = None
+    target_found = False
+    for attempt in range(config.poll_attempts):
+        active_targets = _active_targets(fetch_json(target_url, None))
+        for target in active_targets:
+            labels = target.get("labels") if isinstance(target, Mapping) else None
+            if isinstance(labels, Mapping) and labels.get("job") == config.prometheus_job:
+                target_found = True
+                last_health = target.get("health")
+                if last_health == "up":
+                    return True
+                break
+        if attempt < config.poll_attempts - 1:
+            sleep(config.poll_interval_seconds)
+
+    if target_found:
+        raise LiveObservabilitySmokeError(
+            f"prometheus target job={config.prometheus_job!r} is not up after "
+            f"{config.poll_attempts} attempts (health={last_health!r})"
+        )
+    raise LiveObservabilitySmokeError(
+        f"prometheus has no active target for job={config.prometheus_job!r} after "
+        f"{config.poll_attempts} attempts"
+    )
 
 
 def _active_targets(payload: object) -> Sequence[Mapping[str, object]]:

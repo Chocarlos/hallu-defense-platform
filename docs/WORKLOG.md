@@ -8268,6 +8268,10 @@ Validation:
   allowing the verification process to read it. Vault's cold image build hit its
   exact 10-minute job limit without a functional error, so that job now has the
   same 20-minute budget as the other heavy live builds.
+- The next remote run passed OTel export but reached the observability smoke
+  before Prometheus had completed its first scrape (`health='unknown'`). The
+  smoke now polls the configured target with the existing bounded attempt and
+  interval settings; its focused suite passes 12 tests and Ruff passes.
 - Local Docker image construction was unavailable because Docker Desktop was not
   running. Full root `npm test` reached all workspaces, but SDK/MCP live API
   suites could not start FastAPI because this clean checkout's global Python
