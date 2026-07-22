@@ -8140,7 +8140,49 @@ Remaining risks:
 
 - The two local bundles intentionally preserve pre-cleanup history for recovery
   and must remain private; they are outside the repository and were not pushed.
-- Remote history still contains the removed vendor directory until a separately
-  verified history rewrite is completed. `codex/hallu-defense-acceptance`
-  currently carries the cleanup as an uncommitted candidate and `master` has
-  not been changed.
+- GitHub's hidden pull-request refs still retain the old commit graph. They
+  cannot be updated through a normal Git push, so the repository must remain
+  private until GitHub Support removes the affected cached views and refs.
+
+## 2026-07-21 - Rewrite reachable branch history after workspace retirement
+
+Slice selected:
+
+- Remove `.claude/` from every published branch commit, verify the rewritten
+  graph independently, and preserve an auditable recovery path.
+
+Implementation:
+
+- Rewrote all 102 commits in an isolated mirror with `git-filter-repo` 2.47.0,
+  using `--sensitive-data-removal --invert-paths --path .claude/`.
+- Force-updated the four published branch heads from the verified clean mirror:
+  `master` and `codex/hallu-defense-acceptance` at `1c884884`,
+  `agent/mass-qa-acceptance` at `edc4fb7`, and
+  `agent/readme-platform-guide` at `c8bba96`.
+- A subsequent tag-only command inherited mirror-push configuration and briefly
+  removed the three non-default branches. The branches were immediately
+  restored from the clean mirror and their remote hashes were reverified. No
+  source commits or tags were lost.
+- Created a fresh canonical checkout at
+  `C:\Users\Estudiante-10\Documents\hallu-defense-platform-clean`; the former
+  checkout and the pre-filter mirror remain recovery-only copies of the old
+  graph and must not be pushed.
+
+Validation:
+
+- Fresh-clone `git log --all -- .claude`, `git ls-files .claude`, and
+  `.claude` filtering over `git rev-list --objects --all` each returned zero
+  matches.
+- Fresh-clone `git fsck --full` passed, the checkout was clean, and
+  `.gitignore` retained the root-scoped `/.claude/` exclusion.
+- `git ls-remote --heads origin` matched all four expected rewritten branch
+  hashes after restoration.
+
+Remaining risks:
+
+- GitHub's immutable `refs/pull/1/head`, `refs/pull/2/head`, and
+  `refs/pull/3/head` still point to pre-rewrite commits and retain `.claude/` in
+  their reachable history. GitHub rejected direct updates to these hidden refs;
+  Support-side removal is required before changing repository visibility.
+- The private recovery bundles and old checkout intentionally contain the
+  removed history. They are outside the repository and must not be published.
