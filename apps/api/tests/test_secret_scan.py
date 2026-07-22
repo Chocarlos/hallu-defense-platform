@@ -94,6 +94,32 @@ def test_secret_scan_fails_closed_for_non_utf8_files(tmp_path: Path) -> None:
     assert result.ok is False
 
 
+def test_secret_scan_accepts_valid_png_and_scans_its_metadata(tmp_path: Path) -> None:
+    clean = tmp_path / "clean.png"
+    clean.write_bytes(b"\x89PNG\r\n\x1a\n\x00binary-image-data")
+
+    assert scan_tree(tmp_path).ok is True
+
+    suspicious = tmp_path / "suspicious.png"
+    suspicious.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00" + _synthetic_secret_assignment().encode("ascii")
+    )
+
+    result = scan_tree(tmp_path)
+
+    assert result.findings == ["suspicious.png"]
+    assert result.unreadable == []
+
+
+def test_secret_scan_rejects_non_utf8_file_with_png_extension(tmp_path: Path) -> None:
+    (tmp_path / "not-really.png").write_bytes(b"\xff\xfe\x00\x00")
+
+    result = scan_tree(tmp_path)
+
+    assert result.unreadable == ["not-really.png"]
+    assert result.ok is False
+
+
 @pytest.mark.posix
 def test_secret_scan_fails_closed_for_symlinks(tmp_path: Path) -> None:
     target = tmp_path.parent / "external-secret-fixture.txt"

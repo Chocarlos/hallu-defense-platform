@@ -8096,6 +8096,12 @@ Implementation:
   filenames, retired the obsolete delegation runbook, and replaced its focused
   test with vendor-neutral development-context validation. Updated `FND-012`
   and all live document links accordingly.
+- Reconciled the one remote-only `master` commit, which adds the public PNG
+  cover image. That exposed a pre-existing fail-closed gap: the internal secret
+  scanner treated every non-UTF-8 tracked file as unreadable. The scanner now
+  recognizes only a real PNG signature, decodes its raw bytes losslessly for
+  ASCII-oriented secret-pattern inspection (including textual metadata), and
+  continues to reject arbitrary non-UTF-8 or fake `.png` files.
 
 Validation:
 
@@ -8122,6 +8128,12 @@ Validation:
   a tool-selection failure, not a secret finding. Production-only npm audit
   reported zero vulnerabilities; two documented moderate development-path
   advisories remain below the enforced HIGH threshold.
+- Post-reconciliation secret-scan/Gitleaks regression: Ruff passed;
+  `test_secret_scan.py` plus `test_gitleaks_gate.py` reported `23 passed, 7
+  deselected`; native Gitleaks 8.30.1 passed; `secret_scan.py` reported no
+  obvious secrets for the repository including the PNG. Tests prove a valid
+  PNG is scanned, PNG textual metadata containing a synthetic secret is found,
+  and a fake non-UTF-8 `.png` fails closed.
 - `git diff --check`: passed.
 
 Remaining risks:
