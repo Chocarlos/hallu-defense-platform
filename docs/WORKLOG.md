@@ -8262,6 +8262,12 @@ Validation:
   Windows WebKit followed its host preference and moved directly to `Back`.
   The test accepts only those two real WebKit branches without programmatic
   focus, while Chromium and Firefox must still traverse the privacy link.
+- The final live candidate proved OTel exported 14 spans, then failed because
+  the collector-created `0640` file retained gid 10001. The ephemeral directory
+  now uses setgid with the runner's group, preserving private `0640` output while
+  allowing the verification process to read it. Vault's cold image build hit its
+  exact 10-minute job limit without a functional error, so that job now has the
+  same 20-minute budget as the other heavy live builds.
 - Local Docker image construction was unavailable because Docker Desktop was not
   running. Full root `npm test` reached all workspaces, but SDK/MCP live API
   suites could not start FastAPI because this clean checkout's global Python

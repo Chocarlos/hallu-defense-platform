@@ -332,7 +332,7 @@ jobs:
 
   vault-live:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       HALLU_DEFENSE_LOCAL_VAULT_DEV_ROOT_TOKEN: dev-root
     steps:
@@ -394,7 +394,7 @@ jobs:
           python scripts/ci/install_python_lock.py build-tools
           python scripts/ci/install_python_lock.py dev
       - name: Prepare ephemeral OTEL output directory
-        run: sudo install -d -o 10001 -g 10001 -m 0755 var/otel
+        run: sudo install -d -o 10001 -g "$(id -g)" -m 2750 var/otel
       - name: Start observability stack
         run: docker compose up -d --build grafana
       - name: Wait for API readiness
