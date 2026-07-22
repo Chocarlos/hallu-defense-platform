@@ -26,8 +26,9 @@ RUN set -eux; \
     unzip -p "$jackson_corrected" \
       META-INF/maven/com.fasterxml.jackson.core/jackson-databind/pom.properties \
       | grep -Fx 'version=2.21.4'; \
-    unzip -p "$postgres_corrected" META-INF/maven/org.postgresql/postgresql/pom.properties \
-      | grep -Fx 'version=42.7.12'
+    unzip -p "$postgres_corrected" META-INF/MANIFEST.MF \
+      | tr -d '\r' \
+      | grep -Fx 'Bundle-Version: 42.7.12'
 
 ENV KC_DB=postgres \
     KC_HEALTH_ENABLED=true \

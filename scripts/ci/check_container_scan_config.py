@@ -1228,6 +1228,7 @@ def _validate_keycloak_dockerfile(
         "rm -rf /opt/keycloak/bin/client",
         "com.microsoft.sqlserver.mssql-jdbc-13.2.1.jre11.jar",
         "org.postgresql.postgresql-42.7.12.jar",
+        "Bundle-Version: 42.7.12",
         "find /opt/keycloak -type d -exec chmod 0555",
         "find /opt/keycloak -type f -exec chmod 0444",
         "USER 10001:10001",

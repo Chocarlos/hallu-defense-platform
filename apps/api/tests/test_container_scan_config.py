@@ -489,6 +489,7 @@ def test_container_scan_config_requires_isolated_seaweedfs_launcher(marker: str)
         "ADD --checksum=sha256:f771df0a",
         "ADD --checksum=sha256:3888e9e6",
         "ADD --checksum=sha256:31fbf6f0",
+        "Bundle-Version: 42.7.12",
         "python /tmp/patch_keycloak_metadata.py",
         "rm -rf /opt/keycloak/bin/client",
         "USER 10001:10001",

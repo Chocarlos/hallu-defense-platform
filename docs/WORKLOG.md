@@ -8253,6 +8253,10 @@ Validation:
   apps/api/tests/test_container_scan_config.py -q`: 104 passed, 1 deselected.
 - `check_auth_config.py`, `check_observability_config.py`, and
   `check_container_scan_config.py` passed; `git diff --check` passed.
+- The first Linux image build confirmed both replacement files and symlinks, but
+  exposed that pgjdbc 42.7.12 no longer ships Maven `pom.properties`; its pinned
+  version assertion now reads `Bundle-Version: 42.7.12` from the signed JAR
+  manifest instead.
 - Local Docker image construction was unavailable because Docker Desktop was not
   running. Full root `npm test` reached all workspaces, but SDK/MCP live API
   suites could not start FastAPI because this clean checkout's global Python
