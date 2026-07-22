@@ -50,7 +50,7 @@ def test_secret_scan_detects_encrypted_private_key_marker(tmp_path: Path) -> Non
 
 
 def test_secret_scan_does_not_allowlist_directory_categories(tmp_path: Path) -> None:
-    for directory in (".venv", "node_modules", ".claude", ".codex-fable-work"):
+    for directory in (".venv", "node_modules", ".claude"):
         skipped_file = tmp_path / directory / "ignored.py"
         skipped_file.parent.mkdir(parents=True)
         skipped_file.write_text(_synthetic_secret_assignment("token"), encoding="utf-8")
@@ -59,7 +59,6 @@ def test_secret_scan_does_not_allowlist_directory_categories(tmp_path: Path) -> 
 
     assert result.findings == [
         ".claude/ignored.py",
-        ".codex-fable-work/ignored.py",
         ".venv/ignored.py",
         "node_modules/ignored.py",
     ]

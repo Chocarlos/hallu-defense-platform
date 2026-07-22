@@ -1,4 +1,4 @@
-# Fable Enterprise Batch 2 Backlog
+# Enterprise Batch 2 Backlog
 
 Status: delegation plan for milestone M6 `Enterprise Runtime Reality` as of
 2026-07-09.
@@ -425,7 +425,7 @@ B4 on B2; B5 on B1, B2, and B4 (dashboard lint order); B6 on B1 and B2
 
 ## Integration criterion
 
-Fable / assignee output is not authoritative until the lead:
+Contributor output is not authoritative until the lead:
 
 1. Inspects the actual diff line by line.
 2. Rejects blocked or no-diff summaries.

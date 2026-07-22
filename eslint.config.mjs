@@ -32,10 +32,7 @@ export default defineConfig([
     },
   },
   globalIgnores([
-    ".claude/worktrees/**",
-    ".claude/settings.local.json",
-    ".claude-fable-work/**",
-    ".codex-fable-work/**",
+    ".claude/**",
     ".codex-leader-worktrees/**",
     "**/.next/**",
     "**/out/**",

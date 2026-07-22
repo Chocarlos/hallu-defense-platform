@@ -1,10 +1,8 @@
 .git
 .gitignore
 .venv
-.codex-fable-work
 .codex-leader-worktrees
 .codex
-.claude-fable-work
 .claude
 
 .env

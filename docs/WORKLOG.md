@@ -356,7 +356,7 @@ Implementation:
   - console replay and approval workflows;
   - production runtime validation gates;
   - contract/codegen drift reduction.
-- Added `docs/development/fable-enterprise-batch.md` with the batch backlog,
+- Added `docs/development/enterprise-batch.md` with the batch backlog,
   active workflow ID, route limitation, and integration rule.
 - Updated `docs/development/fable-delegation.md` and traceability for `FND-012`.
 
@@ -509,7 +509,7 @@ Implementation:
   `4ac9df52d37c5999c6aaae7c567c124e51b9a026`.
 - Updated `docs/development/fable-delegation.md` so its current evidence no
   longer treats the initial baseline commit as the latest delegation state.
-- Updated `docs/development/fable-project-brief.md` with the latest Fable
+- Updated `docs/development/project-brief.md` with the latest Fable
   context-validation commit.
 - Updated `docs/TRACEABILITY_MATRIX.md` for `FND-012` with the aligned branch
   and worktree evidence.
@@ -545,10 +545,10 @@ Slice selected:
 
 Implementation:
 
-- Added `docs/development/fable-project-brief.md` with the product mission,
+- Added `docs/development/project-brief.md` with the product mission,
   architecture, prior Codex work, current state, operating rules, end-state
   definition, and near-term direction.
-- Added `docs/development/fable-prior-session-report.md` preserving the
+- Added `docs/development/prior-session-report.md` preserving the
   user-supplied previous-session report, including RAG structural chunking,
   eval history/console work, validation evidence, and the earlier Fable/Git
   blocker.
@@ -5617,7 +5617,7 @@ Remaining risks:
 Slice selected:
 
 - Register the M6 `Enterprise Runtime Reality` roadmap (`docs/PLAN_MASTER.md`
-  milestone + `docs/development/fable-enterprise-batch-2.md`) before Batch 1
+  milestone + `docs/development/enterprise-batch-2.md`) before Batch 1
   starts.
 - This step is docs-only. It explicitly does NOT touch runtime code and does NOT
   add any `docs/TRACEABILITY_MATRIX.md` rows; matrix rows land per batch during
@@ -5628,7 +5628,7 @@ Implementation:
 - Added milestone `### M6 Enterprise Runtime Reality` to `docs/PLAN_MASTER.md`
   after M5, with the 7 delegable vertical batches (B1..B7) and the confirmed
   scope decisions.
-- Created `docs/development/fable-enterprise-batch-2.md` mirroring the existing
+- Created `docs/development/enterprise-batch-2.md` mirroring the existing
   `fable-enterprise-batch.md`: 10 global design decisions plus one section per
   batch (Objective, Slices, Evidence, Matrix, Risks, Dependencies), the
   recommended sequence, and the integration criterion.
@@ -8062,3 +8062,73 @@ Remaining risks:
   native UI zoom and manual assistive-technology review, live OIDC, target
   Redis TLS/CRM/ingress/secrets/retention/legal approval, managed-database load,
   target Kubernetes CNI/storage/identity and remote CI evidence remain pending.
+
+## 2026-07-21 - Retire legacy external-agent workspaces
+
+Slice selected:
+
+- Preserve any unique work from the ignored external-agent workspaces, establish
+  a remote safety branch, and then remove obsolete vendor-specific repository
+  integration without weakening the current Hallu Defense implementation.
+
+Implementation:
+
+- Published temporary safety branch `codex/pruebas` at hardened candidate
+  `c8e14b5` before cleanup, then deleted it locally and remotely at the user's
+  request after transferring the intact cleanup diff back to
+  `codex/hallu-defense-acceptance`.
+- Audited 21 ignored worktrees. Nineteen held uncommitted prototypes based on
+  `18cd945`; their capabilities already exist in later, hardened forms on the
+  candidate branch. Each prototype was committed locally before removal.
+- Created and verified
+  `C:\Users\Estudiante-10\Documents\Hallu-Defense-backups\hallu-defense-before-claude-cleanup-2026-07-21.bundle`
+  with 98 refs, 4,244,025 bytes, and SHA-256
+  `12C62E76574A78DFD3F3FFDA6FA5978FB53761DEE4633E36D3208EE4162F38A2`.
+- Preserved the separate clean legacy repository in
+  `legacy-agent-copy-7e5faf4.bundle` (356,637 bytes, SHA-256
+  `18A823FEF5B2C879DDC3DE78B89C1B4A18CC255F017E99EE0FAA4B567D085FDF`).
+- Removed the 21 obsolete worktrees, their 21 local branches, two auxiliary
+  copies, the vendor-specific agent/workflow files, and the Console pointer.
+- Replaced partial ignores with `/.claude/`, removed obsolete auxiliary-copy
+  ignores, and kept the directory excluded from Docker, lint, container scans,
+  and secret-scan fixtures.
+- Renamed useful project context and enterprise batch documents to neutral
+  filenames, retired the obsolete delegation runbook, and replaced its focused
+  test with vendor-neutral development-context validation. Updated `FND-012`
+  and all live document links accordingly.
+
+Validation:
+
+- Pinned Gitleaks 8.30.1 passed against the current repository before cleanup;
+  `secret_scan.py` reported no obvious secrets.
+- Focused worktree scans passed for 17 trees. Four old trees contained only
+  synthetic DSNs in tests/docs that do not satisfy the modern exact-fingerprint
+  policy; those prototypes were archived locally and were not published.
+- `pytest -q` across development context, secret scan, foundation infrastructure,
+  traceability, and worklog tests: `46 passed, 1 deselected`.
+- `check_foundation_infra.py`: validated 31 paths, 16 Makefile targets, and 3
+  workflow files.
+- `check_traceability_matrix.py`: validated 197 requirement rows.
+- All ten standard gates passed: `make lint`, `make typecheck`, `make test`,
+  `make build`, `make contracts`, `make openapi`, `make policy-test`,
+  `make sandbox-test`, `make evals-smoke`, and `make security-check`.
+  The global test gate reported 2,810 Python tests passed / 27 deselected,
+  SDK 17, agent-adapters 11, MCP 41, and Console 262; policy reported 163
+  Python and 31 OPA tests, sandbox reported 322, contracts reported 58 focused
+  tests, and the Console production build checked 339 artifacts.
+- The first `make security-check` attempt stopped before scanning because the
+  default Docker fallback exposed a non-pinned Gitleaks version. The repeated
+  gate explicitly selected verified native Gitleaks 8.30.1 and passed; this was
+  a tool-selection failure, not a secret finding. Production-only npm audit
+  reported zero vulnerabilities; two documented moderate development-path
+  advisories remain below the enforced HIGH threshold.
+- `git diff --check`: passed.
+
+Remaining risks:
+
+- The two local bundles intentionally preserve pre-cleanup history for recovery
+  and must remain private; they are outside the repository and were not pushed.
+- Remote history still contains the removed vendor directory until a separately
+  verified history rewrite is completed. `codex/hallu-defense-acceptance`
+  currently carries the cleanup as an uncommitted candidate and `master` has
+  not been changed.

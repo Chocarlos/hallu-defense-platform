@@ -155,7 +155,7 @@ Goal: promote the enterprise capabilities from static-config / local-JSONL evide
 - B6 Durable ingestion worker: PostgreSQL outbox (FOR UPDATE SKIP LOCKED), async mode (default sync unchanged), idempotent backfill/reindex. New RAG-008/009, API-024, CTR-027, CI-027.
 - B7 Production profile + backup/restore + K8s: docker-compose.prod.yml overlay (fail-closed), Vault + MinIO wired, real retention/backup/restore drill + tenant deletion, Helm chart validated on kind. New FND-013/014, SEC-015/016, CI-028/029.
 
-Confirmed scope decisions (Carlos): sandbox = Docker container per run; live OIDC = local Keycloak in Compose; production = Compose prod-profile first, K8s/Helm (kind) last; calibration = versioned thresholds that block CI + reproducible confidence curves. Execution: each batch delegated as a bounded assignment; diff inspected and revalidated from master before integration. Detailed assignments: docs/development/fable-enterprise-batch-2.md.
+Confirmed scope decisions (Carlos): sandbox = Docker container per run; live OIDC = local Keycloak in Compose; production = Compose prod-profile first, K8s/Helm (kind) last; calibration = versioned thresholds that block CI + reproducible confidence curves. Execution: each batch delegated as a bounded assignment; diff inspected and revalidated from master before integration. Detailed assignments: docs/development/enterprise-batch-2.md.
 
 ### M7 Public Launch Layer (integrated candidate)
 
