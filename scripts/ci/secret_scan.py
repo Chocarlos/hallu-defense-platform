@@ -41,6 +41,8 @@ SECRET_PATTERNS = (
     SecretPattern("openai-api-key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
 )
 
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
 
 @dataclass(frozen=True)
 class SecretScanResult:
@@ -93,10 +95,19 @@ def _scan_snapshot(
         if not path.is_file():
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            payload = path.read_bytes()
+        except OSError:
             unreadable.add(normalized_path)
             continue
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            if path.suffix.casefold() != ".png" or not payload.startswith(PNG_SIGNATURE):
+                unreadable.add(normalized_path)
+                continue
+            # PNG chunks may contain textual metadata. Latin-1 preserves every
+            # byte so the ASCII-oriented secret patterns still inspect it.
+            text = payload.decode("latin-1")
         for pattern in SECRET_PATTERNS:
             for match in pattern.regex.finditer(text):
                 fingerprint = FixtureFingerprint(
