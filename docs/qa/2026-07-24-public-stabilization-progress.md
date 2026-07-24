@@ -11,7 +11,7 @@
 - Pull request: `#4`, kept in draft.
 - Default branch: unchanged.
 
-The stabilization slice adds Apache-2.0 licensing, Chocarlos ownership and provenance documentation, contribution and community governance, security-reporting guidance, an external GitHub-control runbook, an explicit `v0.1.0` release contract, a shorter public README, a provider compatibility matrix, and failure-only CI diagnostics.
+The stabilization slice adds Apache-2.0 licensing, Chocarlos ownership and provenance documentation, contribution and community governance, security-reporting guidance, an external GitHub-control runbook, an explicit `v0.1.0` release contract, a shorter public README, a provider compatibility matrix, and a fail-closed public ownership spelling check.
 
 ## Node dependency finding and remediation
 
@@ -24,6 +24,8 @@ CI run `30064075263` produced a failure-only npm audit artifact. The full and ru
 The exact npm 11.16 lock refresh advanced only the reviewed Next/PostCSS override and its governed assertions from `8.5.10` to `8.5.12`. The generated lock records the official registry tarball and integrity value. Lock-refresh run `30064270514` completed successfully and its runtime `npm audit --omit=dev --audit-level=high` passed. No advisory ignore, audit exception, resolution wildcard, or unsafe major override was added.
 
 The existing moderate advisory chain through the MCP SDK's unused Hono HTTP adapter remains visible to the full development audit. The repository's configured gate blocks HIGH/CRITICAL findings; the moderate item remains follow-up work rather than a silent override.
+
+The final audit removed the temporary failure-artifact upload steps from the public CI workflow. Normal GitHub Actions logs remain available, while the repository does not retain additional pytest or npm-audit artifacts by default.
 
 ## Python test diagnostic
 
