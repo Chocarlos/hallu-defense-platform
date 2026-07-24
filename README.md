@@ -320,6 +320,7 @@ La plataforma incluye Compose local, un overlay de producción validado
 estáticamente y un chart Helm:
 
 - [Perfil de producción](docs/deployment/production-profile.md)
+- [Marketing, demo intake y compatibilidad web](docs/deployment/marketing-launch.md)
 - [Despliegue Helm/Kubernetes](docs/deployment/kubernetes-helm.md)
 - [Proceso de release](docs/security/release-process.md)
 - [Controles externos del repositorio](docs/governance/repository-controls.md)
