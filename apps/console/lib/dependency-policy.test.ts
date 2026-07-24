@@ -44,7 +44,7 @@ describe("frontend dependency security policy", () => {
     expect(console.dependencies?.next).toBe("16.2.11");
     expect(root.overrides).toEqual({
       next: {
-        postcss: "8.5.10",
+        postcss: "8.5.12",
       },
       sharp: "0.35.3",
     });
@@ -54,7 +54,7 @@ describe("frontend dependency security policy", () => {
     const lock = readJson<PackageLock>("../../../package-lock.json");
 
     expect(lock.packages?.["node_modules/next/node_modules/postcss"]?.version).toBe(
-      "8.5.10",
+      "8.5.12",
     );
   });
 

@@ -8286,3 +8286,57 @@ Remaining risks:
   SDK's unused Hono HTTP adapter; the application uses the SDK's stdio transport.
   The configured security gate blocks high/critical findings. A compatible SDK
   resolution remains follow-up work rather than an unsafe major override.
+
+## 2026-07-24 - Stabilize public repository governance and dependency evidence
+
+Slice selected:
+
+- Prepare the public `v0.1.0` technical-alpha baseline without changing
+  `master`, widening provider scope, activating the demo intake, or claiming a
+  release/deployment is accepted.
+
+Implementation:
+
+- Added the official Apache License 2.0, recorded `Chocarlos` ownership and
+  original-work provenance, documented dependency/NOTICE boundaries, and
+  defined contribution licensing.
+- Added community governance, CODEOWNERS, structured issue/PR templates,
+  conservative Dependabot policy, private-vulnerability-reporting guidance,
+  external repository-control procedures, a `v0.1.0` release contract, and a
+  shorter public README that preserves exact-commit evidence limits.
+- Temporarily added failure-only CI diagnostics without changing pass/fail criteria; the final audit removed the artifact uploads to avoid retaining additional public failure output.
+- Remediated `CVE-2026-45623` / `GHSA-6g55-p6wh-862q` by advancing the exact
+  Next-scoped PostCSS override and generated lock from `8.5.10` to `8.5.12`;
+  synchronized the TypeScript and Python reproducibility assertions.
+- Used temporary, branch-scoped workflows only to generate the npm lock,
+  append these governed records, and inspect an immutable Prometheus image;
+  each temporary workflow is removed after its bounded purpose.
+
+Validation:
+
+- CI run `30064075263` installed locked dependencies, passed Ruff, mypy and
+  schema checks, then reported `2830 passed`, `11 deselected`, and one
+  documentary failure because the simplified README omitted
+  `marketing-launch.md`; the required link was restored.
+- Lock-refresh run `30064270514` used Node `24.18.0` and npm `11.16.0`,
+  generated `package-lock.json`, and passed
+  `npm audit --omit=dev --audit-level=high` with PostCSS `8.5.12`.
+- Trivy diagnostic run `30064513827` reproduced the strict Prometheus image
+  failure as `GHSA-hrxh-6v49-42gf` in `google.golang.org/grpc v1.81.1`
+  inside both `prometheus` and `promtool`; the fixed dependency is `1.82.1`.
+- The scoped record workflow runs `git diff --check` before committing only
+  `docs/WORKLOG.md` and `docs/TRACEABILITY_MATRIX.md`.
+
+Remaining risks:
+
+- The exact final branch head still requires current `ci`, `evals`, and
+  `security` evidence; historical or intermediate green results are not
+  extrapolated.
+- The strict third-party image scan remains blocked until Prometheus publishes
+  or an independently governed immutable replacement supplies fixed gRPC-Go;
+  no Trivy ignore, severity reduction, or mutable tag is accepted.
+- Default-branch/tag protection, the independently reviewed `release`
+  Environment, private vulnerability reporting, and alert notifications remain
+  external GitHub settings pending independent verification.
+- The existing ingestion worker crash/restart and other deployment-specific
+  limitations remain governed by their prior evidence and are not closed here.

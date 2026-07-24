@@ -26,6 +26,8 @@ profile remain external. GitHub Actions for this campaign are blocked before
 runner allocation by the repository billing/spending limit, so no remote-green
 claim is made. Historical evidence below remains commit-specific.
 
+Public-repository stabilization follow-up: draft PR #4 starts from exact base `8ea0c2cecb39f94520a0d21672f3c0ef7e96f15e` and adds Apache-2.0, Chocarlos provenance, community/security governance, a blocked `v0.1.0` release contract, provider compatibility limits, and a fail-closed ownership spelling check. Intermediate evidence remediates the Next-scoped PostCSS HIGH finding with generated `8.5.12`, while the immutable Prometheus `v3.13.1` scan remains blocked by `GHSA-hrxh-6v49-42gf` in gRPC-Go `v1.81.1`. External GitHub controls and exact-final-head workflows remain pending; no requirement is promoted to `accepted` by this follow-up. See `docs/qa/2026-07-24-public-stabilization-progress.md`.
+
 PR validation follow-up: the first GitHub `evals` run exposed a missing API
 source path on clean Linux runners. The workflow now exports the exact
 `${{ github.workspace }}/apps/api/src` path, and the config gate rejects its

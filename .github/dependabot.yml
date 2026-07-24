@@ -1,0 +1,34 @@
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Panama"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "Chocarlos"
+    commit-message:
+      prefix: "deps(actions)"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:30"
+      timezone: "America/Panama"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "Chocarlos"
+    commit-message:
+      prefix: "deps(npm)"
+
+# Python dependencies use repository-specific, hash-pinned locks generated and
+# checked by scripts/ci/compile_python_locks.py. Container images also have
+# repository-specific digest and manifest gates. Automated updates for those
+# ecosystems must not be enabled until the updater can regenerate and validate
+# every governed artifact in the same pull request.

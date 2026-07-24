@@ -2,9 +2,9 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTypescript from "eslint-config-next/typescript";
 
-// Next 16.2.10 is the stable framework pin. Its bundled PostCSS 8.4.31 is
-// vulnerable, so package.json permits exactly one scoped correction:
-// next -> postcss@8.5.10. Keep the override exact until stable Next carries it.
+// Next 16.2.11 remains the stable framework pin. Its dependency range permits
+// vulnerable PostCSS releases, so package.json applies one scoped correction:
+// next -> postcss@8.5.12, the first version patched for CVE-2026-45623.
 export default defineConfig([
   ...nextVitals,
   ...nextTypescript,

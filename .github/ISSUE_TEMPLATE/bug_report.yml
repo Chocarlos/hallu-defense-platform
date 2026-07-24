@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible defect without disclosing sensitive information
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a defect. Do not include secrets, credentials, private logs, tenant data, or vulnerability details. Security vulnerabilities must follow `SECURITY.md`.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and did not find the same defect.
+          required: true
+        - label: This report does not contain a security vulnerability or sensitive data.
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Defect summary
+      description: State what is wrong and why it matters.
+      placeholder: A concise description of the observable defect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest safe sequence that reproduces the problem.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized errors or traces only.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include exact commit or release, operating system, Python, Node/npm, deployment mode, and relevant provider/backend names without credentials.
+      placeholder: |
+        Commit or release:
+        OS:
+        Python:
+        Node/npm:
+        Deployment mode:
+        Provider/backend:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options:
+        - Local development only
+        - Documentation or developer experience
+        - Functional regression
+        - Data integrity or tenant isolation concern
+        - Availability or performance concern
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Validation evidence
+      description: List commands, sanitized outputs, and any workaround already tested.

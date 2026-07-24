@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a bounded capability or improvement
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before proposing an implementation. Requests that weaken fail-closed defaults, evidence requirements, tenant isolation, or security controls will not be accepted merely for convenience.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Who needs this, what task is blocked, and what evidence shows the need?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe observable behavior and acceptance criteria without prescribing unnecessary implementation details.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Primary surface
+      options:
+        - Verification and claims
+        - RAG and ingestion
+        - Providers and NLI
+        - Tool safety and approvals
+        - Repository checks and sandbox
+        - API, contracts, SDK, or MCP
+        - Console and public web
+        - Security, identity, or secrets
+        - Persistence, deployment, or observability
+        - Documentation or developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and risk
+      description: Identify possible contract, migration, security, privacy, performance, provider, or deployment impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds and why they are insufficient.
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Suggested validation
+      description: Propose deterministic tests, eval scenarios, live smokes, or operational evidence that should gate acceptance.
+
+  - type: checkboxes
+    id: commitments
+    attributes:
+      label: Request quality
+      options:
+        - label: I am not requesting that tests, policies, evidence requirements, or secure defaults be weakened to make this feature easier.
+          required: true
+        - label: I have not included secrets, tenant data, private logs, or vulnerability details.
+          required: true

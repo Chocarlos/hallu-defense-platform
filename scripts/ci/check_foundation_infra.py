@@ -66,7 +66,7 @@ REQUIRED_ROOT_DEV_DEPENDENCIES = {
     "next": "16.2.11",
 }
 REQUIRED_OVERRIDES = {
-    "next": {"postcss": "8.5.10"},
+    "next": {"postcss": "8.5.12"},
     "sharp": "0.35.3",
 }
 REQUIRED_MAKE_TARGETS = (
@@ -288,8 +288,8 @@ def _validate_monorepo_layout(
     )
     if not isinstance(next_package, dict) or next_package.get("version") != "16.2.11":
         errors.append("package-lock.json must resolve Next 16.2.11 exactly")
-    if not isinstance(nested_postcss, dict) or nested_postcss.get("version") != "8.5.10":
-        errors.append("package-lock.json must resolve Next's PostCSS to 8.5.10")
+    if not isinstance(nested_postcss, dict) or nested_postcss.get("version") != "8.5.12":
+        errors.append("package-lock.json must resolve Next's PostCSS to 8.5.12")
 
     for marker in (
         'from "eslint/config"',

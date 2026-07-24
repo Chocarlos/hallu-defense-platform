@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security policy and private reporting instructions
+    url: https://github.com/Chocarlos/hallu-defense-platform/security/policy
+    about: Do not publish vulnerability details, exploits, secrets, private logs, or tenant data in an issue.
