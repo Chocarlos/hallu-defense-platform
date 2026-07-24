@@ -8297,7 +8297,7 @@ Slice selected:
 
 Implementation:
 
-- Added the official Apache License 2.0, recorded `Xocarlos` ownership and
+- Added the official Apache License 2.0, recorded `Chocarlos` ownership and
   original-work provenance, documented dependency/NOTICE boundaries, and
   defined contribution licensing.
 - Added community governance, CODEOWNERS, structured issue/PR templates,
