@@ -329,11 +329,11 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
         if root_dev.get(name) != version:
             errors.append(f"package.json must pin {name} {version} exactly.")
     if package.get("overrides") != {
-        "next": {"postcss": "8.5.10"},
+        "next": {"postcss": "8.5.12"},
         "sharp": "0.35.3",
     }:
         errors.append(
-            "package.json must contain only the reviewed Next PostCSS 8.5.10 and "
+            "package.json must contain only the reviewed Next PostCSS 8.5.12 and "
             "Sharp 0.35.3 overrides."
         )
     if package.get("packageManager") != "npm@11.16.0":
@@ -388,10 +388,10 @@ def _validate_node_reproducibility(errors: list[str]) -> None:
         errors.append("package-lock.json must resolve fast-uri 3.1.4.")
     if (
         packages.get("node_modules/next/node_modules/postcss", {}).get("version")
-        != "8.5.10"
+        != "8.5.12"
     ):
         errors.append(
-            "package-lock.json must resolve Next's PostCSS 8.5.10 correction."
+            "package-lock.json must resolve Next's PostCSS 8.5.12 correction."
         )
 
 
