@@ -9,7 +9,7 @@ The project has not published a stable release yet. Entries remain under `Unrele
 ### Added
 
 - Apache License 2.0 as the repository license.
-- Licensing and attribution policy identifying Xocarlos as the copyright holder.
+- Licensing and attribution policy identifying Chocarlos as the copyright holder.
 - Contribution provenance and licensing requirements.
 - Community governance files, issue forms, pull-request review guidance, code ownership, and conservative Dependabot configuration.
 - Public-release contract and external repository-control runbook for `v0.1.0`.
