@@ -4,6 +4,7 @@ ARG OPA_REPOSITORY=https://github.com/open-policy-agent/opa.git
 ARG OPA_TAG=v1.18.2
 ARG OPA_COMMIT=e695c9ef8edb0f8b9f13d014d7bc8a7fbcc57297
 ARG OPA_SOURCE_TIMESTAMP=2026-07-02T13:31:31Z
+ARG GRPC_GO_VERSION=v1.82.1
 ENV GOPROXY=https://proxy.golang.org
 ENV GOSUMDB=sum.golang.org
 
@@ -20,15 +21,19 @@ RUN go mod edit \
         -require=golang.org/x/crypto@v0.52.0 \
         -require=golang.org/x/net@v0.55.0 \
         -require=golang.org/x/sys@v0.45.0 \
+        -require=google.golang.org/grpc@${GRPC_GO_VERSION} \
     && go mod tidy \
     && go mod verify \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/crypto)" = "v0.52.0" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/net)" = "v0.55.0" \
     && test "$(go list -m -f '{{.Version}}' golang.org/x/sys)" = "v0.45.0" \
+    && test "$(go list -m -f '{{.Version}}' google.golang.org/grpc)" = "${GRPC_GO_VERSION}" \
     && CGO_ENABLED=0 go build -tags=opa_no_oci -mod=readonly -trimpath -buildvcs=false \
         -ldflags="-s -w -X github.com/open-policy-agent/opa/v1/version.Vcs=${OPA_COMMIT} -X github.com/open-policy-agent/opa/v1/version.Timestamp=${OPA_SOURCE_TIMESTAMP} -X github.com/open-policy-agent/opa/v1/version.Hostname=reproducible" \
         -o /out/opa . \
     && test "$(go version /out/opa)" = "/out/opa: go1.26.5" \
+    && go version -m /out/opa | grep -F "google.golang.org/grpc\tv1.82.1" \
+    && ! go version -m /out/opa | grep -F "google.golang.org/grpc\tv1.81.1" \
     && ! go version -m /out/opa | grep -F "oras.land/oras-go" \
     && /out/opa version | grep -F "Version: 1.18.2" \
     && /out/opa version | grep -F "Build Commit: ${OPA_COMMIT}" \
