@@ -50,7 +50,25 @@ jobs:
       - name: Check JSON Schema contracts
         run: python scripts/ci/check_json_schemas.py
       - name: Test API
-        run: python -m pytest apps/api/tests --suite-lane=auto
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest apps/api/tests --suite-lane=auto \
+            --junitxml="$RUNNER_TEMP/pytest-report.xml" \
+            2>&1 | tee "$RUNNER_TEMP/pytest.log"
+      - name: Upload backend failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-backend-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pytest.log
+            ${{ runner.temp }}/pytest-report.xml
+          if-no-files-found: warn
+          include-hidden-files: false
+          compression-level: 6
+          overwrite: false
+          retention-days: 1
       - name: Check OpenAPI drift
         run: python scripts/ci/check_openapi.py
       - name: Check semantic contract versions
@@ -147,8 +165,45 @@ jobs:
           python scripts/ci/install_python_lock.py dev
       - run: test "$(npm --version)" = "11.16.0"
       - run: npm ci
-      - run: npm audit --audit-level=high
-      - run: npm audit --omit=dev --audit-level=high
+      - name: Audit Node dependencies
+        shell: bash
+        run: |
+          set +e
+          npm audit --audit-level=high --json > "$RUNNER_TEMP/npm-audit-all.json"
+          all_status=$?
+          npm audit --omit=dev --audit-level=high --json > "$RUNNER_TEMP/npm-audit-runtime.json"
+          runtime_status=$?
+          set -e
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          for (const name of ["npm-audit-all.json", "npm-audit-runtime.json"]) {
+            const target = path.join(process.env.RUNNER_TEMP, name);
+            try {
+              const report = JSON.parse(fs.readFileSync(target, "utf8"));
+              const counts = report.metadata?.vulnerabilities ?? {};
+              console.log(`${name}: ${JSON.stringify(counts)}`);
+            } catch (error) {
+              console.log(`${name}: audit output was not parseable JSON (${error.name})`);
+            }
+          }
+          NODE
+          if [ "$all_status" -ne 0 ] || [ "$runtime_status" -ne 0 ]; then
+            exit 1
+          fi
+      - name: Upload Node audit failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-node-audit-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/npm-audit-all.json
+            ${{ runner.temp }}/npm-audit-runtime.json
+          if-no-files-found: warn
+          include-hidden-files: false
+          compression-level: 6
+          overwrite: false
+          retention-days: 1
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
