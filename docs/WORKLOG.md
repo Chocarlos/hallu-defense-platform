@@ -8304,7 +8304,7 @@ Implementation:
   conservative Dependabot policy, private-vulnerability-reporting guidance,
   external repository-control procedures, a `v0.1.0` release contract, and a
   shorter public README that preserves exact-commit evidence limits.
-- Added failure-only CI diagnostics without changing pass/fail criteria.
+- Temporarily added failure-only CI diagnostics without changing pass/fail criteria; the final audit removed the artifact uploads to avoid retaining additional public failure output.
 - Remediated `CVE-2026-45623` / `GHSA-6g55-p6wh-862q` by advancing the exact
   Next-scoped PostCSS override and generated lock from `8.5.10` to `8.5.12`;
   synchronized the TypeScript and Python reproducibility assertions.
