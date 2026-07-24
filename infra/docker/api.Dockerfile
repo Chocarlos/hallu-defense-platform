@@ -32,8 +32,8 @@ RUN go mod edit \
         -ldflags="-s -w -X github.com/open-policy-agent/opa/v1/version.Vcs=${OPA_COMMIT} -X github.com/open-policy-agent/opa/v1/version.Timestamp=${OPA_SOURCE_TIMESTAMP} -X github.com/open-policy-agent/opa/v1/version.Hostname=reproducible" \
         -o /out/opa . \
     && test "$(go version /out/opa)" = "/out/opa: go1.26.5" \
-    && go version -m /out/opa | grep -F "google.golang.org/grpc\tv1.82.1" \
-    && ! go version -m /out/opa | grep -F "google.golang.org/grpc\tv1.81.1" \
+    && test "$(go version -m /out/opa | awk '$1 == "dep" && $2 == "google.golang.org/grpc" { print $3 }')" = "${GRPC_GO_VERSION}" \
+    && ! go version -m /out/opa | grep -F "google.golang.org/grpc v1.81.1" \
     && ! go version -m /out/opa | grep -F "oras.land/oras-go" \
     && /out/opa version | grep -F "Version: 1.18.2" \
     && /out/opa version | grep -F "Build Commit: ${OPA_COMMIT}" \
