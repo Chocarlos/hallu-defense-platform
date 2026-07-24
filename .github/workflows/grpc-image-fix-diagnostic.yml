@@ -3,24 +3,24 @@ name: grpc-image-fix-diagnostic
 on:
   push:
     branches: ["codex/api-image-audit-d82a400c"]
+    paths:
+      - ".github/workflows/grpc-image-fix-diagnostic.yml"
+      - "infra/docker/api.Dockerfile"
+      - "infra/docker/prometheus.Dockerfile"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   images:
+    if: github.repository == 'Chocarlos/hallu-defense-platform'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - name: api
-            dockerfile: infra/docker/api.Dockerfile
-          - name: prometheus
-            dockerfile: infra/docker/prometheus.Dockerfile
+    timeout-minutes: 90
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: codex/api-image-audit-d82a400c
+          persist-credentials: false
       - name: Create exact empty Trivy policy
         shell: bash
         run: |
@@ -30,39 +30,151 @@ jobs:
           : > "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
           chmod 0444 "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \
             "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore"
+      - name: Install pinned Trivy
+        shell: bash
+        env:
+          TRIVY_VERSION: "0.72.0"
+          TRIVY_SHA256: "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          printf '%s  %s\n' "${TRIVY_SHA256}" "${archive}" | sha256sum --check
+          install -d -m 0755 "${RUNNER_TEMP}/trivy-bin"
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}/trivy-bin" trivy
+          chmod 0555 "${RUNNER_TEMP}/trivy-bin/trivy"
+          test "$("${RUNNER_TEMP}/trivy-bin/trivy" --version | head -n 1)" = "Version: ${TRIVY_VERSION}"
       - name: Reclaim hosted-runner space
         shell: bash
         run: |
           set -euo pipefail
           sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           docker builder prune --all --force
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Build patched image
-        run: docker build -f "${{ matrix.dockerfile }}" -t "hallu-defense-${{ matrix.name }}:grpc-fix" .
-      - name: Verify embedded dependency and runtime identity
+      - name: Build, verify and scan both patched images
+        id: evaluate
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p diagnostics/grpc-image-fix
+          overall=0
+          : > diagnostics/grpc-image-fix/status.tsv
+
+          evaluate_image() {
+            name="$1"
+            dockerfile="$2"
+            tag="hallu-defense-${name}:grpc-fix"
+            build_log="diagnostics/grpc-image-fix/${name}-build.log"
+            runtime_log="diagnostics/grpc-image-fix/${name}-runtime.log"
+            scan_log="diagnostics/grpc-image-fix/${name}-scan.log"
+
+            set +e
+            docker build -f "${dockerfile}" -t "${tag}" . >"${build_log}" 2>&1
+            build_status=$?
+            set -e
+            runtime_status=125
+            scan_status=125
+
+            if [ "${build_status}" -eq 0 ]; then
+              set +e
+              if [ "${name}" = "api" ]; then
+                {
+                  docker run --rm --entrypoint /usr/local/bin/opa "${tag}" version
+                  docker run --rm --entrypoint /usr/local/bin/opa "${tag}" \
+                    check --strict /app/infra/opa/policies
+                } >"${runtime_log}" 2>&1
+              else
+                {
+                  docker run --rm "${tag}" --version
+                  docker run --rm --entrypoint /bin/promtool "${tag}" --version
+                } >"${runtime_log}" 2>&1
+              fi
+              runtime_status=$?
+              set -e
+
+              set +e
+              "${RUNNER_TEMP}/trivy-bin/trivy" image \
+                --config "${RUNNER_TEMP}/hallu-trivy-policy/trivy.yaml" \
+                --ignorefile "${RUNNER_TEMP}/hallu-trivy-policy/empty.trivyignore" \
+                --format table \
+                --exit-code 1 \
+                --scanners vuln \
+                --vuln-type os,library \
+                --severity CRITICAL,HIGH \
+                "${tag}" >"${scan_log}" 2>&1
+              scan_status=$?
+              set -e
+            else
+              printf 'runtime skipped because build failed\n' >"${runtime_log}"
+              printf 'scan skipped because build failed\n' >"${scan_log}"
+            fi
+
+            printf '%s\t%s\t%s\t%s\n' \
+              "${name}" "${build_status}" "${runtime_status}" "${scan_status}" \
+              >> diagnostics/grpc-image-fix/status.tsv
+            if [ "${build_status}" -ne 0 ] || [ "${runtime_status}" -ne 0 ] || [ "${scan_status}" -ne 0 ]; then
+              overall=1
+            fi
+          }
+
+          set -e
+          evaluate_image api infra/docker/api.Dockerfile
+          evaluate_image prometheus infra/docker/prometheus.Dockerfile
+          printf 'overall=%s\n' "${overall}" >> "${GITHUB_OUTPUT}"
+
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path("diagnostics/grpc-image-fix")
+          rows = []
+          for line in (root / "status.tsv").read_text(encoding="utf-8").splitlines():
+              name, build, runtime, scan = line.split("\t")
+              rows.append((name, int(build), int(runtime), int(scan)))
+          output = [
+              "# gRPC image fix diagnostic",
+              "",
+              "Source branch: `codex/api-image-audit-d82a400c`",
+              "",
+              "| Image | Build | Runtime | Trivy HIGH/CRITICAL |",
+              "| --- | ---: | ---: | ---: |",
+          ]
+          for row in rows:
+              output.append(f"| {row[0]} | {row[1]} | {row[2]} | {row[3]} |")
+          output.extend(["", "Exit code `0` means pass. `125` means skipped after build failure."])
+          for name, *_ in rows:
+              for kind in ("build", "runtime", "scan"):
+                  path = root / f"{name}-{kind}.log"
+                  lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                  tail = lines[-120:]
+                  output.extend(
+                      [
+                          "",
+                          f"## {name} {kind} tail",
+                          "",
+                          "```text",
+                          *tail,
+                          "```",
+                      ]
+                  )
+          (root / "REPORT.md").write_text("\n".join(output) + "\n", encoding="utf-8")
+          PY
+      - name: Commit bounded diagnostics to the diagnostic branch
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ matrix.name }}" = "api" ]; then
-            docker run --rm --entrypoint /usr/local/bin/opa \
-              "hallu-defense-${{ matrix.name }}:grpc-fix" version
-            docker run --rm --entrypoint /usr/local/bin/opa \
-              "hallu-defense-${{ matrix.name }}:grpc-fix" check --strict /app/infra/opa/policies
-          else
-            docker run --rm "hallu-defense-${{ matrix.name }}:grpc-fix" --version
-            docker run --rm --entrypoint /bin/promtool \
-              "hallu-defense-${{ matrix.name }}:grpc-fix" --version
-          fi
-      - name: Scan patched image without exceptions
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.72.0
-          image-ref: hallu-defense-${{ matrix.name }}:grpc-fix
-          format: table
-          exit-code: "1"
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
-          trivy-config: ${{ runner.temp }}/hallu-trivy-policy/trivy.yaml
-          trivyignores: ${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore
+          git add -- diagnostics/grpc-image-fix
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: record grpc image fix diagnostics"
+          git push \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:${GITHUB_REF_NAME}"
+      - name: Preserve the strict result
+        if: always()
+        shell: bash
+        run: test "${{ steps.evaluate.outputs.overall }}" = "0"
