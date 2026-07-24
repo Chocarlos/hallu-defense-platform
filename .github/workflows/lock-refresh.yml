@@ -26,11 +26,14 @@ jobs:
         run: npm install --package-lock-only --ignore-scripts
       - name: Verify patched runtime audit
         run: npm audit --omit=dev --audit-level=high
-      - name: Upload generated lock
+      - name: Upload generated lock and governed sources
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: generated-node-lock-${{ github.sha }}
-          path: package-lock.json
+          path: |
+            package-lock.json
+            scripts/ci/check_foundation_infra.py
+            scripts/ci/check_python_reproducibility.py
           if-no-files-found: error
           include-hidden-files: false
           compression-level: 6
