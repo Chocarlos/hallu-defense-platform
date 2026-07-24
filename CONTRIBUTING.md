@@ -13,7 +13,7 @@ Do not submit copied or adapted source code, documentation, datasets, media, or 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e "apps/api[dev]"
-npm install
+npm ci
 ```
 
 ## Validation
@@ -26,7 +26,7 @@ make typecheck
 make test
 make build
 make contracts
-make openapi
+make openapi-check
 make security-check
 make evals-smoke
 ```
