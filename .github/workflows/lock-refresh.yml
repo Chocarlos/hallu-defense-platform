@@ -1,6 +1,7 @@
 name: lock-refresh
 
 on:
+  pull_request:
   push:
     branches: ["codex/public-stabilization-v0.1.0"]
 
