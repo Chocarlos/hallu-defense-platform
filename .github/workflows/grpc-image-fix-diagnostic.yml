@@ -7,18 +7,9 @@ permissions:
   contents: read
 
 jobs:
-  images:
+  prometheus:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - name: api
-            dockerfile: infra/docker/api.Dockerfile
-          - name: prometheus
-            dockerfile: infra/docker/prometheus.Dockerfile
     steps:
       - name: Create exact empty Trivy policy
         shell: bash
@@ -38,31 +29,63 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Build patched image
-        run: docker build -f "${{ matrix.dockerfile }}" -t "hallu-defense-${{ matrix.name }}:grpc-fix" .
+      - name: Build patched Prometheus image
+        id: build
+        shell: bash
+        run: |
+          set +e
+          docker build --progress=plain \
+            -f infra/docker/prometheus.Dockerfile \
+            -t hallu-defense-prometheus:grpc-fix . \
+            >"$RUNNER_TEMP/prometheus-build.log" 2>&1
+          status=$?
+          set -e
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          tail -n 200 "$RUNNER_TEMP/prometheus-build.log"
       - name: Verify runtime identity
+        if: steps.build.outputs.status == '0'
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ matrix.name }}" = "api" ]; then
-            docker run --rm --entrypoint /usr/local/bin/opa \
-              "hallu-defense-${{ matrix.name }}:grpc-fix" version
-            docker run --rm --entrypoint /usr/local/bin/opa \
-              "hallu-defense-${{ matrix.name }}:grpc-fix" \
-              check --strict /app/infra/opa/policies
-          else
-            docker run --rm "hallu-defense-${{ matrix.name }}:grpc-fix" --version
+          {
+            docker run --rm hallu-defense-prometheus:grpc-fix --version
             docker run --rm --entrypoint /bin/promtool \
-              "hallu-defense-${{ matrix.name }}:grpc-fix" --version
-          fi
+              hallu-defense-prometheus:grpc-fix --version
+          } >"$RUNNER_TEMP/prometheus-runtime.log" 2>&1
+          cat "$RUNNER_TEMP/prometheus-runtime.log"
       - name: Scan patched image without exceptions
+        if: steps.build.outputs.status == '0'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.72.0
-          image-ref: hallu-defense-${{ matrix.name }}:grpc-fix
+          image-ref: hallu-defense-prometheus:grpc-fix
           format: table
-          exit-code: "1"
+          output: ${{ runner.temp }}/prometheus-trivy.log
+          exit-code: "0"
           vuln-type: os,library
           severity: CRITICAL,HIGH
           trivy-config: ${{ runner.temp }}/hallu-trivy-policy/trivy.yaml
           trivyignores: ${{ runner.temp }}/hallu-trivy-policy/empty.trivyignore
+      - name: Upload bounded diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prometheus-grpc-fix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/prometheus-build.log
+            ${{ runner.temp }}/prometheus-runtime.log
+            ${{ runner.temp }}/prometheus-trivy.log
+          if-no-files-found: warn
+          include-hidden-files: false
+          compression-level: 6
+          overwrite: false
+          retention-days: 1
+      - name: Preserve strict result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.build.outputs.status }}" = "0"
+          test -f "$RUNNER_TEMP/prometheus-runtime.log"
+          test -f "$RUNNER_TEMP/prometheus-trivy.log"
+          ! grep -Eq 'HIGH: [1-9]|CRITICAL: [1-9]' "$RUNNER_TEMP/prometheus-trivy.log"
