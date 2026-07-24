@@ -1,5 +1,13 @@
 # Contributing
 
+## Licensing of contributions
+
+Hallu Defense Platform is licensed under the [Apache License, Version 2.0](LICENSE).
+
+By intentionally submitting a contribution for inclusion in this repository, you confirm that you have the right to submit it. Unless you explicitly designate the submission in writing as "Not a Contribution" before it is incorporated, the contribution is provided under Apache-2.0, consistent with Section 5 of the license.
+
+Do not submit copied or adapted source code, documentation, datasets, media, or other material unless its origin, license compatibility, and required attribution are documented. See the [licensing and attribution policy](docs/legal/licensing.md).
+
 ## Development Setup
 
 ```powershell
@@ -47,4 +55,3 @@ Public contract changes must update:
 - JSON Schemas in `packages/contracts/schemas`.
 - OpenAPI output in `docs/api/openapi.yaml`.
 - Contract tests.
-
