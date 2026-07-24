@@ -4,9 +4,9 @@
 
 Hallu Defense Platform is licensed under the [Apache License, Version 2.0](../../LICENSE).
 
-Copyright 2026 Xocarlos.
+Copyright 2026 Chocarlos.
 
-Unless a file or directory states otherwise, the Apache-2.0 license applies to the project-specific source code and documentation owned by Xocarlos.
+Unless a file or directory states otherwise, the Apache-2.0 license applies to the project-specific source code and documentation owned by Chocarlos.
 
 ## Original-work record
 
