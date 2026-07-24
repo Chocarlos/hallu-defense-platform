@@ -1,0 +1,24 @@
+# Default ownership
+* @Chocarlos
+
+# Repository governance and automation
+/.github/ @Chocarlos
+/CONTRIBUTING.md @Chocarlos
+/CODE_OF_CONDUCT.md @Chocarlos
+/CHANGELOG.md @Chocarlos
+/LICENSE @Chocarlos
+/docs/legal/ @Chocarlos
+
+# Security-sensitive surfaces
+/SECURITY.md @Chocarlos
+/docs/security/ @Chocarlos
+/infra/security/ @Chocarlos
+/infra/opa/ @Chocarlos
+/.github/workflows/ @Chocarlos
+/scripts/ci/ @Chocarlos
+
+# Public contracts and release interfaces
+/docs/api/ @Chocarlos
+/packages/contracts/ @Chocarlos
+/packages/sdk/ @Chocarlos
+/packages/mcp-server/ @Chocarlos
