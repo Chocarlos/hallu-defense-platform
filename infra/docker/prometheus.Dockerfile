@@ -28,10 +28,10 @@ RUN go mod edit -require=google.golang.org/grpc@${GRPC_GO_VERSION} \
        -o /out/promtool ./cmd/promtool \
     && test "$(go version /out/prometheus)" = "/out/prometheus: go1.26.5" \
     && test "$(go version /out/promtool)" = "/out/promtool: go1.26.5" \
-    && go version -m /out/prometheus | grep -F "google.golang.org/grpc\tv1.82.1" \
-    && go version -m /out/promtool | grep -F "google.golang.org/grpc\tv1.82.1" \
-    && ! go version -m /out/prometheus | grep -F "google.golang.org/grpc\tv1.81.1" \
-    && ! go version -m /out/promtool | grep -F "google.golang.org/grpc\tv1.81.1" \
+    && test "$(go version -m /out/prometheus | awk '$1 == "dep" && $2 == "google.golang.org/grpc" { print $3 }')" = "${GRPC_GO_VERSION}" \
+    && test "$(go version -m /out/promtool | awk '$1 == "dep" && $2 == "google.golang.org/grpc" { print $3 }')" = "${GRPC_GO_VERSION}" \
+    && ! go version -m /out/prometheus | grep -F "google.golang.org/grpc v1.81.1" \
+    && ! go version -m /out/promtool | grep -F "google.golang.org/grpc v1.81.1" \
     && /out/prometheus --version 2>&1 | grep -F "prometheus, version 3.13.1" \
     && /out/prometheus --version 2>&1 | grep -F "revision: ${PROMETHEUS_COMMIT}" \
     && /out/promtool --version 2>&1 | grep -F "promtool, version 3.13.1"
