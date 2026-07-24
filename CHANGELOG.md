@@ -13,7 +13,7 @@ The project has not published a stable release yet. Entries remain under `Unrele
 - Contribution provenance and licensing requirements.
 - Community governance files, issue forms, pull-request review guidance, code ownership, and conservative Dependabot configuration.
 - Public-release contract and external repository-control runbook for `v0.1.0`.
-- Failure-only CI artifacts for Python test and Node audit diagnostics; the underlying gates remain fail-closed.
+- A fail-closed CI check that rejects the incorrect public ownership spelling and verifies the intended copyright notice.
 
 ### Changed
 
@@ -23,6 +23,7 @@ The project has not published a stable release yet. Entries remain under `Unrele
 ### Security
 
 - Updated the Next-scoped PostCSS override and generated lock from `8.5.10` to patched `8.5.12` for `CVE-2026-45623` / `GHSA-6g55-p6wh-862q`; no audit exception or vulnerability ignore was added.
+- Removed temporary failure-artifact uploads during final audit so the public workflow does not retain additional test or dependency-audit output beyond normal GitHub Actions logs.
 - Licensing and governance documentation does not change authentication, authorization, sandbox, provider, persistence, network, secret-handling, or deployment behavior.
 - Private vulnerability reporting is documented as a required external setting and is not represented as enabled until independently verified in GitHub settings.
 
