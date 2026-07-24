@@ -11,7 +11,7 @@
 - Pull request: `#4`, kept in draft.
 - Default branch: unchanged.
 
-The stabilization slice adds Apache-2.0 licensing, Xocarlos ownership and provenance documentation, contribution and community governance, security-reporting guidance, an external GitHub-control runbook, an explicit `v0.1.0` release contract, a shorter public README, a provider compatibility matrix, and failure-only CI diagnostics.
+The stabilization slice adds Apache-2.0 licensing, Chocarlos ownership and provenance documentation, contribution and community governance, security-reporting guidance, an external GitHub-control runbook, an explicit `v0.1.0` release contract, a shorter public README, a provider compatibility matrix, and failure-only CI diagnostics.
 
 ## Node dependency finding and remediation
 
