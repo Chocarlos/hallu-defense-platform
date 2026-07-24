@@ -39,6 +39,67 @@ jobs:
           python scripts/ci/compile_python_locks.py --check
           python scripts/ci/install_python_lock.py dev
           python scripts/ci/check_python_reproducibility.py
+      - name: Check public repository governance
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          yaml_paths = [
+              Path(".github/dependabot.yml"),
+              Path(".github/ISSUE_TEMPLATE/bug_report.yml"),
+              Path(".github/ISSUE_TEMPLATE/feature_request.yml"),
+              Path(".github/ISSUE_TEMPLATE/config.yml"),
+          ]
+          payloads: dict[Path, object] = {}
+          for path in yaml_paths:
+              payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(payload, dict):
+                  raise SystemExit(f"{path} must contain a YAML mapping")
+              payloads[path] = payload
+
+          dependabot = payloads[Path(".github/dependabot.yml")]
+          updates = dependabot.get("updates")
+          if dependabot.get("version") != 2 or not isinstance(updates, list):
+              raise SystemExit("Dependabot configuration must use version 2 with an updates list")
+          ecosystems = {
+              entry.get("package-ecosystem")
+              for entry in updates
+              if isinstance(entry, dict)
+          }
+          if ecosystems != {"github-actions", "npm"}:
+              raise SystemExit("Dependabot must govern exactly GitHub Actions and npm")
+
+          for name in ("bug_report.yml", "feature_request.yml"):
+              path = Path(".github/ISSUE_TEMPLATE") / name
+              payload = payloads[path]
+              body = payload.get("body")
+              if not payload.get("name") or not payload.get("description") or not isinstance(body, list):
+                  raise SystemExit(f"{path} is missing required issue-form fields")
+              ids = [item.get("id") for item in body if isinstance(item, dict) and item.get("id")]
+              if len(ids) != len(set(ids)):
+                  raise SystemExit(f"{path} contains duplicate issue-form ids")
+
+          config = payloads[Path(".github/ISSUE_TEMPLATE/config.yml")]
+          if config.get("blank_issues_enabled") is not False or not config.get("contact_links"):
+              raise SystemExit("issue-template config must disable blank issues and route security reports")
+
+          codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+          if "* @Chocarlos" not in codeowners:
+              raise SystemExit("CODEOWNERS must assign the default owner to @Chocarlos")
+          for required in (
+              "LICENSE",
+              "CHANGELOG.md",
+              "CODE_OF_CONDUCT.md",
+              "SECURITY.md",
+              ".github/pull_request_template.md",
+              "docs/legal/licensing.md",
+              "docs/governance/repository-controls.md",
+              "docs/releases/v0.1.0.md",
+          ):
+              if not Path(required).is_file():
+                  raise SystemExit(f"required public governance file is missing: {required}")
+          PY
       - name: Install pinned Helm for chart and negative-value gates
         env:
           HELM_VERSION: v4.2.2
