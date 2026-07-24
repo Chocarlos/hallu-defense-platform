@@ -347,7 +347,7 @@ exacto evaluado.
 
 ## Licencia
 
-Copyright 2026 Xocarlos.
+Copyright 2026 Chocarlos.
 
 El código y la documentación cubiertos se distribuyen bajo
 [Apache License 2.0](LICENSE). Las dependencias y componentes externos conservan
